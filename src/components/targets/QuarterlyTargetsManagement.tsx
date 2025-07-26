@@ -1,324 +1,280 @@
-
 import { useState, useEffect } from 'react';
 import { User } from '@/types/auth';
-import { QuarterlyTarget } from '@/types/targets';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { Plus, Target, TrendingUp, Calendar, Building2 } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Target, TrendingUp, Calendar, Building2, ExternalLink, ChevronDown, ChevronRight, BarChart3 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useExternalTargetsWithAchievements, useExternalConnection } from '@/hooks/useExternalData';
+import { ExternalDataService } from '@/services/external-data.service';
+import { supabase } from '@/integrations/supabase/client';
 
 interface QuarterlyTargetsManagementProps {
   user: User;
 }
 
 const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) => {
-  const [targets, setTargets] = useState<QuarterlyTarget[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [agencies, setAgencies] = useState<{id: string, name: string}[]>([]);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [currentUserName, setCurrentUserName] = useState<string | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
   const { toast } = useToast();
 
-  // Filter states for superuser
-  const [selectedAgency, setSelectedAgency] = useState('all');
+  // External data hooks
+  console.log('External hook called with user name:', currentUserName);
+  const {
+    targets: externalTargets,
+    isLoading: externalLoading,
+    error: externalError,
+    isAvailable: externalAvailable,
+    refetch: refetchTargets
+  } = useExternalTargetsWithAchievements(currentUserName);
+  
+  const { isConnected, stats } = useExternalConnection();
+  
+  console.log('External targets loaded:', {
+    count: externalTargets.length,
+    loading: externalLoading,
+    error: externalError,
+    available: externalAvailable
+  });
+  
+  // Debug: Log sample target data
+  if (externalTargets.length > 0) {
+    const sampleTarget = externalTargets[0];
+    console.log('📋 Sample external target:', {
+      customer_name: sampleTarget.customer_name,
+      target_months: sampleTarget.target_months,
+      target_year: sampleTarget.target_year,
+      initial_total_value: sampleTarget.initial_total_value,
+      adjusted_total_value: sampleTarget.adjusted_total_value,
+      achievement: sampleTarget.achievement
+    });
+    
+    // Test the parsing function
+    const parsedMonths = ExternalDataService.getInstance().parseTargetMonths(sampleTarget.target_months);
+    const quarter = ExternalDataService.getInstance().monthsToQuarter(parsedMonths);
+    console.log('🧪 Parsing test:', {
+      original: sampleTarget.target_months,
+      parsed: parsedMonths,
+      quarter: quarter
+    });
+  }
+
+  // Filter states for external targets only
   const [selectedQuarter, setSelectedQuarter] = useState('all');
   const [selectedYear, setSelectedYear] = useState('all');
+  
+  // Expandable card states
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+  const [categoryBreakdowns, setCategoryBreakdowns] = useState<Map<string, Array<{category: string, target: number, achieved: number, percentage: number}>>>(new Map());
 
-  // Filter states for agency users
-  const [agencySelectedQuarter, setAgencySelectedQuarter] = useState('all');
-  const [agencySelectedYear, setAgencySelectedYear] = useState('all');
-
-  // Form state for creating new targets
-  const [newTarget, setNewTarget] = useState({
-    quarter: 'Q1' as 'Q1' | 'Q2' | 'Q3' | 'Q4',
-    year: new Date().getFullYear().toString(),
-    productCategory: '',
-    targetAmount: '',
-    agencyId: ''
-  });
-
+  // Fetch user name from profiles table using the logged-in user ID
   useEffect(() => {
-    fetchTargets();
-    fetchCategories();
-    if (user.role === 'superuser') {
-      fetchAgencies();
-    }
-  }, [user]);
-
-  const fetchTargets = async () => {
-    try {
-      setIsLoading(true);
-      console.log('Fetching targets for user:', user.role, user.agencyId);
-
-      let query = supabase.from('quarterly_targets').select('*');
-
-      // Filter based on user role
-      if (user.role === 'agent' || user.role === 'agency') {
-        query = query.eq('agency_id', user.agencyId);
-      }
-
-      const { data: targetsData, error } = await query.order('created_at', { ascending: false });
-
-      if (error) throw error;
-
-      console.log('Fetched targets:', targetsData);
-
-      // Calculate achievements for each target
-      const targetsWithAchievements = await Promise.all(
-        (targetsData || []).map(async (target) => {
-          const achievement = await calculateAchievement(
-            target.quarter,
-            target.year,
-            target.product_category,
-            target.agency_id
-          );
-
-          return {
-            id: target.id,
-            quarter: target.quarter as 'Q1' | 'Q2' | 'Q3' | 'Q4',
-            year: target.year,
-            productCategory: target.product_category,
-            targetAmount: Number(target.target_amount),
-            achievedAmount: achievement,
-            agencyId: target.agency_id,
-            agencyName: target.agency_name,
-            createdBy: target.created_by,
-            createdAt: new Date(target.created_at),
-            updatedAt: new Date(target.updated_at)
-          };
-        })
-      );
-
-      setTargets(targetsWithAchievements);
-    } catch (error) {
-      console.error('Error fetching targets:', error);
-      toast({
-        title: "Error",
-        description: "Failed to load targets",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const calculateAchievement = async (quarter: string, year: number, category: string, agencyId?: string) => {
-    try {
-      console.log(`Calculating achievement for ${quarter} ${year}, category: ${category}, agency: ${agencyId}`);
-
-      // Define quarter date ranges
-      const quarterMap = {
-        'Q1': { start: 0, end: 2 }, // Jan-Mar (0-based months)
-        'Q2': { start: 3, end: 5 }, // Apr-Jun
-        'Q3': { start: 6, end: 8 }, // Jul-Sep
-        'Q4': { start: 9, end: 11 } // Oct-Dec
-      };
-
-      const quarterRange = quarterMap[quarter as keyof typeof quarterMap];
-      const startDate = new Date(year, quarterRange.start, 1);
-      const endDate = new Date(year, quarterRange.end + 1, 0); // Last day of the quarter
-
-      console.log(`Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
-
-      // Build query for invoices in the quarter
-      let invoicesQuery = supabase
-        .from('invoices')
-        .select('id')
-        .gte('created_at', startDate.toISOString())
-        .lte('created_at', endDate.toISOString());
-
-      // Filter by agency if specified
-      if (agencyId) {
-        invoicesQuery = invoicesQuery.eq('agency_id', agencyId);
-      }
-
-      const { data: invoices, error: invoicesError } = await invoicesQuery;
-
-      if (invoicesError) throw invoicesError;
-
-      if (!invoices || invoices.length === 0) {
-        console.log('No invoices found for the period');
-        return 0;
-      }
-
-      console.log(`Found ${invoices.length} invoices in the quarter`);
-
-      // Get invoice items for these invoices that match the category
-      const invoiceIds = invoices.map(inv => inv.id);
-      
-      const { data: invoiceItems, error: itemsError } = await supabase
-        .from('invoice_items')
-        .select(`
-          total,
-          products!inner(category)
-        `)
-        .in('invoice_id', invoiceIds)
-        .eq('products.category', category);
-
-      if (itemsError) throw itemsError;
-
-      console.log(`Found ${invoiceItems?.length || 0} invoice items for category ${category}`);
-
-      // Sum up the total amounts
-      const totalAchieved = (invoiceItems || []).reduce((sum, item) => {
-        return sum + Number(item.total);
-      }, 0);
-
-      console.log(`Total achieved: ${totalAchieved}`);
-      return totalAchieved;
-    } catch (error) {
-      console.error('Error calculating achievement:', error);
-      return 0;
-    }
-  };
-
-  const fetchCategories = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('category')
-        .not('category', 'is', null);
-
-      if (error) throw error;
-
-      const uniqueCategories = [...new Set(data.map(item => item.category))];
-      setCategories(uniqueCategories);
-    } catch (error) {
-      console.error('Error fetching categories:', error);
-    }
-  };
-
-  const fetchAgencies = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('agencies')
-        .select('id, name')
-        .order('name');
-
-      if (error) throw error;
-
-      setAgencies(data);
-    } catch (error) {
-      console.error('Error fetching agencies:', error);
-    }
-  };
-
-  const handleCreateTarget = async () => {
-    try {
-      if (!newTarget.productCategory || !newTarget.targetAmount || !newTarget.agencyId) {
-        toast({
-          title: "Error",
-          description: "Please fill in all required fields",
-          variant: "destructive"
-        });
+    const fetchUserNameFromProfile = async () => {
+      if (!user?.id) {
+        console.log('No user ID available');
+        setProfileLoading(false);
         return;
       }
 
-      const selectedAgency = agencies.find(a => a.id === newTarget.agencyId);
+      setProfileLoading(true);
+      try {
+        console.log('🔍 Fetching user name from profiles table for user ID:', user.id);
+        
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('name')
+          .eq('id', user.id)
+          .single();
 
-      const targetData = {
-        quarter: newTarget.quarter,
-        year: parseInt(newTarget.year),
-        product_category: newTarget.productCategory,
-        target_amount: Number(newTarget.targetAmount),
-        agency_id: newTarget.agencyId,
-        agency_name: selectedAgency?.name,
-        created_by: user.id
-      };
+        if (error) {
+          console.error('Error fetching user profile:', error);
+          // Fallback to user.name if profile fetch fails
+          setCurrentUserName(user.name || null);
+        } else {
+          console.log('✅ Found user name in profiles:', data.name);
+          setCurrentUserName(data.name || null);
+          // Trigger refetch when userName is found
+          setTimeout(() => {
+            console.log('🔄 Triggering manual refetch with new userName:', data.name);
+            refetchTargets();
+          }, 100);
+        }
+      } catch (error) {
+        console.error('Exception fetching user profile:', error);
+        // Fallback to user.name if there's an exception
+        setCurrentUserName(user.name || null);
+      } finally {
+        setProfileLoading(false);
+      }
+    };
 
-      const { error } = await supabase
-        .from('quarterly_targets')
-        .insert(targetData);
+    fetchUserNameFromProfile();
+  }, [user]);
 
-      if (error) throw error;
-
+  // Show external error if any
+  useEffect(() => {
+    if (externalError) {
       toast({
-        title: "Success",
-        description: "Target created successfully",
+        title: "External Data Warning",
+        description: `External data unavailable: ${externalError}`,
+        variant: "destructive",
       });
+    }
+  }, [externalError, toast]);
 
-      setShowCreateForm(false);
-      setNewTarget({
-        quarter: 'Q1',
-        year: new Date().getFullYear().toString(),
-        productCategory: '',
-        targetAmount: '',
-        agencyId: ''
+  // Process and filter external targets
+  const getFilteredData = () => {
+    try {
+      if (!externalTargets || !Array.isArray(externalTargets)) {
+        console.warn('externalTargets is not an array:', externalTargets);
+        return [];
+      }
+
+      const processedTargets = externalTargets.map(target => {
+        try {
+          if (!target) {
+            console.warn('Target is null/undefined:', target);
+            return null;
+          }
+
+          // Convert target_months to quarter using the service helper
+          const months = ExternalDataService.getInstance().parseTargetMonths(target.target_months);
+          const quarter = ExternalDataService.getInstance().monthsToQuarter(months);
+
+          return {
+            ...target,
+            quarter: quarter,
+            year: target.target_year || new Date().getFullYear(),
+            productCategory: `External Target (${target.target_months || 'Unknown'})`,
+            targetAmount: target.adjusted_total_value || target.initial_total_value || 0,
+            achievedAmount: target.achievement || 0, // Use pre-calculated achievement from hook
+            agencyName: target.customer_name || 'Unknown'
+          };
+        } catch (error) {
+          console.error('Error processing external target:', error, target);
+          // Return a safe fallback object
+          return {
+            id: target?.id || `fallback-${Math.random()}`,
+            quarter: 'Q1' as 'Q1',
+            year: target?.target_year || new Date().getFullYear(),
+            productCategory: `External Target (Invalid Data)`,
+            targetAmount: target?.adjusted_total_value || target?.initial_total_value || 0,
+            achievedAmount: target?.achievement || 0,
+            agencyName: target?.customer_name || 'Unknown',
+            target_months: target?.target_months || 'Q1',
+            customer_name: target?.customer_name || 'Unknown'
+          };
+        }
+      }).filter(Boolean); // Remove null entries
+
+      return processedTargets.filter(target => {
+        const matchesQuarter = selectedQuarter === 'all' || target.quarter === selectedQuarter;
+        const matchesYear = selectedYear === 'all' || target.year.toString() === selectedYear;
+        
+        return matchesQuarter && matchesYear;
       });
-      fetchTargets();
     } catch (error) {
-      console.error('Error creating target:', error);
-      toast({
-        title: "Error",
-        description: "Failed to create target",
-        variant: "destructive"
+      console.error('Error in getFilteredData:', error);
+      return [];
+    }
+  };
+
+  const filteredTargets = getFilteredData();
+
+  // Function to toggle card expansion and fetch category data
+  const toggleCardExpansion = async (cardId: string, target?: any) => {
+    setExpandedCards(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(cardId)) {
+        newSet.delete(cardId);
+      } else {
+        newSet.add(cardId);
+        // Fetch category breakdown when expanding
+        if (target && !categoryBreakdowns.has(cardId)) {
+          fetchCategoryBreakdown(cardId, target);
+        }
+      }
+      return newSet;
+    });
+  };
+
+  // Function to fetch category breakdown for a specific target
+  const fetchCategoryBreakdown = async (cardId: string, target: any) => {
+    try {
+      console.log('🔍 Fetching category breakdown for target:', cardId);
+      
+      // Find the original external target data
+      const originalTarget = externalTargets.find(t => 
+        (t.id && t.id === target.id) || 
+        `${target.quarter}-${target.year}-${target.agencyName}`.includes(cardId)
+      );
+      
+      if (!originalTarget) {
+        console.log('⚠️ Original target not found for category breakdown');
+        return;
+      }
+      
+      const breakdown = await ExternalDataService.getInstance().getCategoryBreakdown(originalTarget);
+      
+      setCategoryBreakdowns(prev => {
+        const newMap = new Map(prev);
+        newMap.set(cardId, breakdown);
+        return newMap;
+      });
+      
+      console.log('📊 Category breakdown loaded for', cardId, ':', breakdown);
+      
+    } catch (error) {
+      console.error('Error fetching category breakdown:', error);
+      // Set empty breakdown on error
+      setCategoryBreakdowns(prev => {
+        const newMap = new Map(prev);
+        newMap.set(cardId, []);
+        return newMap;
       });
     }
   };
 
-  // Filter targets for display based on user role
-  const filteredTargets = targets.filter(target => {
-    if (user.role === 'superuser') {
-      const matchesAgency = selectedAgency === 'all' || target.agencyId === selectedAgency;
-      const matchesQuarter = selectedQuarter === 'all' || target.quarter === selectedQuarter;
-      const matchesYear = selectedYear === 'all' || target.year.toString() === selectedYear;
-      
-      return matchesAgency && matchesQuarter && matchesYear;
-    } else {
-      // For agency/agent users, filter by their selected quarter and year
-      const matchesQuarter = agencySelectedQuarter === 'all' || target.quarter === agencySelectedQuarter;
-      const matchesYear = agencySelectedYear === 'all' || target.year.toString() === agencySelectedYear;
-      
-      return matchesQuarter && matchesYear;
-    }
-  });
 
-  // Calculate summary
-  const totalTarget = filteredTargets.reduce((sum, t) => sum + t.targetAmount, 0);
-  const totalAchieved = filteredTargets.reduce((sum, t) => sum + t.achievedAmount, 0);
+  // Calculate summary for external targets only
+  const totalTarget = filteredTargets.reduce((sum, t) => {
+    return sum + (Number(t.targetAmount) || 0);
+  }, 0);
+  
+  const totalAchieved = filteredTargets.reduce((sum, t) => {
+    return sum + (Number(t.achievedAmount) || 0);
+  }, 0);
+  
   const achievementPercentage = totalTarget > 0 ? (totalAchieved / totalTarget) * 100 : 0;
 
   const quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
-  const years = [...new Set(targets.map(t => t.year))].sort((a, b) => b - a);
+  const years = [...new Set((externalTargets || []).map(t => t.target_year).filter(Boolean))].sort((a, b) => b - a);
 
-  if (isLoading) {
+  if (profileLoading || externalLoading) {
     return (
       <div className="text-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-        <p className="mt-2 text-gray-600">Loading targets...</p>
+        <p className="mt-2 text-gray-600">
+          {profileLoading ? 'Loading user profile...' : 'Loading targets...'}
+        </p>
       </div>
     );
   }
 
-  return (
-    <div className="space-y-6">
+  // Add error handling for rendering
+  try {
+    return (
+      <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Quarterly Targets</h2>
+          <h2 className="text-2xl font-bold text-gray-900">External Sales Targets</h2>
           <p className="text-gray-600">
-            {user.role === 'superuser' 
-              ? 'Manage and view all agency targets'
-              : user.role === 'agency'
-              ? 'View your agency targets'
-              : 'View your assigned targets'
-            }
+            Sales targets from external system for {currentUserName || 'current user'}
           </p>
         </div>
-        {user.role === 'superuser' && (
-          <Button 
-            onClick={() => setShowCreateForm(!showCreateForm)}
-            className="bg-blue-600 hover:bg-blue-700"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Set New Target
-          </Button>
-        )}
       </div>
 
       {/* Summary Cards */}
@@ -362,211 +318,100 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
         </Card>
       </div>
 
-      {/* Create Form for Superuser */}
-      {showCreateForm && user.role === 'superuser' && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Set New Quarterly Target</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>Agency *</Label>
-                <Select value={newTarget.agencyId} onValueChange={(value) => setNewTarget({...newTarget, agencyId: value})}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select agency" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {agencies.map((agency) => (
-                      <SelectItem key={agency.id} value={agency.id}>
-                        {agency.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Quarter *</Label>
-                <Select value={newTarget.quarter} onValueChange={(value) => setNewTarget({...newTarget, quarter: value as 'Q1' | 'Q2' | 'Q3' | 'Q4'})}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {quarters.map((quarter) => (
-                      <SelectItem key={quarter} value={quarter}>
-                        {quarter}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Year *</Label>
-                <Select value={newTarget.year} onValueChange={(value) => setNewTarget({...newTarget, year: value})}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="2024">2024</SelectItem>
-                    <SelectItem value="2025">2025</SelectItem>
-                    <SelectItem value="2026">2026</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Product Category *</Label>
-                <Select value={newTarget.productCategory} onValueChange={(value) => setNewTarget({...newTarget, productCategory: value})}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map((category) => (
-                      <SelectItem key={category} value={category}>
-                        {category}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Target Amount (Rs) *</Label>
-                <Input
-                  type="number"
-                  placeholder="Enter target amount"
-                  value={newTarget.targetAmount}
-                  onChange={(e) => setNewTarget({...newTarget, targetAmount: e.target.value})}
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <Button 
-                onClick={handleCreateTarget} 
-                className="bg-blue-600 hover:bg-blue-700"
-                disabled={!newTarget.productCategory || !newTarget.targetAmount || !newTarget.agencyId}
-              >
-                Create Target
-              </Button>
-              <Button variant="outline" onClick={() => setShowCreateForm(false)}>
-                Cancel
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* External Data Info */}
+      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+        <div className="flex items-center gap-2">
+          <ExternalLink className="h-5 w-5 text-green-600" />
+          <h3 className="font-medium text-green-900">
+            External Sales Targets - Sales targets from external system
+          </h3>
+        </div>
+        <p className="text-sm text-green-700 mt-1">
+          Showing {externalTargets.length} external targets filtered by user: {currentUserName || 'N/A'}
+        </p>
+        <div className="flex items-center gap-4 mt-2">
+          <span className="text-sm">Connection: {isConnected ? '✅ Connected' : '❌ Disconnected'}</span>
+          {stats && (
+            <>
+              <span className="text-sm">Targets: {stats.targetsCount}</span>
+              <span className="text-sm">Invoices: {stats.invoicesCount}</span>
+            </>
+          )}
+        </div>
+        {!externalAvailable && (
+          <p className="text-sm text-orange-600 mt-1">
+            ⚠️ External data service not available. Check configuration.
+          </p>
+        )}
+      </div>
 
       {/* Filters */}
-      {user.role === 'superuser' ? (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Select value={selectedAgency} onValueChange={setSelectedAgency}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Agencies" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Agencies</SelectItem>
-              {agencies.map((agency) => (
-                <SelectItem key={agency.id} value={agency.id}>
-                  {agency.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Select value={selectedQuarter} onValueChange={setSelectedQuarter}>
+          <SelectTrigger>
+            <SelectValue placeholder="All Quarters" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Quarters</SelectItem>
+            {quarters.map((quarter) => (
+              <SelectItem key={quarter} value={quarter}>
+                {quarter}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-          <Select value={selectedQuarter} onValueChange={setSelectedQuarter}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Quarters" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Quarters</SelectItem>
-              {quarters.map((quarter) => (
-                <SelectItem key={quarter} value={quarter}>
-                  {quarter}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <Select value={selectedYear} onValueChange={setSelectedYear}>
+          <SelectTrigger>
+            <SelectValue placeholder="All Years" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Years</SelectItem>
+            {years.map((year) => (
+              <SelectItem key={year} value={year.toString()}>
+                {year}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-          <Select value={selectedYear} onValueChange={setSelectedYear}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Years" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Years</SelectItem>
-              {years.map((year) => (
-                <SelectItem key={year} value={year.toString()}>
-                  {year}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <Button variant="outline" onClick={() => {
+          setSelectedQuarter('all');
+          setSelectedYear('all');
+        }}>
+          Clear Filters
+        </Button>
+      </div>
 
-          <Button variant="outline" onClick={() => {
-            setSelectedAgency('all');
-            setSelectedQuarter('all');
-            setSelectedYear('all');
-          }}>
-            Clear Filters
-          </Button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Select value={agencySelectedQuarter} onValueChange={setAgencySelectedQuarter}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Quarters" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Quarters</SelectItem>
-              {quarters.map((quarter) => (
-                <SelectItem key={quarter} value={quarter}>
-                  {quarter}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={agencySelectedYear} onValueChange={setAgencySelectedYear}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Years" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Years</SelectItem>
-              {years.map((year) => (
-                <SelectItem key={year} value={year.toString()}>
-                  {year}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Button variant="outline" onClick={() => {
-            setAgencySelectedQuarter('all');
-            setAgencySelectedYear('all');
-          }}>
-            Clear Filters
-          </Button>
-        </div>
-      )}
-
-      {/* Targets List */}
+      {/* External Targets List */}
       <div className="space-y-4">
-        {filteredTargets.map((target) => {
-          const progress = target.targetAmount > 0 ? (target.achievedAmount / target.targetAmount) * 100 : 0;
-          const isOnTrack = progress >= 75;
-          
-          return (
-            <Card key={target.id}>
+        {filteredTargets.map((target, index) => {
+          try {
+            const targetAmount = Number(target.targetAmount) || 0;
+            const achievedAmount = Number(target.achievedAmount) || 0;
+            const progress = targetAmount > 0 ? (achievedAmount / targetAmount) * 100 : 0;
+            const isOnTrack = progress >= 75;
+            const cardId = target.id || `${target.quarter}-${target.year}-${index}`;
+            const isExpanded = expandedCards.has(cardId);
+            
+            // Get real category breakdown from state
+            const categoryBreakdown = categoryBreakdowns.get(cardId) || [];
+            
+            return (
+            <Card key={cardId}>
               <CardContent className="p-6">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-4">
-                    <div className="bg-blue-100 rounded-lg p-3">
-                      <Target className="h-6 w-6 text-blue-600" />
+                    <div className="rounded-lg p-3 bg-green-100">
+                      <ExternalLink className="h-6 w-6 text-green-600" />
                     </div>
                     <div>
-                      <h3 className="text-lg font-semibold">{target.productCategory}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-semibold">{target.productCategory}</h3>
+                        <Badge variant="outline" className="text-xs">
+                          External
+                        </Badge>
+                      </div>
                       <div className="flex items-center gap-2 text-sm text-gray-600">
                         <Calendar className="h-4 w-4" />
                         <span>{target.quarter} {target.year}</span>
@@ -580,19 +425,29 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                       </div>
                     </div>
                   </div>
-                  <Badge variant={isOnTrack ? 'default' : 'secondary'}>
-                    {isOnTrack ? 'On Track' : 'Behind Target'}
-                  </Badge>
+                  <div className="flex gap-2 items-center">
+                    <Badge variant={isOnTrack ? 'default' : 'secondary'}>
+                      {isOnTrack ? 'On Track' : 'Behind Target'}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => toggleCardExpansion(cardId, target)}
+                      className="p-2"
+                    >
+                      {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div>
                     <p className="text-sm text-gray-600">Target Amount</p>
-                    <p className="text-xl font-semibold">Rs {target.targetAmount.toLocaleString()}</p>
+                    <p className="text-xl font-semibold">Rs {targetAmount.toLocaleString()}</p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-600">Achieved</p>
-                    <p className="text-xl font-semibold">Rs {target.achievedAmount.toLocaleString()}</p>
+                    <p className="text-xl font-semibold">Rs {achievedAmount.toLocaleString()}</p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-600">Progress</p>
@@ -600,27 +455,105 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                   </div>
                 </div>
 
-                <Progress value={progress} className="h-3" />
+                <Progress value={progress} className="h-3 mb-4" />
+
+                {/* Expandable Category Breakdown */}
+                <Collapsible open={isExpanded} onOpenChange={() => toggleCardExpansion(cardId, target)}>
+                  <CollapsibleTrigger asChild>
+                    <Button variant="outline" className="w-full flex items-center justify-center gap-2">
+                      <BarChart3 className="h-4 w-4" />
+                      Category Breakdown
+                      {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-4">
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <h4 className="text-sm font-medium text-gray-900 mb-3 flex items-center gap-2">
+                        <BarChart3 className="h-4 w-4" />
+                        Performance by Category
+                      </h4>
+                      <div className="space-y-3">
+                        {categoryBreakdown.map((category, catIndex) => {
+                          const categoryProgress = category.target > 0 ? (category.achieved / category.target) * 100 : 0;
+                          return (
+                            <div key={catIndex} className="bg-white rounded p-3">
+                              <div className="flex justify-between items-center mb-2">
+                                <span className="text-sm font-medium">{category.category}</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {category.percentage.toFixed(1)}% of total
+                                </Badge>
+                              </div>
+                              <div className="grid grid-cols-3 gap-4 text-xs text-gray-600 mb-2">
+                                <div>
+                                  <span className="block">Target</span>
+                                  <span className="font-medium text-gray-900">Rs {category.target.toLocaleString()}</span>
+                                </div>
+                                <div>
+                                  <span className="block">Achieved</span>
+                                  <span className="font-medium text-gray-900">Rs {category.achieved.toLocaleString()}</span>
+                                </div>
+                                <div>
+                                  <span className="block">Progress</span>
+                                  <span className="font-medium text-gray-900">{categoryProgress.toFixed(1)}%</span>
+                                </div>
+                              </div>
+                              <Progress value={categoryProgress} className="h-2" />
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 pt-3 border-t text-xs text-gray-500">
+                        <p>* Category breakdown is estimated based on historical data patterns</p>
+                      </div>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               </CardContent>
             </Card>
-          );
+            );
+          } catch (cardError) {
+            console.error('Error rendering target card:', cardError, target);
+            return (
+              <Card key={`error-${index}`}>
+                <CardContent className="p-6">
+                  <div className="text-red-600">
+                    <h3>Error rendering target card</h3>
+                    <p className="text-sm">{cardError instanceof Error ? cardError.message : 'Unknown error'}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          }
         })}
       </div>
 
       {filteredTargets.length === 0 && (
         <div className="text-center py-12">
-          <Target className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No targets found</h3>
+          <ExternalLink className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">No external targets found</h3>
           <p className="text-gray-600">
-            {user.role === 'superuser' 
-              ? 'No targets have been set yet. Create your first target to get started.'
-              : 'No targets have been assigned to you yet.'
-            }
+            No external sales targets found for {currentUserName || 'current user'}. 
+            {!externalAvailable && ' External data service may not be configured.'}
           </p>
         </div>
       )}
     </div>
-  );
+    );
+  } catch (error) {
+    console.error('Error rendering QuarterlyTargetsManagement:', error);
+    return (
+      <div className="p-6 bg-red-50 border border-red-200 rounded-lg">
+        <h3 className="text-lg font-semibold text-red-900 mb-2">Error Loading Targets</h3>
+        <p className="text-red-700">There was an error loading the targets page. Please check the console for details.</p>
+        <details className="mt-4">
+          <summary className="cursor-pointer text-red-600">Error Details</summary>
+          <pre className="mt-2 text-xs bg-red-100 p-2 rounded overflow-auto">
+            {error instanceof Error ? error.message : String(error)}
+          </pre>
+        </details>
+      </div>
+    );
+  }
 };
 
 export default QuarterlyTargetsManagement;

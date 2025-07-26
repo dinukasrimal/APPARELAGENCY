@@ -17,10 +17,9 @@ import InAppCamera from '@/components/camera/InAppCamera';
 interface Customer {
   id: string;
   name: string;
-  storename: string;
   address: string;
-  mobile: string;
-  email: string;
+  phone: string;
+  agency_id: string;
   latitude?: number;
   longitude?: number;
 }
@@ -83,7 +82,7 @@ const Assets = ({ user }: AssetsProps) => {
       console.log('Assets: Fetching customers for user:', user);
       const { data, error } = await supabase
         .from('customers')
-        .select('id, name, storename, address, mobile, email, latitude, longitude')
+        .select('id, name, address, phone, agency_id, latitude, longitude')
         .order('name');
 
       if (error) {
@@ -116,7 +115,7 @@ const Assets = ({ user }: AssetsProps) => {
         .from('customer_assets')
         .select(`
           *,
-          customer:customers(id, name, storename, address, mobile, email)
+          customer:customers(id, name, address, phone)
         `)
         .order('created_at', { ascending: false });
 
@@ -207,7 +206,7 @@ const Assets = ({ user }: AssetsProps) => {
         ])
         .select(`
           *,
-          customer:customers(id, name, storename, address, mobile, email)
+          customer:customers(id, name, address, phone)
         `);
 
       if (error) {
@@ -249,11 +248,10 @@ const Assets = ({ user }: AssetsProps) => {
   const filteredAssets = assets.filter(asset => {
     const matchesSearch = asset.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          asset.asset_type.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         asset.customer?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         asset.customer?.storename.toLowerCase().includes(searchTerm.toLowerCase());
+                         asset.customer?.name.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesCustomer = filterCustomer === '' || asset.customer_id === filterCustomer;
-    const matchesAssetType = filterAssetType === '' || asset.asset_type === filterAssetType;
+    const matchesCustomer = filterCustomer === '' || filterCustomer === 'all' || asset.customer_id === filterCustomer;
+    const matchesAssetType = filterAssetType === '' || filterAssetType === 'all' || asset.asset_type === filterAssetType;
     
     return matchesSearch && matchesCustomer && matchesAssetType;
   });
@@ -299,7 +297,7 @@ const Assets = ({ user }: AssetsProps) => {
                   <SelectContent>
                     {customers.map((customer) => (
                       <SelectItem key={customer.id} value={customer.id}>
-                        {customer.name} - {customer.storename}
+                        {customer.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -402,10 +400,10 @@ const Assets = ({ user }: AssetsProps) => {
             <SelectValue placeholder="Filter by customer" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All customers</SelectItem>
+            <SelectItem value="all">All customers</SelectItem>
             {customers.map((customer) => (
               <SelectItem key={customer.id} value={customer.id}>
-                {customer.name} - {customer.storename}
+                {customer.name}
               </SelectItem>
             ))}
           </SelectContent>
@@ -416,7 +414,7 @@ const Assets = ({ user }: AssetsProps) => {
             <SelectValue placeholder="Filter by asset type" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All asset types</SelectItem>
+            <SelectItem value="all">All asset types</SelectItem>
             {assetTypes.map((type) => (
               <SelectItem key={type} value={type}>
                 {type}
@@ -450,7 +448,7 @@ const Assets = ({ user }: AssetsProps) => {
                 
                 <div className="flex items-center gap-2 text-sm text-gray-500">
                   <UserIcon className="h-3 w-3" />
-                  <span>{asset.customer?.name} - {asset.customer?.storename}</span>
+                  <span>{asset.customer?.name}</span>
                 </div>
                 
                 <div className="flex items-center gap-2 text-sm text-gray-500">

@@ -8,7 +8,15 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:external": "node scripts/test-external-connection.js",
+    "check:agencies": "node scripts/check-agencies.js",
+    "add:agencies": "node scripts/add-agencies.js",
+    "test:profiles": "node scripts/test-profile-agencies.js",
+    "test:fuzzy": "node scripts/test-fuzzy-matching.js",
+    "test:integration": "node scripts/test-complete-integration.js",
+    "test:final": "node scripts/test-final-integration.js",
+    "debug:nexus": "node scripts/debug-nexus-user.js"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^7.0.0",
@@ -56,6 +64,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",
     "date-fns": "^3.6.0",
+    "dotenv": "^17.2.1",
     "embla-carousel-react": "^8.3.0",
     "input-otp": "^1.2.4",
     "leaflet": "^1.9.4",
