@@ -1,0 +1,721 @@
+import { useState, useEffect } from 'react';
+import { User } from '@/types/auth';
+import { Customer } from '@/types/customer';
+import { Product } from '@/types/product';
+import { SalesOrderItem } from '@/types/sales';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { ArrowLeft, MapPin, Plus, Trash2, ShoppingCart, Save, AlertTriangle } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
+import CustomerSearch from '@/components/customers/CustomerSearch';
+import { useDraftSalesOrder } from '@/hooks/useDraftSalesOrder';
+
+interface EnhancedSalesOrderFormProps {
+  user: User;
+  customers: Customer[];
+  products: Product[];
+  onSuccess: () => void;
+  onCancel: () => void;
+  editingOrder?: any; // For editing existing orders
+}
+
+interface OrderSummaryItem extends SalesOrderItem {
+  tempId: string;
+}
+
+const EnhancedSalesOrderForm = ({ 
+  user, 
+  customers, 
+  products, 
+  onSuccess, 
+  onCancel,
+  editingOrder 
+}: EnhancedSalesOrderFormProps) => {
+  const { 
+    draft, 
+    hasUnsavedChanges, 
+    updateCustomer, 
+    updateItems, 
+    updateDiscount, 
+    resetOrder, 
+    clearDraft, 
+    changeCustomer 
+  } = useDraftSalesOrder();
+
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedSubCategory, setSelectedSubCategory] = useState('');
+  const [selectedColor, setSelectedColor] = useState('');
+  const [productGridItems, setProductGridItems] = useState<Array<{
+    product: Product;
+    color: string;
+    sizes: Array<{ size: string; quantity: number; }>;
+  }>>([]);
+  const [orderSummary, setOrderSummary] = useState<OrderSummaryItem[]>([]);
+  const [discountPercentage, setDiscountPercentage] = useState(0);
+  const [discountAmountInput, setDiscountAmountInput] = useState(0);
+  const [discountType, setDiscountType] = useState('percentage');
+  const [gpsCoordinates, setGpsCoordinates] = useState({ latitude: 0, longitude: 0 });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const { toast } = useToast();
+
+  // Load draft or editing order on mount
+  useEffect(() => {
+    if (editingOrder) {
+      setIsEditing(true);
+      const customer = customers.find(c => c.id === editingOrder.customerId);
+      if (customer) {
+        setSelectedCustomer(customer);
+        updateCustomer(customer);
+      }
+      
+      const orderItems = editingOrder.items.map((item: any) => ({
+        ...item,
+        tempId: `${item.productId}-${item.color}-${item.size}-${Date.now()}`
+      }));
+      setOrderSummary(orderItems);
+      updateItems(orderItems);
+      setDiscountPercentage(editingOrder.discountPercentage || 20);
+      updateDiscount(editingOrder.discountPercentage || 20);
+    } else if (draft.customerId && !isEditing) {
+      // Load from draft
+      const customer = customers.find(c => c.id === draft.customerId);
+      if (customer) {
+        setSelectedCustomer(customer);
+      }
+      
+      const draftItems = draft.items.map(item => ({
+        ...item,
+        tempId: `${item.productId}-${item.color}-${item.size}-${Date.now()}`
+      }));
+      setOrderSummary(draftItems);
+      setDiscountPercentage(draft.discountPercentage);
+    }
+  }, [editingOrder, draft, customers, isEditing, updateCustomer, updateItems, updateDiscount]);
+
+  // Save to draft on changes
+  useEffect(() => {
+    if (!isEditing && selectedCustomer) {
+      updateCustomer(selectedCustomer);
+    }
+  }, [selectedCustomer, isEditing, updateCustomer]);
+
+  useEffect(() => {
+    if (!isEditing) {
+      updateItems(orderSummary);
+    }
+  }, [orderSummary, isEditing, updateItems]);
+
+  useEffect(() => {
+    if (!isEditing) {
+      updateDiscount(discountPercentage);
+    }
+  }, [discountPercentage, isEditing, updateDiscount]);
+
+  const handleCustomerSelect = (customer: Customer) => {
+    setSelectedCustomer(customer);
+  };
+
+  const handleCustomerChange = () => {
+    setSelectedCustomer(null);
+    changeCustomer();
+    setOrderSummary([]);
+    setDiscountPercentage(20);
+    toast({
+      title: "Customer Changed",
+      description: "Order has been reset due to customer change"
+    });
+  };
+
+  // ... keep existing code (categories, subCategories, colors logic)
+  const categories = [...new Set(products.map(p => p.category))];
+  const subCategories = selectedCategory 
+    ? [...new Set(products.filter(p => p.category === selectedCategory).map(p => p.subCategory))]
+    : [];
+  const colors = selectedCategory && selectedSubCategory
+    ? [...new Set(products
+        .filter(p => p.category === selectedCategory && p.subCategory === selectedSubCategory)
+        .flatMap(p => p.colors))]
+    : [];
+
+  useEffect(() => {
+    if (selectedCategory && selectedSubCategory && selectedColor) {
+      const filteredProducts = products.filter(p => 
+        p.category === selectedCategory && 
+        p.subCategory === selectedSubCategory && 
+        p.colors.includes(selectedColor)
+      );
+
+      setProductGridItems(filteredProducts.map(product => ({
+        product,
+        color: selectedColor,
+        sizes: product.sizes.map(size => ({ size, quantity: 0 }))
+      })));
+    } else {
+      setProductGridItems([]);
+    }
+  }, [selectedCategory, selectedSubCategory, selectedColor, products]);
+
+  const updateQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
+    setProductGridItems(prev => prev.map((item, pIdx) => 
+      pIdx === productIndex 
+        ? {
+            ...item,
+            sizes: item.sizes.map((sizeItem, sIdx) => 
+              sIdx === sizeIndex ? { ...sizeItem, quantity: Math.max(0, quantity) } : sizeItem
+            )
+          }
+        : item
+    ));
+  };
+
+  const addToOrderSummary = () => {
+    const itemsToAdd: OrderSummaryItem[] = [];
+    
+    productGridItems.forEach(gridItem => {
+      gridItem.sizes.forEach(sizeItem => {
+        if (sizeItem.quantity > 0) {
+          itemsToAdd.push({
+            tempId: `${gridItem.product.id}-${gridItem.color}-${sizeItem.size}-${Date.now()}`,
+            id: '',
+            productId: gridItem.product.id,
+            productName: gridItem.product.name,
+            color: gridItem.color,
+            size: sizeItem.size,
+            quantity: sizeItem.quantity,
+            unitPrice: gridItem.product.sellingPrice,
+            total: gridItem.product.sellingPrice * sizeItem.quantity
+          });
+        }
+      });
+    });
+
+    if (itemsToAdd.length === 0) {
+      toast({
+        title: "No items to add",
+        description: "Please enter quantities for the products you want to add",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setOrderSummary(prev => [...prev, ...itemsToAdd]);
+    
+    // Reset the grid
+    setProductGridItems(prev => prev.map(item => ({
+      ...item,
+      sizes: item.sizes.map(size => ({ ...size, quantity: 0 }))
+    })));
+
+    toast({
+      title: "Items added",
+      description: `${itemsToAdd.length} item(s) added to order summary`
+    });
+  };
+
+  const removeFromOrderSummary = (tempId: string) => {
+    setOrderSummary(prev => prev.filter(item => item.tempId !== tempId));
+  };
+
+  // ... keep existing code (captureGPS function)
+  const captureGPS = async (): Promise<{ latitude: number; longitude: number }> => {
+    try {
+      if (navigator.geolocation) {
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(
+            resolve,
+            reject,
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+          );
+        });
+
+        return {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        };
+      } else {
+        throw new Error('Geolocation not supported');
+      }
+    } catch (error) {
+      // Fallback for demo
+      return {
+        latitude: 7.8731 + Math.random() * 0.01,
+        longitude: 80.7718 + Math.random() * 0.01
+      };
+    }
+  };
+
+  const calculateTotals = () => {
+    const subtotal = orderSummary.reduce((sum, item) => sum + item.total, 0);
+    const discountAmount = (subtotal * discountPercentage) / 100;
+    const total = subtotal - discountAmount;
+
+    return { subtotal, discountAmount, total };
+  };
+
+  const createInventoryTransactions = async (salesOrderId: string, orderItems: OrderSummaryItem[]) => {
+    try {
+      const transactions = orderItems.map(item => ({
+        product_id: item.productId,
+        product_name: item.productName,
+        color: item.color,
+        size: item.size,
+        transaction_type: 'invoice_creation',
+        quantity: -item.quantity, // Negative for stock reduction
+        reference_id: salesOrderId,
+        reference_name: `Sales Order ${salesOrderId}`,
+        user_id: user.id,
+        agency_id: user.agencyId,
+        notes: `Stock reduced for sales order ${salesOrderId}`
+      }));
+
+      // Use the edge function to insert inventory transactions
+      const { error } = await supabase.functions.invoke('insert-inventory-transactions', {
+        body: { transactions }
+      });
+
+      if (error) {
+        console.error('Error creating inventory transactions:', error);
+        // Don't throw error to prevent order creation failure
+        console.log('Continuing without inventory tracking...');
+      }
+    } catch (error) {
+      console.error('Error calling inventory transaction function:', error);
+      // Don't throw error to prevent order creation failure
+    }
+  };
+
+  const submitSalesOrder = async () => {
+    if (!selectedCustomer || orderSummary.length === 0) {
+      toast({
+        title: "Missing information",
+        description: "Please select customer and add items",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsSubmitting(true);
+    
+    try {
+      // Capture GPS coordinates automatically on save
+      toast({
+        title: "Capturing location",
+        description: "Getting GPS coordinates..."
+      });
+
+      const coords = await captureGPS();
+      setGpsCoordinates(coords);
+
+      const { subtotal, discountAmount, total } = calculateTotals();
+      
+      // Determine if approval is required and status based on discount
+      const requiresApproval = discountPercentage > 20;
+      const status = requiresApproval ? 'pending' : 'approved';
+
+      let salesOrderData;
+      let orderData;
+
+      if (isEditing && editingOrder) {
+        // Update existing order
+        salesOrderData = {
+          customer_id: selectedCustomer.id,
+          customer_name: selectedCustomer.name,
+          subtotal,
+          discount_percentage: discountPercentage,
+          discount_amount: discountAmount,
+          total,
+          status,
+          requires_approval: requiresApproval,
+          latitude: coords.latitude,
+          longitude: coords.longitude
+        };
+
+        const { data, error: orderError } = await supabase
+          .from('sales_orders')
+          .update(salesOrderData)
+          .eq('id', editingOrder.id)
+          .select()
+          .single();
+
+        if (orderError) throw orderError;
+        orderData = data;
+
+        // Delete existing items and insert new ones
+        await supabase
+          .from('sales_order_items')
+          .delete()
+          .eq('sales_order_id', editingOrder.id);
+      } else {
+        // Create new order
+        salesOrderData = {
+          customer_id: selectedCustomer.id,
+          customer_name: selectedCustomer.name,
+          agency_id: user.agencyId,
+          subtotal,
+          discount_percentage: discountPercentage,
+          discount_amount: discountAmount,
+          total,
+          status,
+          requires_approval: requiresApproval,
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          created_by: user.id
+        };
+
+        const { data, error: orderError } = await supabase
+          .from('sales_orders')
+          .insert(salesOrderData)
+          .select()
+          .single();
+
+        if (orderError) throw orderError;
+        orderData = data;
+      }
+
+      // Create order items
+      const orderItems = orderSummary.map(item => ({
+        sales_order_id: orderData.id,
+        product_id: item.productId,
+        product_name: item.productName,
+        color: item.color,
+        size: item.size,
+        quantity: item.quantity,
+        unit_price: item.unitPrice,
+        total: item.total
+      }));
+
+      const { error: itemsError } = await supabase
+        .from('sales_order_items')
+        .insert(orderItems);
+
+      if (itemsError) throw itemsError;
+
+      // Create inventory transactions for stock reduction if order is approved
+      if (status === 'approved') {
+        await createInventoryTransactions(orderData.id, orderSummary);
+      }
+
+      toast({
+        title: "Sales Order Saved",
+        description: `Order ${orderData.id} has been ${requiresApproval ? 'submitted for approval' : 'approved'} ${discountPercentage > 0 ? `with ${discountPercentage}% discount` : ''}`
+      });
+
+      // Clear draft if not editing
+      if (!isEditing) {
+        clearDraft();
+      }
+
+      onSuccess();
+    } catch (error) {
+      console.error('Error saving sales order:', error);
+      toast({
+        title: "Error",
+        description: "Failed to save sales order",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const { subtotal, discountAmount, total } = calculateTotals();
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-4">
+        <Button variant="outline" size="sm" onClick={onCancel}>
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Back
+        </Button>
+        <div className="flex-1">
+          <h2 className="text-2xl font-bold text-gray-900">
+            {isEditing ? 'Edit Sales Order' : 'Create Sales Order'}
+          </h2>
+          {hasUnsavedChanges && !isEditing && (
+            <p className="text-sm text-orange-600 flex items-center gap-1">
+              <AlertTriangle className="h-4 w-4" />
+              You have unsaved changes in draft
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Panel - Product Selection */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Customer Selection */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Customer Selection</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <CustomerSearch
+                customers={customers}
+                selectedCustomer={selectedCustomer}
+                onCustomerSelect={handleCustomerSelect}
+                onCustomerChange={handleCustomerChange}
+                disabled={isSubmitting}
+              />
+              
+              {gpsCoordinates.latitude !== 0 && (
+                <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-green-600" />
+                    <span className="text-sm font-medium text-green-800">Location will be captured on save</span>
+                  </div>
+                  <p className="text-xs text-green-600 mt-1">
+                    Current: {gpsCoordinates.latitude.toFixed(6)}, {gpsCoordinates.longitude.toFixed(6)}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Product Selection */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Product Selection</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Categories Selection */}
+              <div>
+                <Label className="text-base font-semibold mb-3 block">Select Category</Label>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {categories.map((category) => (
+                    <Card
+                      key={category}
+                      className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                        selectedCategory === category ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+                      }`}
+                      onClick={() => {
+                        setSelectedCategory(category);
+                        setSelectedSubCategory('');
+                        setSelectedColor('');
+                      }}
+                    >
+                      <CardContent className="p-4 text-center">
+                        <h3 className="font-semibold text-sm">{category}</h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {products.filter(p => p.category === category).length} products
+                        </p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+
+              {/* Sub Categories Selection */}
+              {selectedCategory && (
+                <div>
+                  <Label className="text-base font-semibold mb-3 block">Select Sub Category</Label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {subCategories.map((subCategory) => (
+                      <Card
+                        key={subCategory}
+                        className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                          selectedSubCategory === subCategory ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+                        }`}
+                        onClick={() => {
+                          setSelectedSubCategory(subCategory);
+                          setSelectedColor('');
+                        }}
+                      >
+                        <CardContent className="p-4 text-center">
+                          <h3 className="font-semibold text-sm">{subCategory}</h3>
+                          <p className="text-xs text-gray-500 mt-1">
+                            {products.filter(p => p.category === selectedCategory && p.subCategory === subCategory).length} products
+                          </p>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Colors Selection */}
+              {selectedSubCategory && (
+                <div>
+                  <Label className="text-base font-semibold mb-3 block">Select Color</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {colors.map((color) => (
+                      <Badge
+                        key={color}
+                        variant={selectedColor === color ? "default" : "outline"}
+                        className={`cursor-pointer py-2 px-4 text-sm transition-all duration-200 hover:scale-105 ${
+                          selectedColor === color ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'
+                        }`}
+                        onClick={() => setSelectedColor(color)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="w-3 h-3 rounded-full border border-gray-300"
+                            style={{ backgroundColor: color.toLowerCase() }}
+                          />
+                          {color}
+                        </div>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Product Grid */}
+              {productGridItems.length > 0 && (
+                <div className="space-y-4">
+                  <h4 className="font-medium">Enter Quantities</h4>
+                  <div className="space-y-4 max-h-96 overflow-y-auto">
+                    {productGridItems.map((gridItem, productIndex) => (
+                      <div key={gridItem.product.id} className="border rounded-lg p-4">
+                        <h5 className="font-medium mb-3">{gridItem.product.name}</h5>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          {gridItem.sizes.map((sizeItem, sizeIndex) => (
+                            <div key={sizeItem.size} className="space-y-1">
+                              <Label className="text-sm">{sizeItem.size}</Label>
+                              <Input
+                                type="number"
+                                min="0"
+                                value={sizeItem.quantity}
+                                onChange={(e) => updateQuantity(productIndex, sizeIndex, parseInt(e.target.value) || 0)}
+                                placeholder="Qty"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <Button onClick={addToOrderSummary} className="w-full">
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add to Order Summary
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Right Panel - Order Summary */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ShoppingCart className="h-5 w-5" />
+                Order Summary ({orderSummary.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {orderSummary.length === 0 ? (
+                <p className="text-gray-500 text-center py-4">No items added yet</p>
+              ) : (
+                <div className="space-y-3">
+                  <div className="max-h-64 overflow-y-auto space-y-2">
+                    {orderSummary.map((item) => (
+                      <div key={item.tempId} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                        <div className="flex-1">
+                          <p className="font-medium text-sm">{item.productName}</p>
+                          <p className="text-xs text-gray-600">{item.color}, {item.size} × {item.quantity}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">LKR {item.total.toLocaleString()}</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => removeFromOrderSummary(item.tempId)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Discount Section */}
+                  <div className="border-t pt-3 space-y-3">
+                    <div>
+                      <Label>Discount Type</Label>
+                      <div className="flex gap-4 mt-1">
+                        <label className="flex items-center gap-1">
+                          <input
+                            type="radio"
+                            name="discountType"
+                            value="percentage"
+                            checked={discountType === 'percentage'}
+                            onChange={() => setDiscountType('percentage')}
+                          />
+                          Percentage (%)
+                        </label>
+                        <label className="flex items-center gap-1">
+                          <input
+                            type="radio"
+                            name="discountType"
+                            value="amount"
+                            checked={discountType === 'amount'}
+                            onChange={() => setDiscountType('amount')}
+                          />
+                          Fixed Amount (LKR)
+                        </label>
+                      </div>
+                    </div>
+                    <div>
+                      <Label>{discountType === 'percentage' ? 'Discount (%)' : 'Discount Amount (LKR)'}</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        max={discountType === 'percentage' ? '100' : undefined}
+                        value={discountType === 'percentage' ? discountPercentage : discountAmountInput}
+                        onChange={(e) => {
+                          if (discountType === 'percentage') setDiscountPercentage(Number(e.target.value));
+                          else setDiscountAmountInput(Number(e.target.value));
+                        }}
+                        placeholder={discountType === 'percentage' ? '0' : '0'}
+                      />
+                      {discountType === 'percentage' && discountPercentage > 20 && (
+                        <p className="text-sm text-orange-600 mt-1">
+                          ⚠ Discount &gt; 20% requires approval
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between">
+                        <span>Subtotal:</span>
+                        <span>LKR {subtotal.toLocaleString()}</span>
+                      </div>
+                      {(discountType === 'percentage' ? discountPercentage > 0 : discountAmountInput > 0) && (
+                        <div className="flex justify-between text-green-600">
+                          <span>Discount ({discountType === 'percentage' ? `${discountPercentage}%` : `LKR ${discountAmountInput}`}):</span>
+                          <span>-LKR {discountAmount.toLocaleString()}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between font-bold border-t pt-2">
+                        <span>Total:</span>
+                        <span>LKR {total.toLocaleString()}</span>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={submitSalesOrder}
+                      disabled={isSubmitting || !selectedCustomer || orderSummary.length === 0}
+                      className="w-full"
+                    >
+                      <Save className="h-4 w-4 mr-2" />
+                      {isSubmitting ? 'Saving & Capturing GPS...' : isEditing ? 'Update Sales Order' : 'Submit Sales Order'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default EnhancedSalesOrderForm;
