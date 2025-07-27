@@ -398,10 +398,24 @@ export class ExternalDataService {
   public getTargetCategories(targetData: any): Array<{category: string, target: number}> {
     const categories: Array<{category: string, target: number}> = [];
     
+    console.log('📋 Extracting categories from target_data:', targetData);
+    
     try {
-      if (targetData && typeof targetData === 'object') {
-        // Handle different possible structures for category data
-        
+      // Handle user's specific structure: array of objects with product_category and value
+      if (Array.isArray(targetData)) {
+        console.log('📋 Processing target_data as array with', targetData.length, 'items');
+        targetData.forEach((item: any) => {
+          if (item.product_category && item.value !== undefined) {
+            categories.push({
+              category: item.product_category,
+              target: Number(item.value)
+            });
+            console.log(`📋 Added category: ${item.product_category} = Rs ${Number(item.value).toLocaleString()}`);
+          }
+        });
+      }
+      // Fallback: Handle other possible structures for backward compatibility
+      else if (targetData && typeof targetData === 'object') {
         // Option 1: Direct categories array
         if (targetData.categories && Array.isArray(targetData.categories)) {
           targetData.categories.forEach((cat: any) => {
@@ -529,17 +543,31 @@ export class ExternalDataService {
                 orderLines = JSON.parse(orderLines);
               }
               
-              // Handle array of order lines
+              // Handle array of order lines (user's specific structure)
               if (Array.isArray(orderLines)) {
                 orderLines.forEach((line: any) => {
                   if (line.product_category === category) {
-                    categoryTotal += Number(line.price_total || line.subtotal || line.total_amount || line.amount || 0);
+                    // Calculate as qty_delivered * price_unit per user's requirement
+                    const qtyDelivered = Number(line.qty_delivered || 0);
+                    const priceUnit = Number(line.price_unit || 0);
+                    const lineTotal = qtyDelivered * priceUnit;
+                    categoryTotal += lineTotal;
+                    console.log(`📋 ${category}: ${qtyDelivered} x Rs ${priceUnit} = Rs ${lineTotal}`);
                   }
                 });
               } else if (typeof orderLines === 'object') {
                 // Single order line object or object with category breakdown
                 if (orderLines.product_category === category) {
-                  categoryTotal += Number(orderLines.price_total || orderLines.subtotal || orderLines.total_amount || orderLines.amount || 0);
+                  // Calculate as qty_delivered * price_unit for single line
+                  const qtyDelivered = Number(orderLines.qty_delivered || 0);
+                  const priceUnit = Number(orderLines.price_unit || 0);
+                  const lineTotal = qtyDelivered * priceUnit;
+                  categoryTotal += lineTotal;
+                  
+                  // Fallback to other fields if qty_delivered/price_unit not available
+                  if (lineTotal === 0) {
+                    categoryTotal += Number(orderLines.price_total || orderLines.subtotal || orderLines.total_amount || orderLines.amount || 0);
+                  }
                 }
                 
                 // Also check if it's a category breakdown object
@@ -561,6 +589,7 @@ export class ExternalDataService {
         console.log(`📊 Category ${category}: Rs ${categoryTotal.toLocaleString()}`);
       });
 
+      console.log('📊 Final category achievements:', categoryAchievements);
       return categoryAchievements;
     } catch (error) {
       console.error('Error calculating category achievement:', error);

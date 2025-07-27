@@ -473,9 +473,15 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                         Performance by Category
                       </h4>
                       <div className="space-y-3">
-                        {categoryBreakdown.map((category, catIndex) => {
-                          const categoryProgress = category.target > 0 ? (category.achieved / category.target) * 100 : 0;
-                          return (
+                        {categoryBreakdown.length === 0 ? (
+                          <div className="text-center py-4 text-gray-500">
+                            <p>No category data available</p>
+                            <p className="text-xs">Target data: {target.target_data ? 'Available' : 'Not available'}</p>
+                          </div>
+                        ) : (
+                          categoryBreakdown.map((category, catIndex) => {
+                            const categoryProgress = category.target > 0 ? (category.achieved / category.target) * 100 : 0;
+                            return (
                             <div key={catIndex} className="bg-white rounded p-3">
                               <div className="flex justify-between items-center mb-2">
                                 <span className="text-sm font-medium">{category.category}</span>
@@ -499,8 +505,9 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                               </div>
                               <Progress value={categoryProgress} className="h-2" />
                             </div>
-                          );
-                        })}
+                            );
+                          })
+                        )}
                       </div>
                       <div className="mt-3 pt-3 border-t text-xs text-gray-500">
                         <p>* Category breakdown is estimated based on historical data patterns</p>
