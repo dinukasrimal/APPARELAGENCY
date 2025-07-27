@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Target, TrendingUp, Calendar, Building2, ExternalLink, ChevronDown, ChevronRight, BarChart3 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Target, TrendingUp, Calendar, Building2, ExternalLink, ChevronDown, ChevronRight, BarChart3, GitCompare } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useExternalTargetsWithAchievements, useExternalConnection } from '@/hooks/useExternalData';
 import { ExternalDataService } from '@/services/external-data.service';
@@ -62,6 +63,9 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
     });
   }
 
+  // Tab state
+  const [activeTab, setActiveTab] = useState('external');
+  
   // Filter states for external targets only
   const [selectedQuarter, setSelectedQuarter] = useState('all');
   const [selectedYear, setSelectedYear] = useState('all');
@@ -69,6 +73,25 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   // Expandable card states
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [categoryBreakdowns, setCategoryBreakdowns] = useState<Map<string, Array<{category: string, target: number, achieved: number, percentage: number}>>>(new Map());
+  
+  // Comparison data state
+  const [comparisonData, setComparisonData] = useState<{
+    data: Array<{
+      period: string;
+      externalTarget: number;
+      internalAchievement: number;
+      achievementPercentage: number;
+      gap: number;
+    }>;
+    summary: {
+      totalExternalTarget: number;
+      totalInternalAchievement: number;
+      overallAchievementPercentage: number;
+      totalGap: number;
+    };
+    error: string | null;
+  } | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
 
   // Fetch user name from profiles table using the logged-in user ID
   useEffect(() => {
@@ -238,6 +261,51 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
     }
   };
 
+  // Function to fetch comparison data
+  const fetchComparisonData = async () => {
+    if (!currentUserName || !user) {
+      console.log('No user name or user data available for comparison');
+      return;
+    }
+
+    setComparisonLoading(true);
+    try {
+      console.log('🔄 Fetching comparison data for:', currentUserName);
+      
+      const currentYear = selectedYear === 'all' ? new Date().getFullYear() : parseInt(selectedYear);
+      const comparison = await ExternalDataService.getInstance().getTargetVsAchievementComparison(
+        user,
+        currentUserName,
+        currentYear
+      );
+      
+      setComparisonData(comparison);
+      console.log('🔄 Comparison data loaded:', comparison);
+      
+    } catch (error) {
+      console.error('Error fetching comparison data:', error);
+      setComparisonData({
+        data: [],
+        summary: {
+          totalExternalTarget: 0,
+          totalInternalAchievement: 0,
+          overallAchievementPercentage: 0,
+          totalGap: 0
+        },
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setComparisonLoading(false);
+    }
+  };
+
+  // Fetch comparison data when switching to comparison tab or when user/year changes
+  useEffect(() => {
+    if (activeTab === 'comparison' && currentUserName && user) {
+      fetchComparisonData();
+    }
+  }, [activeTab, currentUserName, selectedYear, user]);
+
 
   // Calculate summary for external targets only
   const totalTarget = filteredTargets.reduce((sum, t) => {
@@ -270,12 +338,26 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
       <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">External Sales Targets</h2>
+          <h2 className="text-2xl font-bold text-gray-900">Sales Targets Management</h2>
           <p className="text-gray-600">
-            Sales targets from external system for {currentUserName || 'current user'}
+            Manage and compare targets for {currentUserName || 'current user'}
           </p>
         </div>
       </div>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="external" className="flex items-center gap-2">
+            <ExternalLink className="h-4 w-4" />
+            External Targets
+          </TabsTrigger>
+          <TabsTrigger value="comparison" className="flex items-center gap-2">
+            <GitCompare className="h-4 w-4" />
+            Target vs Achievement
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="external" className="space-y-6 mt-6">
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -544,6 +626,146 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
           </p>
         </div>
       )}
+        </TabsContent>
+
+        <TabsContent value="comparison" className="space-y-6 mt-6">
+          {comparisonLoading ? (
+            <div className="text-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading comparison data...</p>
+            </div>
+          ) : comparisonData?.error ? (
+            <div className="text-center py-12">
+              <div className="text-red-600">
+                <h3 className="text-lg font-medium mb-2">Error Loading Comparison</h3>
+                <p className="text-sm">{comparisonData.error}</p>
+              </div>
+            </div>
+          ) : comparisonData ? (
+            <div className="space-y-6">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-gray-600">External Target</p>
+                        <p className="text-2xl font-bold">Rs {comparisonData.summary.totalExternalTarget.toLocaleString()}</p>
+                      </div>
+                      <Target className="h-8 w-8 text-blue-600" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-gray-600">Internal Achievement</p>
+                        <p className="text-2xl font-bold">Rs {comparisonData.summary.totalInternalAchievement.toLocaleString()}</p>
+                      </div>
+                      <TrendingUp className="h-8 w-8 text-green-600" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-gray-600">Achievement %</p>
+                        <p className="text-2xl font-bold">{comparisonData.summary.overallAchievementPercentage.toFixed(1)}%</p>
+                      </div>
+                      <div className="w-16">
+                        <Progress value={comparisonData.summary.overallAchievementPercentage} className="h-2" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-gray-600">Gap</p>
+                        <p className={`text-2xl font-bold ${
+                          comparisonData.summary.totalGap >= 0 ? 'text-green-600' : 'text-red-600'
+                        }`}>
+                          {comparisonData.summary.totalGap >= 0 ? '+' : ''}Rs {comparisonData.summary.totalGap.toLocaleString()}
+                        </p>
+                      </div>
+                      <GitCompare className="h-8 w-8 text-purple-600" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Detailed Comparison */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-gray-900">Period-wise Comparison</h3>
+                {comparisonData.data.map((period, index) => (
+                  <Card key={index}>
+                    <CardContent className="p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h4 className="text-lg font-semibold">{period.period}</h4>
+                          <p className="text-sm text-gray-600">Target vs Achievement</p>
+                        </div>
+                        <Badge variant={period.achievementPercentage >= 100 ? 'default' : 'secondary'}>
+                          {period.achievementPercentage >= 100 ? 'Target Achieved' : 'Below Target'}
+                        </Badge>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div>
+                          <p className="text-sm text-gray-600">External Target</p>
+                          <p className="text-xl font-semibold">Rs {period.externalTarget.toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Internal Achievement</p>
+                          <p className="text-xl font-semibold">Rs {period.internalAchievement.toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Achievement %</p>
+                          <p className="text-xl font-semibold">{period.achievementPercentage.toFixed(1)}%</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Gap</p>
+                          <p className={`text-xl font-semibold ${
+                            period.gap >= 0 ? 'text-green-600' : 'text-red-600'
+                          }`}>
+                            {period.gap >= 0 ? '+' : ''}Rs {period.gap.toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                      
+                      <Progress value={period.achievementPercentage} className="h-3" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {comparisonData.data.length === 0 && (
+                <div className="text-center py-12">
+                  <GitCompare className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">No comparison data available</h3>
+                  <p className="text-gray-600">
+                    No external targets found for comparison with internal sales data.
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <GitCompare className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Target vs Achievement Comparison</h3>
+              <p className="text-gray-600">
+                Switch to this tab to compare external targets with internal sales achievements.
+              </p>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
     );
   } catch (error) {

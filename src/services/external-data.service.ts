@@ -1,6 +1,7 @@
 // External data service for accessing external database tables
 import { supabase } from '@/integrations/supabase/client';
 import { externalSupabase, isExternalClientConfigured } from '@/integrations/supabase/external-client';
+import { User } from '@/types/auth';
 
 // Types for external data (matching local external tables schema)
 export interface ExternalSalesTarget {
@@ -760,6 +761,193 @@ export class ExternalDataService {
       return {
         salesTargetAgencies: [],
         invoiceAgencies: [],
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Fetch internal sales data for logged-in user
+   */
+  public async getInternalSalesData(
+    user: User,
+    startDate: string,
+    endDate: string
+  ): Promise<{
+    data: Array<{totalAmount: number, invoiceCount: number}>;
+    error: string | null;
+  }> {
+    try {
+      console.log('🏠 Fetching internal sales data for user:', user.name, 'from', startDate, 'to', endDate);
+      
+      let query = supabase
+        .from('invoices')
+        .select('total, created_at')
+        .gte('created_at', startDate + 'T00:00:00')
+        .lte('created_at', endDate + 'T23:59:59');
+
+      // Apply role-based filtering
+      if (user.role === 'agent') {
+        query = query.eq('created_by', user.id);
+      } else if (user.role === 'agency') {
+        query = query.eq('agency_id', user.agencyId);
+      }
+      // Superusers see all data (no additional filter)
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.error('Error fetching internal sales data:', error);
+        return {
+          data: [],
+          error: error.message
+        };
+      }
+
+      // Calculate total amount and count
+      const totalAmount = data?.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0) || 0;
+      const invoiceCount = data?.length || 0;
+
+      console.log(`🏠 Internal sales summary: Rs ${totalAmount.toLocaleString()} from ${invoiceCount} invoices`);
+
+      return {
+        data: [{ totalAmount, invoiceCount }],
+        error: null
+      };
+    } catch (error) {
+      console.error('Exception in getInternalSalesData:', error);
+      return {
+        data: [],
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Compare external targets with internal sales achievements
+   */
+  public async getTargetVsAchievementComparison(
+    user: User,
+    userName: string,
+    year: number
+  ): Promise<{
+    data: Array<{
+      period: string;
+      externalTarget: number;
+      internalAchievement: number;
+      achievementPercentage: number;
+      gap: number;
+    }>;
+    summary: {
+      totalExternalTarget: number;
+      totalInternalAchievement: number;
+      overallAchievementPercentage: number;
+      totalGap: number;
+    };
+    error: string | null;
+  }> {
+    try {
+      console.log('🔄 Starting target vs achievement comparison for:', userName, 'year:', year);
+      
+      // Fetch external targets
+      const { data: externalTargets, error: externalError } = await this.getSalesTargets({
+        userName,
+        year
+      });
+
+      if (externalError) {
+        return {
+          data: [],
+          summary: {
+            totalExternalTarget: 0,
+            totalInternalAchievement: 0,
+            overallAchievementPercentage: 0,
+            totalGap: 0
+          },
+          error: `Error fetching external targets: ${externalError}`
+        };
+      }
+
+      // Process each external target and get corresponding internal sales
+      const comparisonData = [];
+      let totalExternalTarget = 0;
+      let totalInternalAchievement = 0;
+
+      for (const target of externalTargets) {
+        // Parse target months to get date range
+        const months = this.parseTargetMonths(target.target_months);
+        let startDate: string;
+        let endDate: string;
+        
+        if (months.length === 0) {
+          startDate = `${year}-01-01`;
+          endDate = `${year}-12-31`;
+        } else {
+          const minMonth = Math.min(...months);
+          const maxMonth = Math.max(...months);
+          startDate = `${year}-${minMonth.toString().padStart(2, '0')}-01`;
+          endDate = new Date(year, maxMonth, 0).toISOString().split('T')[0];
+        }
+
+        // Get internal sales for this period
+        const { data: internalSales, error: internalError } = await this.getInternalSalesData(
+          user,
+          startDate,
+          endDate
+        );
+
+        if (internalError) {
+          console.warn('Error fetching internal sales for period:', target.target_months, internalError);
+          continue;
+        }
+
+        const externalTargetAmount = target.adjusted_total_value || target.initial_total_value || 0;
+        const internalAchievementAmount = internalSales[0]?.totalAmount || 0;
+        const achievementPercentage = externalTargetAmount > 0 ? (internalAchievementAmount / externalTargetAmount) * 100 : 0;
+        const gap = internalAchievementAmount - externalTargetAmount;
+
+        comparisonData.push({
+          period: target.target_months || `${year}`,
+          externalTarget: externalTargetAmount,
+          internalAchievement: internalAchievementAmount,
+          achievementPercentage,
+          gap
+        });
+
+        totalExternalTarget += externalTargetAmount;
+        totalInternalAchievement += internalAchievementAmount;
+      }
+
+      const overallAchievementPercentage = totalExternalTarget > 0 ? (totalInternalAchievement / totalExternalTarget) * 100 : 0;
+      const totalGap = totalInternalAchievement - totalExternalTarget;
+
+      console.log('🔄 Comparison complete:', {
+        periods: comparisonData.length,
+        totalTarget: totalExternalTarget,
+        totalAchievement: totalInternalAchievement,
+        overallPercentage: overallAchievementPercentage.toFixed(1)
+      });
+
+      return {
+        data: comparisonData,
+        summary: {
+          totalExternalTarget,
+          totalInternalAchievement,
+          overallAchievementPercentage,
+          totalGap
+        },
+        error: null
+      };
+    } catch (error) {
+      console.error('Exception in getTargetVsAchievementComparison:', error);
+      return {
+        data: [],
+        summary: {
+          totalExternalTarget: 0,
+          totalInternalAchievement: 0,
+          overallAchievementPercentage: 0,
+          totalGap: 0
+        },
         error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
