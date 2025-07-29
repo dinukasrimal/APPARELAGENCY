@@ -5,7 +5,7 @@ export interface InventoryTransaction {
   productName: string;
   color: string;
   size: string;
-  transactionType: 'grn_acceptance' | 'invoice_creation' | 'customer_return' | 'company_return';
+  transactionType: 'grn_acceptance' | 'invoice_creation' | 'customer_return' | 'company_return' | 'adjustment' | 'external_invoice';
   quantity: number; // positive for additions, negative for deductions
   referenceId: string; // ID of the related GRN, Invoice, or Return
   referenceName: string; // For display purposes
