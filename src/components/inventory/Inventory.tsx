@@ -11,12 +11,18 @@ import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService } from '@/services/external-inventory.service';
 import { useToast } from '@/hooks/use-toast';
 import InventorySyncButton from './InventorySyncButton';
+import InventoryCategorySidebar from './InventoryCategorySidebar';
+import StockAdjustmentForm from './StockAdjustmentForm';
+import StockAdjustmentApproval from './StockAdjustmentApproval';
+import StockAdjustmentHistory from './StockAdjustmentHistory';
+import BulkStockAdjustmentForm from './BulkStockAdjustmentForm';
 
 interface InventoryItem {
   id: string;
   productId: string;
   productName: string;
   category: string;
+  subCategory: string;
   color: string;
   size: string;
   currentStock: number;
@@ -60,10 +66,15 @@ const Inventory = ({ user }: InventoryProps) => {
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sidebarSearchTerm, setSidebarSearchTerm] = useState('');
   const [stockFilter, setStockFilter] = useState('all');
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
+  const [showAdjustmentForm, setShowAdjustmentForm] = useState(false);
+  const [showBulkAdjustmentForm, setShowBulkAdjustmentForm] = useState(false);
+  const [showApprovalInterface, setShowApprovalInterface] = useState(false);
+  const [showAdjustmentHistory, setShowAdjustmentHistory] = useState(false);
   const { toast } = useToast();
 
   // Filter items based on user role and filters
@@ -71,7 +82,7 @@ const Inventory = ({ user }: InventoryProps) => {
     const matchesSearch = item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          item.color.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          item.size.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCategory = categoryFilter === 'all' || item.category === categoryFilter;
+    const matchesCategory = categoryFilter === 'all' || item.subCategory === categoryFilter;
     
     let matchesStockFilter = true;
     if (stockFilter === 'low') {
@@ -92,6 +103,12 @@ const Inventory = ({ user }: InventoryProps) => {
       return { status: 'In Stock', variant: 'default' as const, icon: Package };
     }
   };
+
+  // Get unique subcategories dynamically from inventory items
+  const availableCategories = [...new Set(inventoryItems
+    .map(item => item.subCategory)
+    .filter(category => category && category.trim() !== '')
+  )].sort();
 
   const totalValue = filteredItems.reduce((sum, item) => sum + (item.currentStock * item.unitPrice), 0);
   const lowStockItems = filteredItems.filter(item => item.currentStock <= item.minStockLevel).length;
@@ -142,7 +159,7 @@ const Inventory = ({ user }: InventoryProps) => {
       if (productIds.length > 0) {
         const { data: productsData } = await supabase
           .from('products')
-          .select('id, category, selling_price')
+          .select('id, category, sub_category, selling_price')
           .in('id', productIds);
         
         if (productsData) {
@@ -160,6 +177,7 @@ const Inventory = ({ user }: InventoryProps) => {
           productId: item.product_id,
           productName: item.product_name,
           category: product?.category || 'Unknown',
+          subCategory: product?.sub_category || '',
           color: item.color,
           size: item.size,
           currentStock: item.current_stock,
@@ -261,7 +279,7 @@ const Inventory = ({ user }: InventoryProps) => {
       if (summaryProductIds.length > 0) {
         const { data: summaryProductsData } = await supabase
           .from('products')
-          .select('id, category')
+          .select('id, category, sub_category')
           .in('id', summaryProductIds);
         
         if (summaryProductsData) {
@@ -306,7 +324,7 @@ const Inventory = ({ user }: InventoryProps) => {
           productName: item.product_name,
           color: item.color,
           size: item.size,
-          category: product?.category || 'Unknown',
+          category: product?.sub_category || 'Unknown',
           currentStock: item.current_stock,
           stockIn,
           stockOut,
@@ -351,7 +369,20 @@ const Inventory = ({ user }: InventoryProps) => {
   }
 
   return (
-    <div className="space-y-6">
+    <>
+    <div className="flex h-screen bg-gray-50">
+      {/* Category Sidebar */}
+      <InventoryCategorySidebar
+        inventoryItems={inventoryItems}
+        selectedCategory={categoryFilter}
+        onCategorySelect={setCategoryFilter}
+        searchTerm={sidebarSearchTerm}
+        onSearchChange={setSidebarSearchTerm}
+      />
+      
+      {/* Main Content */}
+      <div className="flex-1 overflow-auto">
+        <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Inventory Management</h2>
@@ -383,12 +414,68 @@ const Inventory = ({ user }: InventoryProps) => {
           {/* Odoo Sync Button */}
           <InventorySyncButton user={user} onSyncComplete={handleSyncComplete} />
           
-          {/* Stock Adjustment Button (for superuser) */}
+          {/* Stock Adjustment Buttons */}
+          {(user.role === 'agent' || user.role === 'agency') && (
+            <>
+              <Button 
+                onClick={() => setShowBulkAdjustmentForm(true)}
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                <Package className="h-4 w-4 mr-2" />
+                Bulk Adjustment
+              </Button>
+              <Button 
+                onClick={() => setShowAdjustmentForm(true)}
+                variant="outline"
+                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Single Item
+              </Button>
+              <Button 
+                onClick={() => setShowAdjustmentHistory(true)}
+                variant="outline"
+                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                View Requests
+              </Button>
+            </>
+          )}
+          
           {user.role === 'superuser' && (
-            <Button className="bg-blue-600 hover:bg-blue-700">
-              <Plus className="h-4 w-4 mr-2" />
-              Stock Adjustment
-            </Button>
+            <>
+              <Button 
+                onClick={() => setShowBulkAdjustmentForm(true)}
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                <Package className="h-4 w-4 mr-2" />
+                Bulk Adjustment
+              </Button>
+              <Button 
+                onClick={() => setShowAdjustmentForm(true)}
+                variant="outline"
+                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Single Item
+              </Button>
+              <Button 
+                onClick={() => setShowAdjustmentHistory(true)}
+                variant="outline"
+                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                View Requests
+              </Button>
+              <Button 
+                onClick={() => setShowApprovalInterface(true)}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                <AlertTriangle className="h-4 w-4 mr-2" />
+                Approve Adjustments
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -476,12 +563,15 @@ const Inventory = ({ user }: InventoryProps) => {
 
         <Select value={categoryFilter} onValueChange={setCategoryFilter}>
           <SelectTrigger>
-            <SelectValue placeholder="All Categories" />
+            <SelectValue placeholder="All Subcategories" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Categories</SelectItem>
-            <SelectItem value="Men's Wear">Men's Wear</SelectItem>
-            <SelectItem value="Women's Wear">Women's Wear</SelectItem>
+            <SelectItem value="all">All Subcategories</SelectItem>
+            {availableCategories.map((category) => (
+              <SelectItem key={category} value={category}>
+                {category}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
 
@@ -500,6 +590,7 @@ const Inventory = ({ user }: InventoryProps) => {
           setSearchTerm('');
           setCategoryFilter('all');
           setStockFilter('all');
+          setSidebarSearchTerm('');
         }}>
           Clear Filters
         </Button>
@@ -540,6 +631,7 @@ const Inventory = ({ user }: InventoryProps) => {
                           <h4 className="font-medium">{item.productName}</h4>
                           <p className="text-sm text-gray-600">
                             {item.color} • {item.size} • {item.category}
+                            {item.subCategory && ` • ${item.subCategory}`}
                           </p>
                           {user.role === 'superuser' && (
                             <p className="text-xs text-gray-500">Agency: {item.agencyId}</p>
@@ -672,7 +764,7 @@ const Inventory = ({ user }: InventoryProps) => {
                       const matchesSearch = item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                                            item.color.toLowerCase().includes(searchTerm.toLowerCase()) ||
                                            item.size.toLowerCase().includes(searchTerm.toLowerCase());
-                      const matchesCategory = categoryFilter === 'all' || item.category === categoryFilter;
+                      const matchesCategory = categoryFilter === 'all' || item.subCategory === categoryFilter;
                       return matchesSearch && matchesCategory;
                     })
                     .map((item, index) => (
@@ -682,6 +774,7 @@ const Inventory = ({ user }: InventoryProps) => {
                           <h4 className="font-medium">{item.productName}</h4>
                           <p className="text-sm text-gray-600">
                             {item.color} • {item.size} • {item.category}
+                            {item.subCategory && ` • ${item.subCategory}`}
                           </p>
                         </div>
                         <Badge variant={item.currentStock > 0 ? 'default' : 'destructive'}>
@@ -742,7 +835,56 @@ const Inventory = ({ user }: InventoryProps) => {
           </Card>
         </TabsContent>
       </Tabs>
+        </div>
+      </div>
     </div>
+
+    {/* Stock Adjustment Form Modal */}
+    {showAdjustmentForm && (
+      <StockAdjustmentForm
+        user={user}
+        inventoryItems={inventoryItems}
+        onClose={() => setShowAdjustmentForm(false)}
+        onSubmitted={() => {
+          // Refresh inventory data after submission
+          fetchInventoryData();
+        }}
+      />
+    )}
+
+    {/* Bulk Stock Adjustment Form Modal */}
+    {showBulkAdjustmentForm && (
+      <BulkStockAdjustmentForm
+        user={user}
+        inventoryItems={inventoryItems}
+        onClose={() => setShowBulkAdjustmentForm(false)}
+        onSubmitted={() => {
+          // Refresh inventory data after submission
+          fetchInventoryData();
+        }}
+      />
+    )}
+
+    {/* Stock Adjustment Approval Modal */}
+    {showApprovalInterface && user.role === 'superuser' && (
+      <StockAdjustmentApproval
+        user={user}
+        onClose={() => setShowApprovalInterface(false)}
+        onApprovalComplete={() => {
+          // Refresh inventory data after approval
+          fetchInventoryData();
+        }}
+      />
+    )}
+
+    {/* Stock Adjustment History Modal */}
+    {showAdjustmentHistory && (
+      <StockAdjustmentHistory
+        user={user}
+        onClose={() => setShowAdjustmentHistory(false)}
+      />
+    )}
+  </>
   );
 };
 

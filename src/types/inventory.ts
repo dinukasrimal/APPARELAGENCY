@@ -19,6 +19,8 @@ export interface InventoryItem {
   id: string;
   productId: string;
   productName: string;
+  category: string;
+  subCategory: string;
   color: string;
   size: string;
   currentStock: number;
@@ -40,4 +42,25 @@ export interface InventoryAdjustment {
   userId: string;
   agencyId: string;
   createdAt: Date;
+}
+
+export interface StockAdjustmentRequest {
+  id: string;
+  productId: string;
+  productName: string;
+  color: string;
+  size: string;
+  adjustmentType: 'increase' | 'decrease';
+  quantity: number;
+  currentStock: number;
+  newStock: number;
+  reason: string;
+  justification: string;
+  requestedBy: string;
+  agencyId: string;
+  requestedAt: Date;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewedBy?: string;
+  reviewedAt?: Date;
+  reviewNotes?: string;
 }
