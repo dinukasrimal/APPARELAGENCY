@@ -14,14 +14,11 @@ import Inventory from '@/components/inventory/Inventory';
 import NonProductiveVisits from '@/components/visits/NonProductiveVisits';
 import TimeTracking from '@/components/visits/TimeTracking';
 import QuarterlyTargetsManagement from '@/components/targets/QuarterlyTargetsManagement';
-import GRNUpload from '@/components/grn/GRNUpload';
-import GRNAcceptance from '@/components/grn/GRNAcceptance';
 import UserManagement from '@/components/admin/UserManagement';
 import SimpleCompanyReturns from '@/components/returns/SimpleCompanyReturns';
 import DailyLogReport from '@/components/reports/DailyLogReport';
 import EnhancedReports from '@/components/reports/EnhancedReports';
 import DuplicatePreventionCustomerManagement from '@/components/customers/DuplicatePreventionCustomerManagement';
-import { GRN } from '@/types/grn';
 import Collections from '@/components/collections/Collections';
 import Assets from '@/components/assets/Assets';
 
@@ -33,25 +30,6 @@ interface DashboardProps {
 const Dashboard = ({ user, onLogout }: DashboardProps) => {
   const [activeModule, setActiveModule] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [grns, setGrns] = useState<GRN[]>([]);
-
-  const handleGRNCreated = (grn: GRN) => {
-    setGrns(prev => [...prev, grn]);
-  };
-
-  const handleGRNProcessed = (grnId: string, action: 'accepted' | 'rejected', reason?: string) => {
-    setGrns(prev => prev.map(grn => 
-      grn.id === grnId 
-        ? { 
-            ...grn, 
-            status: action, 
-            processedAt: new Date(),
-            processedBy: user.name,
-            rejectionReason: reason 
-          }
-        : grn
-    ));
-  };
 
   const renderActiveModule = () => {
     switch (activeModule) {
@@ -75,10 +53,6 @@ const Dashboard = ({ user, onLogout }: DashboardProps) => {
         return <SimpleCompanyReturns user={user} />;
       case 'targets':
         return <QuarterlyTargetsManagement user={user} />;
-      case 'grn-upload':
-        return <GRNUpload user={user} onGRNCreated={handleGRNCreated} />;
-      case 'grn-accept':
-        return <GRNAcceptance user={user} grns={grns} onGRNProcessed={handleGRNProcessed} />;
       case 'user-management':
         return <UserManagement user={user} />;
       case 'reports':

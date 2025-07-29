@@ -12,8 +12,6 @@ import {
   Warehouse,
   Target,
   FileText,
-  Upload,
-  CheckSquare,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -35,7 +33,7 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'grn-upload' | 'grn-accept' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets';
+type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'daily-log';
 
 const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: SidebarProps) => {
   const { agency } = useAgency(user.agencyId);
@@ -46,14 +44,13 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'assets', label: 'Assets', icon: Image, roles: ['agency', 'superuser', 'agent'] },
     { id: 'products', label: 'Products', icon: Package, roles: ['agency', 'superuser', 'agent'] },
     { id: 'sales', label: 'Sales', icon: ShoppingCart, roles: ['agency', 'superuser', 'agent'] },
+    { id: 'collections', label: 'Collections', icon: DollarSign, roles: ['agency', 'superuser', 'agent'] },
+    { id: 'non-productive-visits', label: 'Non-Productive Visits', icon: AlertTriangle, roles: ['agency', 'agent', 'superuser'] },
+    { id: 'company-returns', label: 'Company Returns', icon: RotateCcw, roles: ['agency', 'superuser', 'agent'] },
     { id: 'purchase', label: 'Purchase', icon: Truck, roles: ['agency', 'superuser', 'agent'] },
     { id: 'inventory', label: 'Inventory', icon: Warehouse, roles: ['agency', 'superuser', 'agent'] },
-    { id: 'non-productive-visits', label: 'Non-Productive Visits', icon: AlertTriangle, roles: ['agency', 'agent', 'superuser'] },
     { id: 'time-tracking', label: 'Time Tracking', icon: Clock, roles: ['agency', 'agent'] },
-    { id: 'company-returns', label: 'Company Returns', icon: RotateCcw, roles: ['agency', 'superuser', 'agent'] },
     { id: 'targets', label: 'Targets', icon: Target, roles: ['agency', 'superuser'] },
-    { id: 'grn-upload', label: 'GRN Upload', icon: Upload, roles: ['superuser'] },
-    { id: 'grn-accept', label: 'GRN Acceptance', icon: CheckSquare, roles: ['agency', 'agent'] },
     { id: 'user-management', label: 'User Management', icon: UserCog, roles: ['superuser'] },
     {
       id: 'reports',
@@ -67,7 +64,6 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
       icon: MapPin,
       roles: ['superuser', 'agency', 'agent'],
     },
-    { id: 'collections', label: 'Collections', icon: DollarSign, roles: ['agency', 'superuser', 'agent'] },
   ];
 
   const filteredMenuItems = sidebarItems.filter(item => 
