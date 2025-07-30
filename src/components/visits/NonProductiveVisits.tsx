@@ -568,11 +568,12 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
         </form>
 
           {/* In-App Camera */}
-          <InAppCamera
-            isOpen={showCamera}
-            onPhotoCapture={handlePhotoCapture}
-            onClose={() => setShowCamera(false)}
-          />
+          {showCamera && (
+            <InAppCamera
+              onPhotoTaken={handlePhotoCapture}
+              onCancel={() => setShowCamera(false)}
+            />
+          )}
         </div>
       </div>
     );

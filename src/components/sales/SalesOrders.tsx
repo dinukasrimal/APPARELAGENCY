@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -46,32 +46,47 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
   useEffect(() => {
     fetchData();
-  }, [user]);
+  }, [user.id, user.role, user.agencyId]);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setIsLoading(true);
       console.log('Fetching sales data for user:', user.id);
 
-      // Fetch sales orders with role-based filtering
-      let ordersQuery = supabase.from('sales_orders').select('*');
+      // Optimize with parallel queries and specific field selection
+      const queries = [];
+      
+      // Build optimized sales orders query
+      let ordersQuery = supabase
+        .from('sales_orders')
+        .select(`
+          id, customer_id, customer_name, agency_id, subtotal, 
+          discount_percentage, discount_amount, total, total_invoiced,
+          status, requires_approval, approved_by, approved_at,
+          latitude, longitude, created_at, created_by
+        `);
       
       if (user.role === 'agent') {
         ordersQuery = ordersQuery.eq('created_by', user.id);
       } else if (user.role === 'agency') {
         ordersQuery = ordersQuery.eq('agency_id', user.agencyId);
       }
-
-      const { data: ordersData, error: ordersError } = await ordersQuery.order('created_at', { ascending: false });
-
-      if (ordersError) throw ordersError;
-
-      // Fetch sales order items
-      const { data: itemsData, error: itemsError } = await supabase
+      
+      queries.push(ordersQuery.order('created_at', { ascending: false }).limit(100));
+      
+      // Fetch sales order items with specific fields
+      const itemsQuery = supabase
         .from('sales_order_items')
-        .select('*');
+        .select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total');
+      queries.push(itemsQuery);
 
-      if (itemsError) throw itemsError;
+      const [ordersResult, itemsResult] = await Promise.all(queries);
+      
+      if (ordersResult.error) throw ordersResult.error;
+      if (itemsResult.error) throw itemsResult.error;
+      
+      const ordersData = ordersResult.data;
+      const itemsData = itemsResult.data;
 
       // Transform orders with items
       const transformedOrders: SalesOrder[] = (ordersData || []).map(order => {
@@ -113,25 +128,68 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       setOrders(transformedOrders);
 
-      // Fetch invoices with role-based filtering
-      let invoicesQuery = supabase.from('invoices').select('*');
+      // Optimize invoice and customer/product fetching with parallel queries
+      const additionalQueries = [];
+      
+      // Build optimized invoices query
+      let invoicesQuery = supabase
+        .from('invoices')
+        .select(`
+          id, sales_order_id, customer_id, customer_name, agency_id,
+          subtotal, discount_amount, total, latitude, longitude,
+          signature, created_at, created_by
+        `);
       
       if (user.role === 'agent') {
         invoicesQuery = invoicesQuery.eq('created_by', user.id);
       } else if (user.role === 'agency') {
         invoicesQuery = invoicesQuery.eq('agency_id', user.agencyId);
       }
-
-      const { data: invoicesData, error: invoicesError } = await invoicesQuery.order('created_at', { ascending: false });
-
-      if (invoicesError) throw invoicesError;
-
-      // Fetch invoice items
-      const { data: invoiceItemsData, error: invoiceItemsError } = await supabase
+      
+      additionalQueries.push(invoicesQuery.order('created_at', { ascending: false }).limit(100));
+      
+      // Fetch invoice items with specific fields
+      const invoiceItemsQuery = supabase
         .from('invoice_items')
-        .select('*');
+        .select('id, invoice_id, product_id, product_name, color, size, quantity, unit_price, total');
+      additionalQueries.push(invoiceItemsQuery);
 
-      if (invoiceItemsError) throw invoiceItemsError;
+      // Build optimized customers query
+      let customersQuery = supabase
+        .from('customers')
+        .select(`
+          id, name, phone, address, agency_id, latitude, longitude,
+          storefront_photo, signature, created_at, created_by
+        `);
+      
+      if (user.role === 'agent') {
+        customersQuery = customersQuery.eq('created_by', user.id);
+      } else if (user.role === 'agency') {
+        customersQuery = customersQuery.eq('agency_id', user.agencyId);
+      }
+      
+      additionalQueries.push(customersQuery.order('name'));
+      
+      // Fetch products with specific fields
+      const productsQuery = supabase
+        .from('products')
+        .select(`
+          id, name, category, sub_category, colors, sizes,
+          selling_price, billing_price, image, description
+        `);
+      additionalQueries.push(productsQuery);
+      
+      const [invoicesResult, invoiceItemsResult, customersResult, productsResult] = await Promise.all(additionalQueries);
+      
+      if (invoicesResult.error) throw invoicesResult.error;
+      if (invoiceItemsResult.error) throw invoiceItemsResult.error;
+      if (customersResult.error) throw customersResult.error;
+      if (productsResult.error) throw productsResult.error;
+      
+      const invoicesData = invoicesResult.data;
+      const invoiceItemsData = invoiceItemsResult.data;
+      const customersData = customersResult.data;
+      const productsData = productsResult.data;
 
       // Transform invoices with items
       const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => {
@@ -168,26 +226,6 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       });
 
       setInvoices(transformedInvoices);
-
-      // Fetch customers with role-based filtering
-      let customersQuery = supabase.from('customers').select('*');
-      
-      if (user.role === 'agent') {
-        customersQuery = customersQuery.eq('created_by', user.id);
-      } else if (user.role === 'agency') {
-        customersQuery = customersQuery.eq('agency_id', user.agencyId);
-      }
-
-      const { data: customersData, error: customersError } = await customersQuery.order('name');
-
-      if (customersError) throw customersError;
-
-      // Fetch products (available to all roles)
-      const { data: productsData, error: productsError } = await supabase
-        .from('products')
-        .select('*');
-
-      if (productsError) throw productsError;
 
       const transformedCustomers: Customer[] = (customersData || []).map(customer => ({
         id: customer.id,
@@ -231,16 +269,19 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user.id, user.role, user.agencyId]);
 
-  const filteredOrders = orders.filter(order => {
-    const matchesSearch = order.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         order.customerName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || order.status === statusFilter;
-    const isActive = order.status !== 'invoiced' && order.status !== 'closed';
-    // Only show active orders unless showAllOrders is true
-    return matchesSearch && matchesStatus && (showAllOrders || isActive);
-  });
+  // Memoized filtered orders to prevent unnecessary recalculations
+  const filteredOrders = useMemo(() => {
+    return orders.filter(order => {
+      const matchesSearch = order.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           order.customerName.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || order.status === statusFilter;
+      const isActive = order.status !== 'invoiced' && order.status !== 'closed';
+      // Only show active orders unless showAllOrders is true
+      return matchesSearch && matchesStatus && (showAllOrders || isActive);
+    });
+  }, [orders, searchTerm, statusFilter, showAllOrders]);
 
   const getStatusBadge = (status: SalesOrder['status']) => {
     const statusConfig = {
@@ -256,23 +297,24 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     return <Badge variant={config.variant}>{config.label}</Badge>;
   };
 
-  const getRemainingAmount = (order: SalesOrder) => {
+  // Memoized utility functions
+  const getRemainingAmount = useCallback((order: SalesOrder) => {
     return order.total - order.totalInvoiced;
-  };
+  }, []);
 
-  const canEdit = (order: SalesOrder) => {
+  const canEdit = useCallback((order: SalesOrder) => {
     // Allow editing if order is pending OR if it's approved/partially_invoiced but not fully invoiced
     return (order.status === 'pending' && !order.requiresApproval) || 
            ((order.status === 'approved' || order.status === 'partially_invoiced') && getRemainingAmount(order) > 0);
-  };
+  }, [getRemainingAmount]);
 
-  const canConvertToInvoice = (order: SalesOrder) => {
+  const canConvertToInvoice = useCallback((order: SalesOrder) => {
     return (order.status === 'approved' || order.status === 'partially_invoiced') && getRemainingAmount(order) > 0;
-  };
+  }, [getRemainingAmount]);
 
-  const canClose = (order: SalesOrder) => {
+  const canClose = useCallback((order: SalesOrder) => {
     return order.status !== 'closed' && order.status !== 'cancelled' && order.status !== 'invoiced';
-  };
+  }, []);
 
   const handleCloseOrder = async (orderId: string) => {
     try {
@@ -299,13 +341,13 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     }
   };
 
-  const handleOrderSuccess = async () => {
+  const handleOrderSuccess = useCallback(async () => {
     await fetchData();
     setShowCreateForm(false);
     setShowDirectInvoiceForm(false);
     setEditingOrder(null);
     setConvertingToInvoiceOrder(null);
-  };
+  }, [fetchData]);
 
   if (showCreateForm) {
     if (customers.length === 0 || products.length === 0) {

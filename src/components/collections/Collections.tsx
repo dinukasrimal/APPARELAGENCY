@@ -185,22 +185,34 @@ const Collections = ({ user }: CollectionsProps) => {
       const totalCollected = customerCollections.reduce((sum, col) => sum + col.totalAmount, 0);
       const outstandingAmount = totalInvoiced - totalCollected;
 
-      // Create invoice summaries
-      const invoiceSummaries: InvoiceSummary[] = customerInvoices.map(invoice => {
-        const collectedAmount = 0; // For now, assume no collections
-        const outstandingAmount = invoice.total - collectedAmount;
-        
-        return {
-          id: invoice.id,
-          invoiceNumber: invoice.id, // Using ID as invoice number for now
-          total: invoice.total,
-          collectedAmount,
-          outstandingAmount,
-          createdAt: new Date(invoice.createdAt),
-          status: outstandingAmount === 0 ? 'paid' : 
-                  collectedAmount > 0 ? 'partially_paid' : 'pending'
-        };
-      });
+      // Create invoice summaries with proper collection calculations
+      const invoiceSummaries: InvoiceSummary[] = await Promise.all(
+        customerInvoices.map(async (invoice) => {
+          // Get allocations for this invoice
+          const { data: allocations, error } = await supabase
+            .from('collection_allocations')
+            .select('allocated_amount')
+            .eq('invoice_id', invoice.id);
+
+          if (error) {
+            console.error('Error fetching allocations for invoice:', invoice.id, error);
+          }
+
+          const collectedAmount = (allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0);
+          const outstandingAmount = invoice.total - collectedAmount;
+          
+          return {
+            id: invoice.id,
+            invoiceNumber: invoice.id, // Using ID as invoice number for now
+            total: invoice.total,
+            collectedAmount,
+            outstandingAmount,
+            createdAt: new Date(invoice.createdAt),
+            status: outstandingAmount === 0 ? 'paid' : 
+                    collectedAmount > 0 ? 'partially_paid' : 'pending'
+          };
+        })
+      );
 
       const customer = customers.find(c => c.id === customerId);
       if (customer) {
@@ -233,6 +245,9 @@ const Collections = ({ user }: CollectionsProps) => {
 
   const handleCollectionFormSubmit = async (formData: any) => {
     try {
+      // Determine status based on payment type
+      const status = formData.paymentType === 'direct' ? 'allocated' : 'pending';
+      
       // Create a new collection object with database field names
       const newCollection = {
         customer_id: formData.customerId,
@@ -246,7 +261,7 @@ const Collections = ({ user }: CollectionsProps) => {
         notes: formData.notes,
         latitude: formData.gpsCoordinates.latitude,
         longitude: formData.gpsCoordinates.longitude,
-        status: 'pending',
+        status: status,
         created_by: user.id
       };
 
@@ -265,6 +280,31 @@ const Collections = ({ user }: CollectionsProps) => {
           variant: "destructive",
         });
         return;
+      }
+
+      // If this is a direct payment, create allocations immediately
+      if (formData.paymentType === 'direct' && formData.invoiceAllocations && formData.invoiceAllocations.length > 0) {
+        const allocations = formData.invoiceAllocations.map((allocation: any) => ({
+          collection_id: savedCollection.id,
+          invoice_id: allocation.invoiceId,
+          allocated_amount: allocation.amount,
+          allocated_by: user.id,
+          allocated_at: new Date().toISOString()
+        }));
+
+        const { error: allocationError } = await supabase
+          .from('collection_allocations')
+          .insert(allocations);
+
+        if (allocationError) {
+          console.error('Error saving allocations:', allocationError);
+          // Don't fail the entire operation, but log the error
+          toast({
+            title: "Warning",
+            description: "Collection saved but allocation failed. You can allocate manually.",
+            variant: "destructive",
+          });
+        }
       }
 
       // Transform the saved data to match Collection type
@@ -291,9 +331,13 @@ const Collections = ({ user }: CollectionsProps) => {
 
       handleCollectionCreated(transformedCollection);
       
+      const successMessage = formData.paymentType === 'direct' 
+        ? "Direct payment recorded and allocated successfully"
+        : "Advance payment recorded successfully";
+      
       toast({
         title: "Success",
-        description: "Collection recorded successfully",
+        description: successMessage,
       });
     } catch (error) {
       console.error('Error handling collection submission:', error);
@@ -365,6 +409,7 @@ const Collections = ({ user }: CollectionsProps) => {
         <CollectionForm
           customerId={selectedCustomer.id}
           customerName={selectedCustomer.name}
+          customerInvoices={customerInvoiceSummary?.invoices || []}
           onSubmit={handleCollectionFormSubmit}
           onCancel={() => setShowCollectionForm(false)}
         />

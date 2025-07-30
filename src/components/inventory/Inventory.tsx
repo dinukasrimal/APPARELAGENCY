@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { User } from '@/types/auth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -77,22 +77,24 @@ const Inventory = ({ user }: InventoryProps) => {
   const [showAdjustmentHistory, setShowAdjustmentHistory] = useState(false);
   const { toast } = useToast();
 
-  // Filter items based on user role and filters
-  const filteredItems = inventoryItems.filter(item => {
-    const matchesSearch = item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         item.color.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         item.size.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCategory = categoryFilter === 'all' || item.subCategory === categoryFilter;
-    
-    let matchesStockFilter = true;
-    if (stockFilter === 'low') {
-      matchesStockFilter = item.currentStock <= item.minStockLevel;
-    } else if (stockFilter === 'out') {
-      matchesStockFilter = item.currentStock === 0;
-    }
-    
-    return matchesSearch && matchesCategory && matchesStockFilter;
-  });
+  // Memoized filtered items to prevent unnecessary recalculations
+  const filteredItems = useMemo(() => {
+    return inventoryItems.filter(item => {
+      const matchesSearch = item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           item.color.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           item.size.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesCategory = categoryFilter === 'all' || item.subCategory === categoryFilter;
+      
+      let matchesStockFilter = true;
+      if (stockFilter === 'low') {
+        matchesStockFilter = item.currentStock <= item.minStockLevel;
+      } else if (stockFilter === 'out') {
+        matchesStockFilter = item.currentStock === 0;
+      }
+      
+      return matchesSearch && matchesCategory && matchesStockFilter;
+    });
+  }, [inventoryItems, searchTerm, categoryFilter, stockFilter]);
 
   const getStockStatus = (item: InventoryItem) => {
     if (item.currentStock === 0) {
@@ -104,15 +106,22 @@ const Inventory = ({ user }: InventoryProps) => {
     }
   };
 
-  // Get unique subcategories dynamically from inventory items
-  const availableCategories = [...new Set(inventoryItems
-    .map(item => item.subCategory)
-    .filter(category => category && category.trim() !== '')
-  )].sort();
+  // Memoized calculations to prevent expensive operations on each render
+  const availableCategories = useMemo(() => {
+    return [...new Set(inventoryItems
+      .map(item => item.subCategory)
+      .filter(category => category && category.trim() !== '')
+    )].sort();
+  }, [inventoryItems]);
 
-  const totalValue = filteredItems.reduce((sum, item) => sum + (item.currentStock * item.unitPrice), 0);
-  const lowStockItems = filteredItems.filter(item => item.currentStock <= item.minStockLevel).length;
-  const outOfStockItems = filteredItems.filter(item => item.currentStock === 0).length;
+  const inventoryMetrics = useMemo(() => {
+    const totalValue = filteredItems.reduce((sum, item) => sum + (item.currentStock * item.unitPrice), 0);
+    const lowStockItems = filteredItems.filter(item => item.currentStock <= item.minStockLevel).length;
+    const outOfStockItems = filteredItems.filter(item => item.currentStock === 0).length;
+    return { totalValue, lowStockItems, outOfStockItems };
+  }, [filteredItems]);
+
+  const { totalValue, lowStockItems, outOfStockItems } = inventoryMetrics;
 
   // Fetch inventory data
   const fetchInventoryData = async () => {
@@ -338,21 +347,40 @@ const Inventory = ({ user }: InventoryProps) => {
     }
   };
 
-  // Auto-refresh inventory data periodically
+  // Optimized auto-refresh with longer interval and user activity detection
   useEffect(() => {
-    const autoRefreshInterval = setInterval(() => {
-      console.log('🔄 Auto-refreshing inventory data...');
-      fetchInventoryData();
-    }, 5 * 60 * 1000); // Refresh every 5 minutes
+    let autoRefreshInterval: NodeJS.Timeout;
+    let isUserActive = true;
+    
+    const handleUserActivity = () => {
+      isUserActive = true;
+    };
+    
+    // Listen for user activity
+    document.addEventListener('mousedown', handleUserActivity);
+    document.addEventListener('keydown', handleUserActivity);
+    
+    // Only refresh if user is active and reduce frequency
+    autoRefreshInterval = setInterval(() => {
+      if (isUserActive && document.visibilityState === 'visible') {
+        console.log('🔄 Auto-refreshing inventory data...');
+        fetchInventoryData();
+        isUserActive = false; // Reset activity flag
+      }
+    }, 10 * 60 * 1000); // Refresh every 10 minutes instead of 5
 
-    return () => clearInterval(autoRefreshInterval);
+    return () => {
+      clearInterval(autoRefreshInterval);
+      document.removeEventListener('mousedown', handleUserActivity);
+      document.removeEventListener('keydown', handleUserActivity);
+    };
   }, []);
 
-  const handleSyncComplete = () => {
+  const handleSyncComplete = useCallback(() => {
     // Refresh inventory data after sync
     fetchInventoryData();
     console.log('Inventory sync completed');
-  };
+  }, []);
 
   // Load data on component mount
   useEffect(() => {

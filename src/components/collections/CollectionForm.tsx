@@ -11,7 +11,8 @@ import { CollectionFormData, ChequeDetail } from '@/types/collections';
 interface CollectionFormProps {
   customerId: string;
   customerName: string;
-  onSubmit: (data: CollectionFormData) => void;
+  customerInvoices?: any[]; // Outstanding invoices for the customer
+  onSubmit: (data: CollectionFormData & { paymentType: 'direct' | 'advance', invoiceAllocations?: any[] }) => void;
   onCancel: () => void;
   loading?: boolean;
 }
@@ -19,6 +20,7 @@ interface CollectionFormProps {
 export const CollectionForm: React.FC<CollectionFormProps> = ({
   customerId,
   customerName,
+  customerInvoices = [],
   onSubmit,
   onCancel,
   loading = false
@@ -45,10 +47,25 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
   });
 
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'capturing' | 'success' | 'error'>('idle');
+  const [paymentType, setPaymentType] = useState<'direct' | 'advance'>('advance');
+  const [invoiceAllocations, setInvoiceAllocations] = useState<{[key: string]: number}>({});
 
   // Calculate total amount automatically
   const calculateTotalAmount = () => {
     return formData.cashAmount + formData.chequeAmount;
+  };
+
+  // Calculate total allocated amount for direct payments
+  const calculateAllocatedAmount = () => {
+    return Object.values(invoiceAllocations).reduce((sum, amount) => sum + amount, 0);
+  };
+
+  // Handle invoice allocation change
+  const handleAllocationChange = (invoiceId: string, amount: number) => {
+    setInvoiceAllocations(prev => ({
+      ...prev,
+      [invoiceId]: amount || 0
+    }));
   };
 
   // Capture GPS coordinates
@@ -143,9 +160,30 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
       return;
     }
 
+    // Validate direct payment allocations
+    if (paymentType === 'direct') {
+      const allocatedAmount = calculateAllocatedAmount();
+      if (allocatedAmount === 0) {
+        alert('Please allocate payment to at least one invoice');
+        return;
+      }
+      if (allocatedAmount > total) {
+        alert('Total allocated amount cannot exceed payment amount');
+        return;
+      }
+    }
+
+    const allocationsArray = paymentType === 'direct' 
+      ? Object.entries(invoiceAllocations)
+          .filter(([, amount]) => amount > 0)
+          .map(([invoiceId, amount]) => ({ invoiceId, amount }))
+      : [];
+
     onSubmit({
       ...formData,
-      totalAmount: total
+      totalAmount: total,
+      paymentType,
+      invoiceAllocations: allocationsArray
     });
   };
 
@@ -181,6 +219,89 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
               />
             </div>
           </div>
+
+          {/* Payment Type Selection */}
+          <div className="space-y-4">
+            <Label>Payment Type</Label>
+            <div className="grid grid-cols-2 gap-4">
+              <Card 
+                className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                  paymentType === 'direct' ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50'
+                }`}
+                onClick={() => setPaymentType('direct')}
+              >
+                <CardContent className="p-4 text-center">
+                  <div className="font-semibold text-sm mb-2">Direct Payment</div>
+                  <div className="text-xs text-gray-600">Pay against specific invoices</div>
+                </CardContent>
+              </Card>
+              <Card 
+                className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                  paymentType === 'advance' ? 'ring-2 ring-green-500 bg-green-50' : 'hover:bg-gray-50'
+                }`}
+                onClick={() => setPaymentType('advance')}
+              >
+                <CardContent className="p-4 text-center">
+                  <div className="font-semibold text-sm mb-2">Advance Payment</div>
+                  <div className="text-xs text-gray-600">Allocate to invoices later</div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          {/* Invoice Allocation for Direct Payments */}
+          {paymentType === 'direct' && customerInvoices.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <Label>Allocate Payment to Invoices</Label>
+                <div className="text-sm text-gray-600">
+                  Allocated: LKR {calculateAllocatedAmount().toFixed(2)} / {calculateTotalAmount().toFixed(2)}
+                </div>
+              </div>
+              <div className="space-y-3 max-h-64 overflow-y-auto">
+                {customerInvoices.map((invoice) => (
+                  <div key={invoice.id} className="border rounded-lg p-3">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex-1">
+                        <div className="font-medium text-sm">Invoice #{invoice.invoiceNumber || invoice.id}</div>
+                        <div className="text-xs text-gray-600">
+                          Total: LKR {invoice.total?.toFixed(2) || '0.00'} | 
+                          Outstanding: LKR {invoice.outstandingAmount?.toFixed(2) || '0.00'}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(invoice.createdAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <Label htmlFor={`allocation-${invoice.id}`} className="text-xs">
+                        Allocate Amount (LKR)
+                      </Label>
+                      <Input
+                        id={`allocation-${invoice.id}`}
+                        type="number"
+                        min="0"
+                        max={Math.min(invoice.outstandingAmount || 0, calculateTotalAmount())}
+                        step="0.01"
+                        value={invoiceAllocations[invoice.id] || ''}
+                        onChange={(e) => handleAllocationChange(invoice.id, parseFloat(e.target.value) || 0)}
+                        placeholder="0.00"
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {paymentType === 'direct' && customerInvoices.length === 0 && (
+            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="text-sm text-yellow-800">
+                No outstanding invoices found for this customer. You can only record as advance payment.
+              </div>
+            </div>
+          )}
 
           {/* Payment Method */}
           <div>
@@ -407,7 +528,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
               Cancel
             </Button>
             <Button type="submit" disabled={loading}>
-              {loading ? 'Recording...' : 'Record Collection'}
+              {loading ? 'Recording...' : paymentType === 'direct' ? 'Record Direct Payment' : 'Record Advance Payment'}
             </Button>
           </div>
         </form>

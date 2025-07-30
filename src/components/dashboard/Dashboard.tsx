@@ -1,66 +1,130 @@
-import { useState } from 'react';
+import { useState, lazy, Suspense, memo } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { LogOut } from 'lucide-react';
 import Sidebar from './Sidebar';
 import DashboardStats from './DashboardStats';
 import DashboardMapLeaflet from './DashboardMapLeaflet';
-import CustomerManagement from '@/components/customers/CustomerManagement';
-import ProductCatalogWithCategories from '@/components/products/ProductCatalogWithCategories';
-import ProductSidebarView from '@/components/products/ProductSidebarView';
-import SalesOrders from '@/components/sales/SalesOrders';
-import PurchaseOrders from '@/components/purchase/PurchaseOrders';
-import Inventory from '@/components/inventory/Inventory';
-import NonProductiveVisits from '@/components/visits/NonProductiveVisits';
-import TimeTracking from '@/components/visits/TimeTracking';
-import QuarterlyTargetsManagement from '@/components/targets/QuarterlyTargetsManagement';
-import UserManagement from '@/components/admin/UserManagement';
-import SimpleCompanyReturns from '@/components/returns/SimpleCompanyReturns';
-import DailyLogReport from '@/components/reports/DailyLogReport';
-import EnhancedReports from '@/components/reports/EnhancedReports';
-import DuplicatePreventionCustomerManagement from '@/components/customers/DuplicatePreventionCustomerManagement';
-import Collections from '@/components/collections/Collections';
-import Assets from '@/components/assets/Assets';
+
+// Lazy load heavy components to improve initial load time
+const CustomerManagement = lazy(() => import('@/components/customers/DuplicatePreventionCustomerManagement'));
+const ProductSidebarView = lazy(() => import('@/components/products/ProductSidebarView'));
+const SalesOrders = lazy(() => import('@/components/sales/SalesOrders'));
+const PurchaseOrders = lazy(() => import('@/components/purchase/PurchaseOrders'));
+const Inventory = lazy(() => import('@/components/inventory/Inventory'));
+const NonProductiveVisits = lazy(() => import('@/components/visits/NonProductiveVisits'));
+const TimeTracking = lazy(() => import('@/components/visits/TimeTracking'));
+const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/QuarterlyTargetsManagement'));
+const UserManagement = lazy(() => import('@/components/admin/UserManagement'));
+const SimpleCompanyReturns = lazy(() => import('@/components/returns/SimpleCompanyReturns'));
+const DailyLogReport = lazy(() => import('@/components/reports/DailyLogReport'));
+const EnhancedReports = lazy(() => import('@/components/reports/EnhancedReports'));
+const Collections = lazy(() => import('@/components/collections/Collections'));
+const Assets = lazy(() => import('@/components/assets/Assets'));
 
 interface DashboardProps {
   user: User;
   onLogout: () => void;
 }
 
-const Dashboard = ({ user, onLogout }: DashboardProps) => {
+const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
   const [activeModule, setActiveModule] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Loading component for lazy-loaded modules
+  const ModuleLoader = () => (
+    <div className="flex items-center justify-center h-64">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      <span className="ml-3 text-gray-600">Loading module...</span>
+    </div>
+  );
 
   const renderActiveModule = () => {
     switch (activeModule) {
       case 'customers':
-        return <DuplicatePreventionCustomerManagement user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <CustomerManagement user={user} />
+          </Suspense>
+        );
       case 'assets':
-        return <Assets user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <Assets user={user} />
+          </Suspense>
+        );
       case 'products':
-        return <ProductSidebarView user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <ProductSidebarView user={user} />
+          </Suspense>
+        );
       case 'sales':
-        return <SalesOrders user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <SalesOrders user={user} />
+          </Suspense>
+        );
       case 'purchase':
-        return <PurchaseOrders user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <PurchaseOrders user={user} />
+          </Suspense>
+        );
       case 'inventory':
-        return <Inventory user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <Inventory user={user} />
+          </Suspense>
+        );
       case 'non-productive-visits':
-        return <NonProductiveVisits user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <NonProductiveVisits user={user} />
+          </Suspense>
+        );
       case 'time-tracking':
-        return <TimeTracking user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <TimeTracking user={user} />
+          </Suspense>
+        );
       case 'company-returns':
-        return <SimpleCompanyReturns user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <SimpleCompanyReturns user={user} />
+          </Suspense>
+        );
       case 'targets':
-        return <QuarterlyTargetsManagement user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <QuarterlyTargetsManagement user={user} />
+          </Suspense>
+        );
       case 'user-management':
-        return <UserManagement user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <UserManagement user={user} />
+          </Suspense>
+        );
       case 'reports':
-        return <EnhancedReports user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <EnhancedReports user={user} />
+          </Suspense>
+        );
       case 'daily-log':
-        return <DailyLogReport user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <DailyLogReport user={user} />
+          </Suspense>
+        );
       case 'collections':
-        return <Collections user={user} />;
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <Collections user={user} />
+          </Suspense>
+        );
       default:
         return (
           <div className="space-y-6">
@@ -110,6 +174,8 @@ const Dashboard = ({ user, onLogout }: DashboardProps) => {
       </div>
     </div>
   );
-};
+});
+
+Dashboard.displayName = 'Dashboard';
 
 export default Dashboard;

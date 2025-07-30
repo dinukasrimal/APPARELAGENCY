@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback, memo } from 'react';
 import { User } from '@/types/auth';
 import { Product } from '@/types/product';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,7 @@ interface ProductCatalogProps {
   user: User;
 }
 
-const ProductCatalog = ({ user }: ProductCatalogProps) => {
+const ProductCatalog = memo(({ user }: ProductCatalogProps) => {
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -38,13 +38,17 @@ const ProductCatalog = ({ user }: ProductCatalogProps) => {
     fetchProducts();
   }, []);
 
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     try {
       setIsLoading(true);
       const { data, error } = await supabase
         .from('products')
-        .select('*')
-        .order('created_at', { ascending: false });
+        .select(`
+          id, name, category, sub_category, colors, sizes,
+          selling_price, billing_price, description, created_at
+        `)
+        .order('created_at', { ascending: false })
+        .limit(200); // Limit to improve performance
 
       if (error) throw error;
 
@@ -71,7 +75,7 @@ const ProductCatalog = ({ user }: ProductCatalogProps) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -557,5 +561,9 @@ const ProductCatalog = ({ user }: ProductCatalogProps) => {
     </div>
   );
 };
+
+});
+
+ProductCatalog.displayName = 'ProductCatalog';
 
 export default ProductCatalog;

@@ -144,6 +144,72 @@ const EnhancedSalesOrderForm = ({
         .flatMap(p => p.colors))]
     : [];
 
+  // Custom sorting function for product names
+  const sortProductsByName = (products: Product[]) => {
+    return products.sort((a, b) => {
+      const extractSizeFromName = (name: string) => {
+        // Check for size patterns at the end of product name
+        const sizePatterns = [
+          // Clothing sizes: S, M, L, XL, 2XL, 3XL, 4XL
+          /\b(S|M|L|XL|2XL|3XL|4XL)$/i,
+          // Numeric sizes: 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42
+          /\b(20|22|24|26|28|30|32|34|36|38|40|42)$/,
+          // Larger numeric sizes: 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100
+          /\b(50|55|60|65|70|75|80|85|90|95|100)$/,
+          // Negative sizes: -50, -55, -60, -65, -70, -75, -80, -85, -90, -95, -100
+          /\b(-50|-55|-60|-65|-70|-75|-80|-85|-90|-95|-100)$/
+        ];
+
+        for (const pattern of sizePatterns) {
+          const match = name.match(pattern);
+          if (match) {
+            return match[1];
+          }
+        }
+        return null;
+      };
+
+      const getSizeOrder = (size: string | null) => {
+        if (!size) return 999; // No size pattern found, put at end
+
+        // Clothing sizes order
+        const clothingSizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+        const clothingIndex = clothingSizes.indexOf(size.toUpperCase());
+        if (clothingIndex !== -1) return clothingIndex;
+
+        // Numeric sizes 20-42
+        const numericSmall = ['20', '22', '24', '26', '28', '30', '32', '34', '36', '38', '40', '42'];
+        const numericSmallIndex = numericSmall.indexOf(size);
+        if (numericSmallIndex !== -1) return numericSmallIndex + 100;
+
+        // Numeric sizes 50-100
+        const numericLarge = ['50', '55', '60', '65', '70', '75', '80', '85', '90', '95', '100'];
+        const numericLargeIndex = numericLarge.indexOf(size);
+        if (numericLargeIndex !== -1) return numericLargeIndex + 200;
+
+        // Negative sizes -50 to -100
+        const negativeSizes = ['-50', '-55', '-60', '-65', '-70', '-75', '-80', '-85', '-90', '-95', '-100'];
+        const negativeIndex = negativeSizes.indexOf(size);
+        if (negativeIndex !== -1) return negativeIndex + 300;
+
+        return 999;
+      };
+
+      const sizeA = extractSizeFromName(a.name);
+      const sizeB = extractSizeFromName(b.name);
+      
+      const orderA = getSizeOrder(sizeA);
+      const orderB = getSizeOrder(sizeB);
+
+      if (orderA !== orderB) {
+        return orderA - orderB;
+      }
+
+      // If same size order or no size pattern, sort alphabetically
+      return a.name.localeCompare(b.name);
+    });
+  };
+
   useEffect(() => {
     if (selectedCategory && selectedSubCategory && selectedColor) {
       const filteredProducts = products.filter(p => 
@@ -152,7 +218,10 @@ const EnhancedSalesOrderForm = ({
         p.colors.includes(selectedColor)
       );
 
-      setProductGridItems(filteredProducts.map(product => ({
+      // Sort products using custom sorting logic
+      const sortedProducts = sortProductsByName(filteredProducts);
+
+      setProductGridItems(sortedProducts.map(product => ({
         product,
         color: selectedColor,
         sizes: product.sizes.map(size => ({ size, quantity: 0 }))
