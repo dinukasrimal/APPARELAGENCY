@@ -174,7 +174,7 @@ const Assets = ({ user }: AssetsProps) => {
 
   const handlePhotoTaken = (photoData: string) => {
     setPhoto(photoData);
-    setShowCamera(false);
+    setShowCamera(false); // Close camera after photo is taken
     getCurrentLocation();
   };
 
@@ -488,17 +488,10 @@ const Assets = ({ user }: AssetsProps) => {
       )}
 
       {showCamera && (
-        <Dialog open={showCamera} onOpenChange={setShowCamera}>
-          <DialogContent className="sm:max-w-[600px]">
-            <DialogHeader>
-              <DialogTitle>Take Asset Photo</DialogTitle>
-            </DialogHeader>
-            <InAppCamera
-              onPhotoTaken={handlePhotoTaken}
-              onCancel={() => setShowCamera(false)}
-            />
-          </DialogContent>
-        </Dialog>
+        <InAppCamera
+          onPhotoTaken={handlePhotoTaken}
+          onCancel={() => setShowCamera(false)}
+        />
       )}
       </div>
     );

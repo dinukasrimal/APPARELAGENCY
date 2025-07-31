@@ -231,6 +231,9 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
     
     getCurrentLocation(); // Capture location when photo is taken
     
+    // Close camera after photo is captured
+    setShowInAppCamera(false);
+    
     toast({
       title: "Success",
       description: "Photo and location captured successfully!",
@@ -438,11 +441,12 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
       </form>
 
       {/* In-App Camera */}
-      <InAppCamera
-        isOpen={showInAppCamera}
-        onPhotoCapture={handlePhotoCapture}
-        onClose={() => setShowInAppCamera(false)}
-      />
+      {showInAppCamera && (
+        <InAppCamera
+          onPhotoTaken={handlePhotoCapture}
+          onCancel={() => setShowInAppCamera(false)}
+        />
+      )}
 
       {/* Signature Capture Modal */}
       {showSignatureCapture && (

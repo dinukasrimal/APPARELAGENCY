@@ -112,7 +112,7 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
     if (capturedPhoto) {
       onPhotoTaken(capturedPhoto);
       setCapturedPhoto('');
-      onCancel();
+      // Don't call onCancel() here - let the parent component handle closing
     }
   };
 
