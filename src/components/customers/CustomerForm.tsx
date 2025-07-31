@@ -24,7 +24,9 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
     name: customer?.name || '',
     phone: customer?.phone || '',
     address: customer?.address || '',
-    agencyId: customer?.agencyId || user.agencyId || '00000000-0000-0000-0000-000000000000'
+    agencyId: customer?.agencyId || user.agencyId || '00000000-0000-0000-0000-000000000000',
+    shopOwnerName: customer?.shopOwnerName || '',
+    shopOwnerBirthday: customer?.shopOwnerBirthday || ''
   });
 
   const [gpsCoordinates, setGpsCoordinates] = useState(
@@ -319,6 +321,29 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
                   rows={3}
                   className="text-base resize-none"
                 />
+              </div>
+
+              <div>
+                <Label htmlFor="shopOwnerName">Shop Owner Name</Label>
+                <Input
+                  id="shopOwnerName"
+                  value={formData.shopOwnerName}
+                  onChange={(e) => setFormData({ ...formData, shopOwnerName: e.target.value })}
+                  placeholder="Enter shop owner's name"
+                  className="text-base"
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="shopOwnerBirthday">Shop Owner Birthday</Label>
+                <Input
+                  id="shopOwnerBirthday"
+                  type="date"
+                  value={formData.shopOwnerBirthday}
+                  onChange={(e) => setFormData({ ...formData, shopOwnerBirthday: e.target.value })}
+                  className="text-base"
+                />
+                <p className="text-gray-500 text-xs mt-1">Optional: Used for birthday promotions and greetings</p>
               </div>
             </CardContent>
           </Card>

@@ -13,4 +13,6 @@ export interface Customer {
   agencyId: string;
   createdAt: Date;
   createdBy: string;
+  shopOwnerName?: string;
+  shopOwnerBirthday?: string; // ISO date string (YYYY-MM-DD)
 }
