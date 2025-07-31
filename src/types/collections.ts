@@ -44,6 +44,10 @@ export interface CustomerInvoiceSummary {
   totalInvoiced: number;
   totalCollected: number;
   outstandingAmount: number;
+  outstandingWithCheques: number;
+  outstandingWithoutCheques: number;
+  returnedChequesAmount: number;
+  returnedChequesCount: number;
   invoices: InvoiceSummary[];
 }
 

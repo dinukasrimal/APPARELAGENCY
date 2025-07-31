@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Calendar as CalendarIcon, Clock, MapPin, Users, ShoppingCart, Receipt, AlertTriangle, Download, ChevronLeft, ChevronRight, DollarSign, Image as ImageIcon } from 'lucide-react';
+import { Calendar as CalendarIcon, Clock, MapPin, Users, ShoppingCart, Receipt, AlertTriangle, Download, ChevronLeft, ChevronRight, DollarSign, Image as ImageIcon, ArrowLeft } from 'lucide-react';
 import { Calendar } from '@/components/ui/calendar';
 import { supabase } from '@/integrations/supabase/client';
 import LeafletMap from '@/components/dashboard/LeafletMap';
@@ -40,9 +40,10 @@ interface ReportUser {
 
 interface DailyLogReportProps {
   user: User;
+  onBack: () => void;
 }
 
-const DailyLogReport = ({ user }: DailyLogReportProps) => {
+const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
   const [viewMode, setViewMode] = useState<'calendar' | 'dateRange'>('calendar');
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [selectedMonth, setSelectedMonth] = useState<Date>(new Date());
@@ -841,6 +842,13 @@ const DailyLogReport = ({ user }: DailyLogReportProps) => {
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center gap-4">
+        <Button variant="ghost" onClick={onBack}>
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Back
+        </Button>
+      </div>
+      
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Daily Log Report</h2>

@@ -22,7 +22,8 @@ import {
   BarChart,
   AlertTriangle,
   DollarSign,
-  Image
+  Image,
+  FileX
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -33,7 +34,7 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'daily-log';
+type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques';
 
 const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: SidebarProps) => {
   const { agency } = useAgency(user.agencyId);
@@ -45,6 +46,7 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'products', label: 'Products', icon: Package, roles: ['agency', 'superuser', 'agent'] },
     { id: 'sales', label: 'Sales', icon: ShoppingCart, roles: ['agency', 'superuser', 'agent'] },
     { id: 'collections', label: 'Collections', icon: DollarSign, roles: ['agency', 'superuser', 'agent'] },
+    { id: 'return-cheques', label: 'Return Cheques Lodge', icon: FileX, roles: ['agency', 'superuser', 'agent'] },
     { id: 'non-productive-visits', label: 'Non-Productive Visits', icon: AlertTriangle, roles: ['agency', 'agent', 'superuser'] },
     { id: 'company-returns', label: 'Company Returns', icon: RotateCcw, roles: ['agency', 'superuser', 'agent'] },
     { id: 'purchase', label: 'Purchase', icon: Truck, roles: ['agency', 'superuser', 'agent'] },
@@ -54,14 +56,8 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'user-management', label: 'User Management', icon: UserCog, roles: ['superuser'] },
     {
       id: 'reports',
-      label: 'Enhanced Reports',
+      label: 'Reports & Analytics',
       icon: BarChart,
-      roles: ['superuser', 'agency', 'agent'],
-    },
-    {
-      id: 'daily-log',
-      label: 'Daily Log Report',
-      icon: MapPin,
       roles: ['superuser', 'agency', 'agent'],
     },
   ];

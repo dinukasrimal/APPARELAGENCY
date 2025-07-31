@@ -17,10 +17,10 @@ const TimeTracking = lazy(() => import('@/components/visits/TimeTracking'));
 const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/QuarterlyTargetsManagement'));
 const UserManagement = lazy(() => import('@/components/admin/UserManagement'));
 const SimpleCompanyReturns = lazy(() => import('@/components/returns/SimpleCompanyReturns'));
-const DailyLogReport = lazy(() => import('@/components/reports/DailyLogReport'));
-const EnhancedReports = lazy(() => import('@/components/reports/EnhancedReports'));
+const Reports = lazy(() => import('@/components/reports/Reports'));
 const Collections = lazy(() => import('@/components/collections/Collections'));
 const Assets = lazy(() => import('@/components/assets/Assets'));
+const ReturnChequesLodge = lazy(() => import('@/components/cheques/ReturnChequesLodge'));
 
 interface DashboardProps {
   user: User;
@@ -110,19 +110,19 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
       case 'reports':
         return (
           <Suspense fallback={<ModuleLoader />}>
-            <EnhancedReports user={user} />
-          </Suspense>
-        );
-      case 'daily-log':
-        return (
-          <Suspense fallback={<ModuleLoader />}>
-            <DailyLogReport user={user} />
+            <Reports user={user} onBack={() => setActiveModule('dashboard')} />
           </Suspense>
         );
       case 'collections':
         return (
           <Suspense fallback={<ModuleLoader />}>
             <Collections user={user} />
+          </Suspense>
+        );
+      case 'return-cheques':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <ReturnChequesLodge user={user} onBack={() => setActiveModule('dashboard')} />
           </Suspense>
         );
       default:

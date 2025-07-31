@@ -12,7 +12,7 @@ interface CollectionFormProps {
   customerId: string;
   customerName: string;
   customerInvoices?: any[]; // Outstanding invoices for the customer
-  onSubmit: (data: CollectionFormData & { paymentType: 'direct' | 'advance', invoiceAllocations?: any[] }) => void;
+  onSubmit: (data: CollectionFormData & { paymentType: 'direct', invoiceAllocations: any[] }) => void;
   onCancel: () => void;
   loading?: boolean;
 }
@@ -47,7 +47,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
   });
 
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'capturing' | 'success' | 'error'>('idle');
-  const [paymentType, setPaymentType] = useState<'direct' | 'advance'>('advance');
+  const [paymentType, setPaymentType] = useState<'direct'>('direct');
   const [invoiceAllocations, setInvoiceAllocations] = useState<{[key: string]: number}>({});
 
   // Calculate total amount automatically
@@ -160,24 +160,29 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
       return;
     }
 
-    // Validate direct payment allocations
-    if (paymentType === 'direct') {
-      const allocatedAmount = calculateAllocatedAmount();
-      if (allocatedAmount === 0) {
-        alert('Please allocate payment to at least one invoice');
-        return;
-      }
-      if (allocatedAmount > total) {
-        alert('Total allocated amount cannot exceed payment amount');
-        return;
-      }
+    // Validate invoice allocations - now required for all payments
+    if (customerInvoices.length === 0) {
+      alert('Cannot record payment: No outstanding invoices found for this customer');
+      return;
+    }
+    
+    const allocatedAmount = calculateAllocatedAmount();
+    if (allocatedAmount === 0) {
+      alert('Please allocate payment to at least one invoice');
+      return;
+    }
+    if (allocatedAmount > total) {
+      alert('Total allocated amount cannot exceed payment amount');
+      return;
+    }
+    if (allocatedAmount !== total) {
+      alert('Total allocated amount must equal the payment amount');
+      return;
     }
 
-    const allocationsArray = paymentType === 'direct' 
-      ? Object.entries(invoiceAllocations)
+    const allocationsArray = Object.entries(invoiceAllocations)
           .filter(([, amount]) => amount > 0)
-          .map(([invoiceId, amount]) => ({ invoiceId, amount }))
-      : [];
+          .map(([invoiceId, amount]) => ({ invoiceId, amount }));
 
     onSubmit({
       ...formData,
@@ -220,37 +225,14 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
             </div>
           </div>
 
-          {/* Payment Type Selection */}
-          <div className="space-y-4">
-            <Label>Payment Type</Label>
-            <div className="grid grid-cols-2 gap-4">
-              <Card 
-                className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
-                  paymentType === 'direct' ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50'
-                }`}
-                onClick={() => setPaymentType('direct')}
-              >
-                <CardContent className="p-4 text-center">
-                  <div className="font-semibold text-sm mb-2">Direct Payment</div>
-                  <div className="text-xs text-gray-600">Pay against specific invoices</div>
-                </CardContent>
-              </Card>
-              <Card 
-                className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
-                  paymentType === 'advance' ? 'ring-2 ring-green-500 bg-green-50' : 'hover:bg-gray-50'
-                }`}
-                onClick={() => setPaymentType('advance')}
-              >
-                <CardContent className="p-4 text-center">
-                  <div className="font-semibold text-sm mb-2">Advance Payment</div>
-                  <div className="text-xs text-gray-600">Allocate to invoices later</div>
-                </CardContent>
-              </Card>
-            </div>
+          {/* Payment must be allocated to specific invoices */}
+          <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="text-sm font-medium text-blue-900 mb-1">Invoice Payment Only</div>
+            <div className="text-xs text-blue-700">All payments must be allocated to specific outstanding invoices. Advance payments are not allowed.</div>
           </div>
 
-          {/* Invoice Allocation for Direct Payments */}
-          {paymentType === 'direct' && customerInvoices.length > 0 && (
+          {/* Invoice Allocation - Required for all payments */}
+          {customerInvoices.length > 0 ? (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <Label>Allocate Payment to Invoices</Label>
@@ -293,16 +275,18 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
                 ))}
               </div>
             </div>
-          )}
-
-          {paymentType === 'direct' && customerInvoices.length === 0 && (
-            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-              <div className="text-sm text-yellow-800">
-                No outstanding invoices found for this customer. You can only record as advance payment.
+          ) : (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+              <div className="text-sm font-medium text-red-900 mb-1">Cannot Record Payment</div>
+              <div className="text-sm text-red-700">
+                No outstanding invoices found for this customer. Payments can only be recorded against specific invoices.
               </div>
             </div>
           )}
 
+          {/* Only show payment form if there are outstanding invoices */}
+          {customerInvoices.length > 0 && (
+            <>
           {/* Payment Method */}
           <div>
             <Label htmlFor="paymentMethod">Payment Method</Label>
@@ -521,14 +505,16 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
               rows={3}
             />
           </div>
+            </>
+          )}
 
           {/* Form Actions */}
           <div className="flex justify-end space-x-2">
             <Button type="button" variant="outline" onClick={onCancel}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? 'Recording...' : paymentType === 'direct' ? 'Record Direct Payment' : 'Record Advance Payment'}
+            <Button type="submit" disabled={loading || customerInvoices.length === 0}>
+              {loading ? 'Recording...' : customerInvoices.length === 0 ? 'No Outstanding Invoices' : 'Record Payment'}
             </Button>
           </div>
         </form>

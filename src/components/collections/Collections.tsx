@@ -11,7 +11,6 @@ import { Search, User as UserIcon, FileText, DollarSign, Plus, ArrowLeft, MapPin
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { CollectionForm } from './CollectionForm';
-import { CollectionAllocation } from './CollectionAllocation';
 import { CollectionDetails } from './CollectionDetails';
 
 interface CollectionsProps {
@@ -27,8 +26,6 @@ const Collections = ({ user }: CollectionsProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [showCollectionForm, setShowCollectionForm] = useState(false);
-  const [showAllocation, setShowAllocation] = useState(false);
-  const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null);
   const [viewingCollection, setViewingCollection] = useState<Collection | null>(null);
   const { toast } = useToast();
 
@@ -180,10 +177,39 @@ const Collections = ({ user }: CollectionsProps) => {
       const customerInvoices = invoices.filter(inv => inv.customerId === customerId);
       const customerCollections = collections.filter(col => col.customerId === customerId);
 
+      // Calculate cheque payments with date validation
+      const today = new Date();
+      let totalCashCollected = 0;
+      let totalChequeCollected = 0;
+      let totalValidChequeCollected = 0; // Only cheques with past dates
+      let returnedChequesAmount = 0;
+      let returnedChequesCount = 0;
+
+      customerCollections.forEach(collection => {
+        totalCashCollected += collection.cashAmount;
+        
+        // Process cheques
+        collection.chequeDetails?.forEach(cheque => {
+          if (cheque.status === 'returned') {
+            returnedChequesAmount += cheque.amount;
+            returnedChequesCount++;
+          } else {
+            totalChequeCollected += cheque.amount;
+            
+            // Only count as valid payment if cheque date has passed
+            if (new Date(cheque.chequeDate) <= today) {
+              totalValidChequeCollected += cheque.amount;
+            }
+          }
+        });
+      });
+
       // Calculate totals
       const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
-      const totalCollected = customerCollections.reduce((sum, col) => sum + col.totalAmount, 0);
-      const outstandingAmount = totalInvoiced - totalCollected;
+      const totalCollectedWithAllCheques = totalCashCollected + totalChequeCollected;
+      const totalCollectedWithValidCheques = totalCashCollected + totalValidChequeCollected;
+      const outstandingWithAllCheques = totalInvoiced - totalCollectedWithAllCheques + returnedChequesAmount;
+      const outstandingWithoutFutureCheques = totalInvoiced - totalCollectedWithValidCheques + returnedChequesAmount;
 
       // Create invoice summaries with proper collection calculations
       const invoiceSummaries: InvoiceSummary[] = await Promise.all(
@@ -220,8 +246,12 @@ const Collections = ({ user }: CollectionsProps) => {
           customerId,
           customerName: customer.name,
           totalInvoiced,
-          totalCollected,
-          outstandingAmount,
+          totalCollected: totalCollectedWithValidCheques,
+          outstandingAmount: outstandingWithoutFutureCheques,
+          outstandingWithCheques: outstandingWithAllCheques,
+          outstandingWithoutCheques: outstandingWithoutFutureCheques,
+          returnedChequesAmount,
+          returnedChequesCount,
           invoices: invoiceSummaries
         });
       }
@@ -245,8 +275,8 @@ const Collections = ({ user }: CollectionsProps) => {
 
   const handleCollectionFormSubmit = async (formData: any) => {
     try {
-      // Determine status based on payment type
-      const status = formData.paymentType === 'direct' ? 'allocated' : 'pending';
+      // All payments are now direct payments allocated to specific invoices
+      const status = 'allocated';
       
       // Create a new collection object with database field names
       const newCollection = {
@@ -331,9 +361,7 @@ const Collections = ({ user }: CollectionsProps) => {
 
       handleCollectionCreated(transformedCollection);
       
-      const successMessage = formData.paymentType === 'direct' 
-        ? "Direct payment recorded and allocated successfully"
-        : "Advance payment recorded successfully";
+      const successMessage = "Payment recorded and allocated to invoices successfully";
       
       toast({
         title: "Success",
@@ -349,35 +377,6 @@ const Collections = ({ user }: CollectionsProps) => {
     }
   };
 
-  const handleAllocationComplete = () => {
-    setShowAllocation(false);
-    setSelectedCollection(null);
-    if (selectedCustomer) {
-      fetchCustomerInvoiceSummary(selectedCustomer.id);
-    }
-  };
-
-  const handleAllocationSubmit = async (allocations: { invoiceId: string; amount: number }[]) => {
-    try {
-      // Here you would save the allocations to the database
-      // For now, we'll just show a success message
-      console.log('Allocations:', allocations);
-      
-      toast({
-        title: "Success",
-        description: "Collection allocated successfully",
-      });
-      
-      handleAllocationComplete();
-    } catch (error) {
-      console.error('Error allocating collection:', error);
-      toast({
-        title: "Error",
-        description: "Failed to allocate collection",
-        variant: "destructive",
-      });
-    }
-  };
 
   const filteredCustomers = customers.filter(customer =>
     customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -417,35 +416,6 @@ const Collections = ({ user }: CollectionsProps) => {
     );
   }
 
-  if (showAllocation && selectedCollection) {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" onClick={() => {
-            setShowAllocation(false);
-            setSelectedCollection(null);
-          }}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Collections
-          </Button>
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">Allocate Collection</h2>
-            <p className="text-gray-600">Allocate collection to invoices for {selectedCollection.customerName}</p>
-          </div>
-        </div>
-        
-        <CollectionAllocation
-          collection={selectedCollection}
-          invoices={customerInvoiceSummary?.invoices || []}
-          onAllocate={handleAllocationSubmit}
-          onCancel={() => {
-            setShowAllocation(false);
-            setSelectedCollection(null);
-          }}
-        />
-      </div>
-    );
-  }
 
   if (viewingCollection) {
     return (
@@ -544,24 +514,36 @@ const Collections = ({ user }: CollectionsProps) => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
               <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600">
+                <div className="text-xl font-bold text-blue-600">
                   LKR {customerInvoiceSummary.totalInvoiced.toLocaleString()}
                 </div>
                 <div className="text-sm text-gray-600">Total Invoiced</div>
               </div>
               <div className="text-center p-4 bg-green-50 rounded-lg">
-                <div className="text-2xl font-bold text-green-600">
+                <div className="text-xl font-bold text-green-600">
                   LKR {customerInvoiceSummary.totalCollected.toLocaleString()}
                 </div>
                 <div className="text-sm text-gray-600">Total Collected</div>
               </div>
               <div className="text-center p-4 bg-red-50 rounded-lg">
-                <div className="text-2xl font-bold text-red-600">
-                  LKR {customerInvoiceSummary.outstandingAmount.toLocaleString()}
+                <div className="text-xl font-bold text-red-600">
+                  LKR {customerInvoiceSummary.outstandingWithCheques.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">Outstanding</div>
+                <div className="text-sm text-gray-600">Outstanding (With Cheques)</div>
+              </div>
+              <div className="text-center p-4 bg-orange-50 rounded-lg">
+                <div className="text-xl font-bold text-orange-600">
+                  LKR {customerInvoiceSummary.outstandingWithoutCheques.toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600">Outstanding (Without Future Cheques)</div>
+              </div>
+              <div className="text-center p-4 bg-purple-50 rounded-lg">
+                <div className="text-xl font-bold text-purple-600">
+                  {customerInvoiceSummary.returnedChequesCount} ({customerInvoiceSummary.returnedChequesAmount > 0 ? `LKR ${customerInvoiceSummary.returnedChequesAmount.toLocaleString()}` : 'LKR 0'})
+                </div>
+                <div className="text-sm text-gray-600">Returned Cheques</div>
               </div>
             </div>
 
@@ -634,25 +616,12 @@ const Collections = ({ user }: CollectionsProps) => {
                       </div>
                       <div className="flex gap-2 mt-1">
                         <Badge variant="outline">{collection.paymentMethod}</Badge>
-                        <Badge variant={collection.status === 'pending' ? 'secondary' : 'default'}>
-                          {collection.status}
+                        <Badge variant="default">
+                          allocated
                         </Badge>
                       </div>
                     </div>
                   </div>
-                  
-                  {collection.status === 'pending' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setSelectedCollection(collection);
-                        setShowAllocation(true);
-                      }}
-                    >
-                      Allocate to Invoices
-                    </Button>
-                  )}
                   
                   <Button
                     variant="outline"

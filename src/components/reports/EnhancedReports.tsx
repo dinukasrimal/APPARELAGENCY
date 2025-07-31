@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Calendar, Users, ShoppingCart, AlertTriangle, Download, TrendingUp, Percent } from 'lucide-react';
+import { Calendar, Users, ShoppingCart, AlertTriangle, Download, TrendingUp, Percent, ArrowLeft } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 
@@ -26,9 +26,10 @@ interface ReportMetrics {
 
 interface EnhancedReportsProps {
   user: User;
+  onBack: () => void;
 }
 
-const EnhancedReports = ({ user }: EnhancedReportsProps) => {
+const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
   const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedAgency, setSelectedAgency] = useState<string>(user.role === 'superuser' ? '' : user.agencyId || '');
@@ -217,6 +218,12 @@ const EnhancedReports = ({ user }: EnhancedReportsProps) => {
         <div className="relative mb-8">
           <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-purple-600 rounded-3xl opacity-10"></div>
           <div className="relative p-6 sm:p-8">
+            <div className="flex items-center gap-4 mb-6">
+              <Button variant="ghost" onClick={onBack}>
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back
+              </Button>
+            </div>
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
               <div>
                 <h2 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-2">Enhanced Reports</h2>
