@@ -6,9 +6,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw } from 'lucide-react';
+import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Database } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService } from '@/services/external-inventory.service';
+import { syncStatusService } from '@/services/sync-status';
 import { useToast } from '@/hooks/use-toast';
 import InventorySyncButton from './InventorySyncButton';
 import InventoryCategorySidebar from './InventoryCategorySidebar';
@@ -16,6 +17,7 @@ import StockAdjustmentForm from './StockAdjustmentForm';
 import StockAdjustmentApproval from './StockAdjustmentApproval';
 import StockAdjustmentHistory from './StockAdjustmentHistory';
 import BulkStockAdjustmentForm from './BulkStockAdjustmentForm';
+import ExternalInventory from './ExternalInventory';
 
 interface InventoryItem {
   id: string;
@@ -69,8 +71,16 @@ const Inventory = ({ user }: InventoryProps) => {
   const [sidebarSearchTerm, setSidebarSearchTerm] = useState('');
   const [stockFilter, setStockFilter] = useState('all');
   const [activeTab, setActiveTab] = useState('overview');
+  const [inventoryMode, setInventoryMode] = useState<'legacy' | 'external'>('legacy');
   const [loading, setLoading] = useState(true);
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
+  const [isCurrentlyFetching, setIsCurrentlyFetching] = useState(false);
+  const [lastSyncStatus, setLastSyncStatus] = useState<{
+    lastSyncTime: string | null;
+    lastSyncStatus: string | null;
+    lastSyncCount: number | null;
+    lastSyncMessage: string | null;
+  } | null>(null);
   const [showAdjustmentForm, setShowAdjustmentForm] = useState(false);
   const [showBulkAdjustmentForm, setShowBulkAdjustmentForm] = useState(false);
   const [showApprovalInterface, setShowApprovalInterface] = useState(false);
@@ -125,10 +135,19 @@ const Inventory = ({ user }: InventoryProps) => {
 
   // Fetch inventory data
   const fetchInventoryData = async () => {
+    if (isCurrentlyFetching) {
+      console.log('⚠️ Already fetching inventory data, skipping...');
+      return;
+    }
+    
+    const startTime = performance.now();
     try {
+      console.log('🔄 Starting inventory data fetch...', new Date().toISOString());
+      setIsCurrentlyFetching(true);
       setLoading(true);
       
-      // Fetch current inventory items
+      // Fetch current inventory items - TEMPORARILY LIMITED FOR TESTING
+      console.log('📦 Fetching inventory items...');
       let inventoryQuery = supabase
         .from('inventory_items')
         .select(`
@@ -141,14 +160,18 @@ const Inventory = ({ user }: InventoryProps) => {
           minimum_stock,
           agency_id,
           last_updated
-        `);
+        `)
+; // LIMIT REMOVED - BACK TO NORMAL OPERATION
 
       // Apply role-based filtering
       if (user.role === 'agent' || user.role === 'agency') {
         inventoryQuery = inventoryQuery.eq('agency_id', user.agencyId);
       }
 
+      const queryStart = performance.now();
       const { data: inventoryData, error: inventoryError } = await inventoryQuery;
+      const queryTime = performance.now() - queryStart;
+      console.log(`📦 Fetched ${inventoryData?.length || 0} inventory items in ${queryTime.toFixed(2)}ms`);
       
       if (inventoryError) {
         console.error('Error fetching inventory items:', inventoryError);
@@ -161,16 +184,29 @@ const Inventory = ({ user }: InventoryProps) => {
         return;
       }
 
+      if (!inventoryData || inventoryData.length === 0) {
+        console.log('📦 No inventory items found, finishing early');
+        setInventoryItems([]);
+        setStockMovements([]);
+        setStockSummary([]);
+        setLoading(false);
+        return;
+      }
+
       // Get product details separately to avoid foreign key issues
-      const productIds = [...new Set((inventoryData || []).map(item => item.product_id).filter(Boolean))];
+      console.log('🏷️ Fetching product details...');
+      const productIds = [...new Set(inventoryData.map(item => item.product_id).filter(Boolean))];
       let productDetails = new Map();
       
       if (productIds.length > 0) {
+        const productQueryStart = performance.now();
         const { data: productsData } = await supabase
           .from('products')
           .select('id, category, sub_category, selling_price')
           .in('id', productIds);
+        const productQueryTime = performance.now() - productQueryStart;
         
+        console.log(`🏷️ Fetched ${productsData?.length || 0} product details in ${productQueryTime.toFixed(2)}ms`);
         if (productsData) {
           productsData.forEach(product => {
             productDetails.set(product.id, product);
@@ -197,13 +233,22 @@ const Inventory = ({ user }: InventoryProps) => {
         };
       });
 
+      console.log('📋 Setting inventory items...');
       setInventoryItems(transformedItems);
       
-      // Fetch recent stock movements
-      await fetchStockMovements();
+      console.log('🔄 Fetching movements and calculating summary in parallel...');
+      const parallelStart = performance.now();
       
-      // Calculate stock summary with external vs internal breakdown
-      await calculateStockSummary();
+      // Run stock movements and stock summary in parallel for better performance
+      await Promise.all([
+        fetchStockMovements(),
+        calculateStockSummary()
+      ]);
+      
+      const parallelTime = performance.now() - parallelStart;
+      const totalTime = performance.now() - startTime;
+      console.log(`⚡ Parallel operations completed in ${parallelTime.toFixed(2)}ms`);
+      console.log(`✅ Total inventory data fetch completed in ${totalTime.toFixed(2)}ms`);
       
     } catch (error) {
       console.error('Error in fetchInventoryData:', error);
@@ -214,12 +259,15 @@ const Inventory = ({ user }: InventoryProps) => {
       });
     } finally {
       setLoading(false);
+      setIsCurrentlyFetching(false);
     }
   };
 
   // Fetch recent stock movements
   const fetchStockMovements = async () => {
+    const movementsStart = performance.now();
     try {
+      console.log('📊 Starting stock movements fetch...');
       let movementsQuery = supabase
         .from('inventory_transactions')
         .select('*')
@@ -230,12 +278,16 @@ const Inventory = ({ user }: InventoryProps) => {
         movementsQuery = movementsQuery.eq('agency_id', user.agencyId);
       }
 
+      const movementsQueryStart = performance.now();
       const { data: movementsData, error: movementsError } = await movementsQuery;
+      const movementsQueryTime = performance.now() - movementsQueryStart;
       
       if (movementsError) {
         console.error('Error fetching stock movements:', movementsError);
         return;
       }
+      
+      console.log(`📊 Fetched ${movementsData?.length || 0} stock movements in ${movementsQueryTime.toFixed(2)}ms`);
 
       const movements: StockMovement[] = (movementsData || []).map(movement => ({
         id: movement.id,
@@ -251,12 +303,15 @@ const Inventory = ({ user }: InventoryProps) => {
       }));
 
       setStockMovements(movements);
+      
+      const movementsTotal = performance.now() - movementsStart;
+      console.log(`📊 Stock movements fetch completed in ${movementsTotal.toFixed(2)}ms total`);
     } catch (error) {
       console.error('Error fetching stock movements:', error);
     }
   };
 
-  // Calculate stock summary with external vs internal breakdown
+  // Calculate stock summary with external vs internal breakdown (OPTIMIZED)
   const calculateStockSummary = async () => {
     try {
       let summaryQuery = supabase
@@ -280,9 +335,13 @@ const Inventory = ({ user }: InventoryProps) => {
         return;
       }
 
-      // Get transaction details for each product
+      if (!summaryData || summaryData.length === 0) {
+        setStockSummary([]);
+        return;
+      }
+
       // Get product details for summary
-      const summaryProductIds = [...new Set((summaryData || []).map(item => item.product_id).filter(Boolean))];
+      const summaryProductIds = [...new Set(summaryData.map(item => item.product_id).filter(Boolean))];
       let summaryProductDetails = new Map();
       
       if (summaryProductIds.length > 0) {
@@ -298,26 +357,37 @@ const Inventory = ({ user }: InventoryProps) => {
         }
       }
 
-      const summary: StockSummary[] = [];
+      // OPTIMIZED: Get ALL transactions in one query instead of N queries
+      let allTransactionsQuery = supabase
+        .from('inventory_transactions')
+        .select('product_name, color, size, transaction_type, quantity');
+
+      if (user.role === 'agent' || user.role === 'agency') {
+        allTransactionsQuery = allTransactionsQuery.eq('agency_id', user.agencyId);
+      }
+
+      const { data: allTransactions } = await allTransactionsQuery;
       
-      for (const item of summaryData || []) {
-        let transactionQuery = supabase
-          .from('inventory_transactions')
-          .select('transaction_type, quantity')
-          .eq('product_name', item.product_name)
-          .eq('color', item.color)
-          .eq('size', item.size);
-
-        if (user.role === 'agent' || user.role === 'agency') {
-          transactionQuery = transactionQuery.eq('agency_id', user.agencyId);
+      // Group transactions by product+color+size for efficient lookup
+      const transactionMap = new Map();
+      
+      for (const transaction of allTransactions || []) {
+        const key = `${transaction.product_name}|${transaction.color}|${transaction.size}`;
+        if (!transactionMap.has(key)) {
+          transactionMap.set(key, []);
         }
+        transactionMap.get(key).push(transaction);
+      }
 
-        const { data: transactions } = await transactionQuery;
+      // Build summary using the pre-grouped transactions
+      const summary: StockSummary[] = summaryData.map(item => {
+        const key = `${item.product_name}|${item.color}|${item.size}`;
+        const transactions = transactionMap.get(key) || [];
         
         let stockIn = 0;
         let stockOut = 0;
         
-        for (const transaction of transactions || []) {
+        for (const transaction of transactions) {
           if (transaction.transaction_type === 'external_invoice' || 
               transaction.transaction_type === 'grn_acceptance' ||
               transaction.transaction_type === 'customer_return') {
@@ -329,7 +399,7 @@ const Inventory = ({ user }: InventoryProps) => {
         }
         
         const product = summaryProductDetails.get(item.product_id);
-        summary.push({
+        return {
           productName: item.product_name,
           color: item.color,
           size: item.size,
@@ -338,8 +408,8 @@ const Inventory = ({ user }: InventoryProps) => {
           stockIn,
           stockOut,
           balance: stockIn - stockOut
-        });
-      }
+        };
+      });
       
       setStockSummary(summary);
     } catch (error) {
@@ -379,12 +449,28 @@ const Inventory = ({ user }: InventoryProps) => {
   const handleSyncComplete = useCallback(() => {
     // Refresh inventory data after sync
     fetchInventoryData();
+    fetchSyncStatus(); // Also refresh sync status after sync
     console.log('Inventory sync completed');
   }, []);
 
   // Load data on component mount
+  // Fetch sync status
+  const fetchSyncStatus = async () => {
+    try {
+      console.log('🔄 Fetching sync status...');
+      const status = await syncStatusService.getLatestSyncStatus();
+      console.log('📊 Sync status received:', status);
+      setLastSyncStatus(status);
+      console.log('✅ Sync status set to state');
+    } catch (error) {
+      console.error('Error fetching sync status:', error);
+    }
+  };
+
   useEffect(() => {
     fetchInventoryData();
+    // Fetch sync status in background (non-blocking)
+    fetchSyncStatus().catch(console.error);
   }, [user.id, user.role, user.agencyId]);
 
   if (loading) {
@@ -394,6 +480,11 @@ const Inventory = ({ user }: InventoryProps) => {
         <p className="text-gray-600">Loading inventory data...</p>
       </div>
     );
+  }
+
+  // If external inventory mode is selected, render the new component
+  if (inventoryMode === 'external') {
+    return <ExternalInventory user={user} />;
   }
 
   return (
@@ -419,6 +510,19 @@ const Inventory = ({ user }: InventoryProps) => {
           </p>
         </div>
         <div className="flex gap-2 items-center">
+          {/* Inventory Mode Toggle */}
+          <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 rounded-lg border border-blue-200">
+            <Database className="h-4 w-4 text-blue-600" />
+            <select 
+              value={inventoryMode}
+              onChange={(e) => setInventoryMode(e.target.value as 'legacy' | 'external')}
+              className="text-sm text-blue-700 bg-transparent border-none outline-none"
+            >
+              <option value="legacy">Legacy Inventory</option>
+              <option value="external">External Inventory</option>
+            </select>
+          </div>
+
           {/* Auto-sync Status Indicator */}
           <div className="flex items-center gap-2 px-3 py-1 bg-green-50 rounded-lg border border-green-200">
             <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -627,7 +731,131 @@ const Inventory = ({ user }: InventoryProps) => {
         {/* Current Inventory Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Current Inventory Items</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>Current Inventory Items</CardTitle>
+              {lastSyncStatus ? (
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <RefreshCw className="h-4 w-4" />
+                  <span>
+                    {lastSyncStatus.lastSyncTime 
+                      ? `Last sync: ${new Date(lastSyncStatus.lastSyncTime).toLocaleString()}`
+                      : 'No sync data available'}
+                  </span>
+                  <Badge 
+                    variant={
+                      lastSyncStatus.lastSyncStatus === 'success' ? 'default' : 
+                      lastSyncStatus.lastSyncStatus === 'error' ? 'destructive' : 
+                      'secondary'
+                    }
+                    className="ml-2"
+                  >
+                    {lastSyncStatus.lastSyncStatus === 'success' ? '✅' : 
+                     lastSyncStatus.lastSyncStatus === 'error' ? '❌' : 
+                     lastSyncStatus.lastSyncStatus === 'never_synced' ? '🔄' : '⚠️'}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={fetchSyncStatus}
+                    className="h-6 w-6 p-0 ml-1"
+                    title="Refresh sync status"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        console.log('🚀 Triggering manual sync for user:', user.id);
+                        toast({
+                          title: "Sync Started",
+                          description: "External bot invoice sync is running...",
+                        });
+                        
+                        // Import the external bot sync service
+                        const { externalBotSyncService } = await import('@/services/external-bot-sync');
+                        
+                        // Trigger sync for this user (matches partner_name with user's name)
+                        const result = await externalBotSyncService.syncInvoices(user.id);
+                        console.log('Manual sync result:', result);
+                        
+                        if (result.success) {
+                          toast({
+                            title: "Sync Completed",
+                            description: `${result.message} - ${result.details?.processedCount || 0} items processed into inventory`,
+                          });
+                          
+                          // Refresh inventory data to show new stock
+                          await fetchInventoryData();
+                        } else {
+                          toast({
+                            title: "Sync Failed",
+                            description: result.message,
+                            variant: "destructive"
+                          });
+                        }
+                        
+                        // Refresh sync status after manual sync
+                        await fetchSyncStatus();
+                      } catch (error) {
+                        console.error('Manual sync failed:', error);
+                        toast({
+                          title: "Sync Error",
+                          description: "Failed to trigger sync. Check console for details.",
+                          variant: "destructive"
+                        });
+                      }
+                    }}
+                    className="ml-2"
+                    title="Trigger manual sync for your agency"
+                  >
+                    Sync Agency Stock
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        // Check recent sync history
+                        const history = await syncStatusService.getSyncHistory(5);
+                        console.log('📊 Recent sync history:', history);
+                        
+                        if (history.length === 0) {
+                          toast({
+                            title: "No Sync History",
+                            description: "No automatic syncs have run yet. Auto sync is scheduled for 6 AM and 6 PM daily.",
+                            variant: "destructive"
+                          });
+                        } else {
+                          const lastSync = history[0];
+                          const timeSince = Date.now() - new Date(lastSync.sync_timestamp).getTime();
+                          const hoursSince = Math.floor(timeSince / (1000 * 60 * 60));
+                          
+                          toast({
+                            title: "Auto Sync Status",
+                            description: `Last sync: ${hoursSince} hours ago. Next sync: 6 AM or 6 PM (every 12 hours)`,
+                          });
+                        }
+                      } catch (error) {
+                        console.error('Failed to check sync history:', error);
+                        toast({
+                          title: "Check Failed",
+                          description: "Could not check auto sync status",
+                          variant: "destructive"
+                        });
+                      }
+                    }}
+                    className="ml-1"
+                    title="Check auto sync status"
+                  >
+                    Check Auto Sync
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">Loading sync status...</div>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             {filteredItems.length === 0 ? (

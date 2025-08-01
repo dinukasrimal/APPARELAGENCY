@@ -141,6 +141,31 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
     const totalCollected = customerCollections.reduce((sum, col) => sum + col.totalAmount, 0);
     const outstandingAmount = totalInvoiced - totalCollected;
 
+    // Calculate cheque-related amounts
+    let futureChequeAmount = 0;
+    let returnedChequesAmount = 0;
+    let returnedChequesCount = 0;
+
+    customerCollections.forEach(collection => {
+      collection.chequeDetails.forEach(cheque => {
+        const chequeDate = new Date(cheque.chequeDate);
+        const today = new Date();
+        
+        if (cheque.status === 'returned') {
+          returnedChequesAmount += cheque.amount;
+          returnedChequesCount += 1;
+        } else if (cheque.status === 'pending' && chequeDate > today) {
+          // Future dated cheques
+          futureChequeAmount += cheque.amount;
+        }
+      });
+    });
+
+    // Outstanding with cheques includes future cheques
+    const outstandingWithCheques = outstandingAmount;
+    // Outstanding without cheques excludes future cheque amounts
+    const outstandingWithoutCheques = outstandingAmount - futureChequeAmount;
+
     const invoiceSummaries: InvoiceSummary[] = customerInvoices.map(invoice => {
       const collectedAmount = 0; // TODO: Calculate actual collected amount per invoice
       const outstandingAmount = invoice.total - collectedAmount;
@@ -163,6 +188,10 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
       totalInvoiced,
       totalCollected,
       outstandingAmount,
+      outstandingWithCheques,
+      outstandingWithoutCheques,
+      returnedChequesAmount,
+      returnedChequesCount,
       invoices: invoiceSummaries
     });
   };
@@ -318,24 +347,36 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
               <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600">
+                <div className="text-xl font-bold text-blue-600">
                   LKR {customerInvoiceSummary.totalInvoiced.toLocaleString()}
                 </div>
                 <div className="text-sm text-gray-600">Total Invoiced</div>
               </div>
               <div className="text-center p-4 bg-green-50 rounded-lg">
-                <div className="text-2xl font-bold text-green-600">
+                <div className="text-xl font-bold text-green-600">
                   LKR {customerInvoiceSummary.totalCollected.toLocaleString()}
                 </div>
                 <div className="text-sm text-gray-600">Total Collected</div>
               </div>
               <div className="text-center p-4 bg-red-50 rounded-lg">
-                <div className="text-2xl font-bold text-red-600">
-                  LKR {customerInvoiceSummary.outstandingAmount.toLocaleString()}
+                <div className="text-xl font-bold text-red-600">
+                  LKR {customerInvoiceSummary.outstandingWithCheques.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">Outstanding</div>
+                <div className="text-sm text-gray-600">Outstanding (With Cheques)</div>
+              </div>
+              <div className="text-center p-4 bg-orange-50 rounded-lg">
+                <div className="text-xl font-bold text-orange-600">
+                  LKR {customerInvoiceSummary.outstandingWithoutCheques.toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600">Outstanding (Without Future Cheques)</div>
+              </div>
+              <div className="text-center p-4 bg-purple-50 rounded-lg">
+                <div className="text-xl font-bold text-purple-600">
+                  {customerInvoiceSummary.returnedChequesCount} ({customerInvoiceSummary.returnedChequesAmount > 0 ? `LKR ${customerInvoiceSummary.returnedChequesAmount.toLocaleString()}` : 'LKR 0'})
+                </div>
+                <div className="text-sm text-gray-600">Returned Cheques</div>
               </div>
             </div>
           </CardContent>

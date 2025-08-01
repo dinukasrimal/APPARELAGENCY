@@ -23,7 +23,7 @@ import {
   AlertTriangle,
   DollarSign,
   Image,
-  FileX
+  FileX,
 } from 'lucide-react';
 
 interface SidebarProps {
