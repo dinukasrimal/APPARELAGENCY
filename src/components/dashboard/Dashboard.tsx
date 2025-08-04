@@ -11,7 +11,7 @@ const CustomerManagement = lazy(() => import('@/components/customers/DuplicatePr
 const ProductSidebarView = lazy(() => import('@/components/products/ProductSidebarView'));
 const SalesOrders = lazy(() => import('@/components/sales/SalesOrders'));
 const PurchaseOrders = lazy(() => import('@/components/purchase/PurchaseOrders'));
-const Inventory = lazy(() => import('@/components/inventory/Inventory'));
+const ExternalInventory = lazy(() => import('@/components/inventory/ExternalInventory'));
 const NonProductiveVisits = lazy(() => import('@/components/visits/NonProductiveVisits'));
 const TimeTracking = lazy(() => import('@/components/visits/TimeTracking'));
 const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/QuarterlyTargetsManagement'));
@@ -74,7 +74,7 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
       case 'inventory':
         return (
           <Suspense fallback={<ModuleLoader />}>
-            <Inventory user={user} />
+            <ExternalInventory user={user} />
           </Suspense>
         );
       case 'non-productive-visits':

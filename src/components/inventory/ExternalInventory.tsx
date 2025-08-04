@@ -6,16 +6,23 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen } from 'lucide-react';
+import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
-import { externalBotSyncService } from '@/services/external-bot-sync';
-import ExternalBulkStockAdjustmentForm from './ExternalBulkStockAdjustmentForm';
+import { localInvoiceSyncService } from '@/services/local-invoice-sync';
+import SimpleBulkStockAdjustment from './SimpleBulkStockAdjustment';
 import ExternalStockAdjustmentApproval from './ExternalStockAdjustmentApproval';
 import ExternalStockAdjustmentHistory from './ExternalStockAdjustmentHistory';
 
 interface ExternalInventoryProps {
   user: User;
+}
+
+interface Agency {
+  id: string;
+  name: string;
+  agencyId: string;
 }
 
 const ExternalInventory = ({ user }: ExternalInventoryProps) => {
@@ -31,9 +38,16 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [globalSyncing, setGlobalSyncing] = useState(false);
   const [showBulkAdjustment, setShowBulkAdjustment] = useState(false);
   const [showApprovals, setShowApprovals] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  
+  // Agency selection for superusers
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string>(user.agencyId);
+  const [selectedAgencyName, setSelectedAgencyName] = useState<string>('');
+  
   const { toast } = useToast();
 
   // Memoized filtered items
@@ -42,8 +56,8 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       const matchesSearch = item.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            item.color.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            item.size.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesCategory = categoryFilter === 'all' || item.category === categoryFilter;
-      const matchesSelectedCategory = selectedCategory === null || item.category === selectedCategory;
+      const matchesCategory = categoryFilter === 'all' || item.sub_category === categoryFilter;
+      const matchesSelectedCategory = selectedCategory === null || item.sub_category === selectedCategory;
       
       let matchesStockFilter = true;
       if (stockFilter === 'low') {
@@ -63,7 +77,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     const grouped: { [key: string]: ExternalInventoryItem[] } = {};
     
     filteredItems.forEach(item => {
-      const category = item.category || 'Uncategorized';
+      const category = item.category || 'General';
       if (!grouped[category]) {
         grouped[category] = [];
       }
@@ -73,14 +87,14 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     return grouped;
   }, [filteredItems]);
 
-  // Category statistics
+  // Subcategory and matching statistics
   const categoryStats = useMemo(() => {
-    const stats: { [key: string]: { total: number; lowStock: number; outOfStock: number; totalValue: number } } = {};
+    const stats: { [key: string]: { total: number; lowStock: number; outOfStock: number; totalValue: number; matched: number; unmatched: number } } = {};
     
     inventoryItems.forEach(item => {
-      const category = item.category || 'Uncategorized';
+      const category = item.sub_category || 'General';
       if (!stats[category]) {
-        stats[category] = { total: 0, lowStock: 0, outOfStock: 0, totalValue: 0 };
+        stats[category] = { total: 0, lowStock: 0, outOfStock: 0, totalValue: 0, matched: 0, unmatched: 0 };
       }
       
       stats[category].total += 1;
@@ -91,9 +105,24 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       } else if (item.current_stock <= 5) {
         stats[category].lowStock += 1;
       }
+
+      if (item.matched_product_id) {
+        stats[category].matched += 1;
+      } else {
+        stats[category].unmatched += 1;
+      }
     });
     
     return stats;
+  }, [inventoryItems]);
+
+  // Overall matching statistics
+  const matchingStats = useMemo(() => {
+    const matched = inventoryItems.filter(item => item.matched_product_id).length;
+    const unmatched = inventoryItems.length - matched;
+    const matchRate = inventoryItems.length > 0 ? Math.round((matched / inventoryItems.length) * 100) : 0;
+    
+    return { matched, unmatched, matchRate };
   }, [inventoryItems]);
 
   const getStockStatus = (item: ExternalInventoryItem) => {
@@ -106,22 +135,87 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     }
   };
 
+  // Fetch agencies for superuser selection
+  const fetchAgencies = async () => {
+    if (user.role !== 'superuser') return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, name, agency_id')
+        .not('agency_id', 'is', null)
+        .order('name');
+
+      if (error) throw error;
+
+      console.log('🔍 Debug: All profiles fetched for agency dropdown:', data);
+
+      // Show all unique agency names (not grouped by agency_id)
+      // This allows multiple users with the same agency_id but different names to be selectable
+      const agencyMap = new Map<string, Agency>();
+      data?.forEach(profile => {
+        console.log(`🔍 Debug: Processing profile - Name: "${profile.name}", Agency ID: "${profile.agency_id}"`);
+        const uniqueKey = `${profile.agency_id}-${profile.name}`;
+        if (!agencyMap.has(uniqueKey)) {
+          agencyMap.set(uniqueKey, {
+            id: profile.id,
+            name: profile.name,
+            agencyId: profile.agency_id
+          });
+        }
+      });
+
+      const agencyList = Array.from(agencyMap.values());
+      console.log('🔍 Debug: Final agency list for dropdown:', agencyList);
+      setAgencies(agencyList);
+      
+      // Set the selected agency name
+      const currentAgency = agencyList.find(agency => agency.agencyId === selectedAgencyId);
+      if (currentAgency) {
+        setSelectedAgencyName(currentAgency.name);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching agencies:', error);
+    }
+  };
+
   // Fetch all data
-  const fetchData = async () => {
+  const fetchData = async (forceRefresh: boolean = false) => {
     try {
       setLoading(true);
       
+      if (forceRefresh) {
+        // Clear any potential caching and show user we're refreshing
+        toast({
+          title: "Refreshing Data",
+          description: "Fetching latest inventory data...",
+          variant: "default"
+        });
+      }
+      
+      // Use selectedAgencyId for superusers, user.agencyId for regular users
+      const agencyIdToUse = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
+      
       const [itemsData, transactionsData, metricsData, categoriesData] = await Promise.all([
-        externalInventoryService.getStockSummary(user.agencyId),
-        externalInventoryService.getTransactionHistory(user.agencyId, 50),
-        externalInventoryService.getInventoryMetrics(user.agencyId),
-        externalInventoryService.getCategories(user.agencyId)
+        externalInventoryService.getStockSummary(agencyIdToUse, forceRefresh),
+        externalInventoryService.getTransactionHistory(agencyIdToUse, 50),
+        externalInventoryService.getInventoryMetrics(agencyIdToUse),
+        externalInventoryService.getCategories(agencyIdToUse)
       ]);
 
       setInventoryItems(itemsData);
       setTransactions(transactionsData);
       setMetrics(metricsData);
       setCategories(categoriesData);
+      
+      if (forceRefresh) {
+        toast({
+          title: "Data Refreshed",
+          description: "Inventory data has been updated successfully",
+          variant: "default"
+        });
+      }
     } catch (error) {
       console.error('Error fetching external inventory data:', error);
       toast({
@@ -134,25 +228,49 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     }
   };
 
-  // Sync external bot invoices
+  // Sync all local database transactions
   const handleSync = async () => {
     try {
       setSyncing(true);
       toast({
         title: "Sync Started",
-        description: "Syncing external bot invoices...",
+        description: "Syncing from all local database sources...",
       });
 
-      const result = await externalBotSyncService.syncInvoices(user.id);
+      // For superusers viewing other agencies, we need to find a user from that agency for sync
+      let userIdForSync = user.id;
+      if (user.role === 'superuser' && selectedAgencyId !== user.agencyId) {
+        const selectedAgency = agencies.find(agency => agency.agencyId === selectedAgencyId);
+        if (selectedAgency) {
+          userIdForSync = selectedAgency.id;
+        }
+      }
+      
+      const result = await localInvoiceSyncService.syncAllLocalTransactions(userIdForSync);
       
       if (result.success) {
+        const details = result.details;
+        let description = `${result.message} - Total: ${result.syncedCount || 0} transactions`;
+        
+        if (details) {
+          const parts = [];
+          if (details.externalInvoices?.syncedCount) parts.push(`External: ${details.externalInvoices.syncedCount}`);
+          if (details.localInvoices?.syncedCount) parts.push(`Sales: ${details.localInvoices.syncedCount}`);
+          if (details.customerReturns?.syncedCount) parts.push(`Customer Returns: ${details.customerReturns.syncedCount}`);
+          if (details.companyReturns?.syncedCount) parts.push(`Company Returns: ${details.companyReturns.syncedCount}`);
+          
+          if (parts.length > 0) {
+            description = `Synced successfully - ${parts.join(', ')}`;
+          }
+        }
+        
         toast({
           title: "Sync Completed",
-          description: `${result.message} - ${result.details?.processedCount || 0} items processed`,
+          description: description,
         });
         
         // Refresh data
-        await fetchData();
+        await fetchData(true);
       } else {
         toast({
           title: "Sync Failed",
@@ -164,7 +282,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       console.error('Sync failed:', error);
       toast({
         title: "Sync Error",
-        description: "Failed to sync external invoices",
+        description: "Failed to sync local database",
         variant: "destructive"
       });
     } finally {
@@ -172,9 +290,76 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     }
   };
 
+  // Global sync for all users (admin functionality)
+  const handleGlobalSync = async () => {
+    try {
+      setGlobalSyncing(true);
+      toast({
+        title: "Global Sync Started",
+        description: "Processing transactions for ALL users across all agencies...",
+      });
+
+      const result = await localInvoiceSyncService.syncAllUsersGlobalTransactions();
+      
+      if (result.success) {
+        const details = result.details as any;
+        const externalBot = details?.externalBotResult;
+        const externalBotCount = externalBot?.syncedCount || 0;
+        const localCount = details?.totalTransactions || 0;
+        const totalUsers = details?.totalUsers || 0;
+        const successfulUsers = details?.successfulUsers || 0;
+        
+        const externalBotMatched = externalBot?.details?.matchedProducts || 0;
+        const externalBotUnmatched = externalBot?.details?.unmatchedProducts || 0;
+        const matchRate = externalBotMatched + externalBotUnmatched > 0 ? 
+          Math.round((externalBotMatched / (externalBotMatched + externalBotUnmatched)) * 100) : 100;
+        
+        const description = `Global sync completed successfully! External bot: ${externalBotCount} invoices processed across all users (${externalBotMatched} products matched, ${externalBotUnmatched} unmatched - ${matchRate}% match rate). Local data: ${localCount} transactions from ${successfulUsers}/${totalUsers} users. Total: ${result.syncedCount || 0} transactions.`;
+        
+        toast({
+          title: "Global Sync Completed",
+          description: description,
+        });
+        
+        // Refresh data to show updated inventory
+        await fetchData(true);
+      } else {
+        toast({
+          title: "Global Sync Failed",
+          description: result.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error('Global sync failed:', error);
+      toast({
+        title: "Global Sync Error",
+        description: "Failed to complete global sync across all users",
+        variant: "destructive"
+      });
+    } finally {
+      setGlobalSyncing(false);
+    }
+  };
+
+  // Handle agency selection change
+  const handleAgencyChange = (agencyId: string) => {
+    setSelectedAgencyId(agencyId);
+    const selectedAgency = agencies.find(agency => agency.agencyId === agencyId);
+    if (selectedAgency) {
+      setSelectedAgencyName(selectedAgency.name);
+    }
+  };
+
+  useEffect(() => {
+    if (user.role === 'superuser') {
+      fetchAgencies();
+    }
+  }, [user.role]);
+
   useEffect(() => {
     fetchData();
-  }, [user.agencyId]);
+  }, [selectedAgencyId]);
 
   if (loading) {
     return (
@@ -188,15 +373,36 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   return (
     <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
-        <div>
+        <div className="flex-1">
           <h2 className="text-2xl font-bold text-gray-900">External Inventory Management</h2>
           <p className="text-gray-600">
             Complete inventory system with external bot integration
           </p>
+          
+          {/* Agency Selector for Superusers */}
+          {user.role === 'superuser' && agencies.length > 0 && (
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700">Viewing Agency:</span>
+              <Select value={selectedAgencyId} onValueChange={handleAgencyChange}>
+                <SelectTrigger className="w-64">
+                  <SelectValue>
+                    {selectedAgencyName || 'Select Agency'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {agencies.map((agency) => (
+                    <SelectItem key={agency.agencyId} value={agency.agencyId}>
+                      {agency.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </div>
         <div className="flex gap-2 items-center">
           <Button 
-            onClick={fetchData}
+            onClick={() => fetchData(true)}
             variant="outline"
             disabled={loading}
           >
@@ -205,12 +411,12 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             ) : (
               <RefreshCw className="h-4 w-4 mr-2" />
             )}
-            Refresh
+            Force Refresh
           </Button>
           
           <Button 
             onClick={handleSync}
-            disabled={syncing}
+            disabled={syncing || globalSyncing}
             className="bg-blue-600 hover:bg-blue-700"
           >
             {syncing ? (
@@ -218,8 +424,23 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             ) : (
               <ExternalLink className="h-4 w-4 mr-2" />
             )}
-            Sync External Bot
+            Sync My Transactions
           </Button>
+
+          {user.role === 'superuser' && (
+            <Button 
+              onClick={handleGlobalSync}
+              disabled={syncing || globalSyncing}
+              className="bg-purple-600 hover:bg-purple-700"
+            >
+              {globalSyncing ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Globe className="h-4 w-4 mr-2" />
+              )}
+              Global Sync (All Users)
+            </Button>
+          )}
 
           <Button 
             onClick={() => setShowBulkAdjustment(true)}
@@ -227,7 +448,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             className="bg-orange-50 hover:bg-orange-100 text-orange-700"
           >
             <Settings className="h-4 w-4 mr-2" />
-            Bulk Adjustment
+            Stock Count
           </Button>
 
           {user.role === 'superuser' && (
@@ -254,7 +475,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
       {/* Summary Cards */}
       {metrics && (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -314,6 +535,26 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
               </div>
             </CardContent>
           </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Product Matching</p>
+                  <p className="text-2xl font-bold text-blue-600">{matchingStats.matchRate}%</p>
+                  <p className="text-xs text-gray-500">{matchingStats.matched}/{inventoryItems.length}</p>
+                </div>
+                <div className="flex flex-col items-center">
+                  <BarChart3 className="h-6 w-6 text-blue-600" />
+                  <div className="text-xs text-center mt-1">
+                    {matchingStats.unmatched > 0 && (
+                      <span className="text-orange-600">⚠ {matchingStats.unmatched} unmatched</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -331,11 +572,11 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
         <TabsContent value="overview" className="space-y-6 mt-6">
           <div className="flex gap-6">
-            {/* Category Sidebar */}
+            {/* Subcategory Sidebar */}
             {showCategorySidebar && (
               <div className="w-64 bg-gray-50 rounded-lg p-4 space-y-2">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold text-gray-900">Categories</h3>
+                  <h3 className="font-semibold text-gray-900">Subcategories</h3>
                   <Button 
                     variant="ghost" 
                     size="sm" 
@@ -405,6 +646,10 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                         <div className="flex justify-between text-green-600">
                           <span>Value:</span>
                           <span>LKR {stats.totalValue.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between text-blue-600">
+                          <span>Matched:</span>
+                          <span>{stats.matched}/{stats.total}</span>
                         </div>
                       </div>
                     </button>
@@ -498,13 +743,36 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                                 }`} />
                                 <div>
                                   <h4 className="font-medium">{item.product_name}</h4>
-                                  <div className="flex gap-2 text-sm text-gray-600">
+                                  <div className="flex gap-2 text-sm text-gray-600 flex-wrap">
                                     {item.product_code && (
                                       <span className="bg-gray-100 px-2 py-1 rounded text-xs">{item.product_code}</span>
                                     )}
-                                    <span>{item.color}</span>
-                                    <span>•</span>
-                                    <span>{item.size}</span>
+                                    {item.matched_product_id && (
+                                      <span className="bg-green-100 px-2 py-1 rounded text-xs text-green-700">
+                                        ✓ Matched
+                                      </span>
+                                    )}
+                                    {!item.matched_product_id && (
+                                      <span className="bg-yellow-100 px-2 py-1 rounded text-xs text-yellow-700">
+                                        ⚠ Unmatched
+                                      </span>
+                                    )}
+                                    {item.variant_count && item.variant_count > 1 && (
+                                      <span className="bg-blue-100 px-2 py-1 rounded text-xs text-blue-700">
+                                        {item.variant_count} variants
+                                      </span>
+                                    )}
+                                    <span className="text-xs text-gray-500">
+                                      Colors: {item.color || 'Default'}
+                                    </span>
+                                    <span className="text-xs text-gray-500">
+                                      Sizes: {item.size || 'Default'}
+                                    </span>
+                                    {item.sources && (
+                                      <span className="text-xs text-purple-600">
+                                        Sources: {item.sources}
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -597,13 +865,36 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                                     }`} />
                                     <div>
                                       <h4 className="font-medium">{item.product_name}</h4>
-                                      <div className="flex gap-2 text-sm text-gray-600">
+                                      <div className="flex gap-2 text-sm text-gray-600 flex-wrap">
                                         {item.product_code && (
                                           <span className="bg-gray-100 px-2 py-1 rounded text-xs">{item.product_code}</span>
                                         )}
-                                        <span>{item.color}</span>
-                                        <span>•</span>
-                                        <span>{item.size}</span>
+                                        {item.matched_product_id && (
+                                          <span className="bg-green-100 px-2 py-1 rounded text-xs text-green-700">
+                                            ✓ Matched
+                                          </span>
+                                        )}
+                                        {!item.matched_product_id && (
+                                          <span className="bg-yellow-100 px-2 py-1 rounded text-xs text-yellow-700">
+                                            ⚠ Unmatched
+                                          </span>
+                                        )}
+                                        {item.variant_count && item.variant_count > 1 && (
+                                          <span className="bg-blue-100 px-2 py-1 rounded text-xs text-blue-700">
+                                            {item.variant_count} variants
+                                          </span>
+                                        )}
+                                        <span className="text-xs text-gray-500">
+                                          Colors: {item.color || 'Default'}
+                                        </span>
+                                        <span className="text-xs text-gray-500">
+                                          Sizes: {item.size || 'Default'}
+                                        </span>
+                                        {item.sources && (
+                                          <span className="text-xs text-purple-600">
+                                            Sources: {item.sources}
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                   </div>
@@ -693,14 +984,16 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                             <ArrowDown className="h-6 w-6 text-red-600" />
                           )}
                           <div>
-                            <h4 className="font-medium">{transaction.product_name}</h4>
+                            <h4 className="font-medium">
+                              {transaction.product_code ? `[${transaction.product_code}] ` : ''}{transaction.product_name.replace(/\[.*?\]\s*/, '')} {transaction.size}
+                            </h4>
                             <div className="flex gap-2 text-sm text-gray-600">
                               {transaction.product_code && (
                                 <span className="bg-gray-100 px-2 py-1 rounded text-xs">{transaction.product_code}</span>
                               )}
                               <span>{transaction.color}</span>
                               <span>•</span>
-                              <span>{transaction.size}</span>
+                              <span>Size {transaction.size}</span>
                             </div>
                           </div>
                         </div>
@@ -751,14 +1044,15 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
       {/* Adjustment Forms and Modals */}
       {showBulkAdjustment && (
-        <ExternalBulkStockAdjustmentForm
+        <SimpleBulkStockAdjustment
           user={user}
+          selectedAgencyId={selectedAgencyId}
           onClose={() => setShowBulkAdjustment(false)}
           onSubmitted={() => {
-            fetchData();
+            fetchData(true);
             toast({
-              title: "Adjustment Submitted",
-              description: "Your bulk stock adjustment has been submitted for approval",
+              title: "Stock Count Submitted",
+              description: "Stock count adjustments have been submitted for approval",
             });
           }}
         />
@@ -767,9 +1061,10 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       {showApprovals && (
         <ExternalStockAdjustmentApproval
           user={user}
+          selectedAgencyId={selectedAgencyId}
           onClose={() => setShowApprovals(false)}
           onApprovalComplete={() => {
-            fetchData();
+            fetchData(true);
           }}
         />
       )}
@@ -777,6 +1072,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       {showHistory && (
         <ExternalStockAdjustmentHistory
           user={user}
+          selectedAgencyId={selectedAgencyId}
           onClose={() => setShowHistory(false)}
         />
       )}

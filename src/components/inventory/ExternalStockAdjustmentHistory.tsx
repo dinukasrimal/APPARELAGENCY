@@ -12,6 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 interface ExternalStockAdjustmentHistoryProps {
   user: User;
   onClose: () => void;
+  selectedAgencyId?: string; // For superusers to view other agencies
 }
 
 interface AdjustmentHistoryItem {
@@ -50,7 +51,7 @@ interface BatchGroup {
   total_adjustment_value: number;
 }
 
-const ExternalStockAdjustmentHistory = ({ user, onClose }: ExternalStockAdjustmentHistoryProps) => {
+const ExternalStockAdjustmentHistory = ({ user, onClose, selectedAgencyId }: ExternalStockAdjustmentHistoryProps) => {
   const [historyItems, setHistoryItems] = useState<AdjustmentHistoryItem[]>([]);
   const [batchGroups, setBatchGroups] = useState<BatchGroup[]>([]);
   const [individualAdjustments, setIndividualAdjustments] = useState<AdjustmentHistoryItem[]>([]);
@@ -60,9 +61,12 @@ const ExternalStockAdjustmentHistory = ({ user, onClose }: ExternalStockAdjustme
   const [typeFilter, setTypeFilter] = useState('all');
   const { toast } = useToast();
 
+  // Use selectedAgencyId if provided (for superusers), otherwise use user's agency
+  const agencyId = selectedAgencyId || user.agencyId;
+
   useEffect(() => {
     fetchAdjustmentHistory();
-  }, [user.agencyId]);
+  }, [agencyId]);
 
   const fetchAdjustmentHistory = async () => {
     try {
@@ -70,7 +74,7 @@ const ExternalStockAdjustmentHistory = ({ user, onClose }: ExternalStockAdjustme
       const { data, error } = await supabase
         .from('external_stock_adjustments_history')
         .select('*')
-        .eq('agency_id', user.agencyId)
+        .eq('agency_id', agencyId)
         .order('reviewed_at', { ascending: false });
 
       if (error) throw error;

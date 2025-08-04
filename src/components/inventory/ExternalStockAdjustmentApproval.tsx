@@ -12,6 +12,7 @@ interface ExternalStockAdjustmentApprovalProps {
   user: User;
   onClose: () => void;
   onApprovalComplete: () => void;
+  selectedAgencyId?: string; // For superusers to view other agencies
 }
 
 interface PendingAdjustment {
@@ -44,7 +45,7 @@ interface BatchGroup {
   total_adjustment_value: number;
 }
 
-const ExternalStockAdjustmentApproval = ({ user, onClose, onApprovalComplete }: ExternalStockAdjustmentApprovalProps) => {
+const ExternalStockAdjustmentApproval = ({ user, onClose, onApprovalComplete, selectedAgencyId }: ExternalStockAdjustmentApprovalProps) => {
   const [pendingAdjustments, setPendingAdjustments] = useState<PendingAdjustment[]>([]);
   const [batchGroups, setBatchGroups] = useState<BatchGroup[]>([]);
   const [individualAdjustments, setIndividualAdjustments] = useState<PendingAdjustment[]>([]);
@@ -58,15 +59,21 @@ const ExternalStockAdjustmentApproval = ({ user, onClose, onApprovalComplete }: 
     if (user.role === 'superuser') {
       fetchPendingAdjustments();
     }
-  }, [user.role]);
+  }, [user.role, selectedAgencyId]);
 
   const fetchPendingAdjustments = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+      let query = supabase
         .from('external_stock_adjustments_pending')
-        .select('*')
-        .order('requested_at', { ascending: true });
+        .select('*');
+
+      // Filter by agency if selectedAgencyId is provided
+      if (selectedAgencyId) {
+        query = query.eq('agency_id', selectedAgencyId);
+      }
+
+      const { data, error } = await query.order('requested_at', { ascending: true });
 
       if (error) throw error;
 
