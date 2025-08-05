@@ -77,7 +77,7 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
       allProducts?.forEach(product => {
         // Find all inventory items that match this product description
         const matchingInventoryItems = inventoryItems.filter(item => 
-          item.product_name === product.description
+          item.original_product_name === product.description
         );
         
         // Calculate total current stock across all variants
@@ -169,24 +169,26 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
             try {
               console.log(`🔍 Adjusting aggregated product: ${product.product_description}, variation: ${product.variation}`);
 
-              // Since we're showing aggregated stock, create a single adjustment using Default color/size
-              // This will be treated as a general adjustment for the product across all variants
+              // Submit stock adjustment for approval (creates pending record)
               const { error } = await supabase
-                .from('external_inventory_management')
+                .from('external_stock_adjustments')
                 .insert({
                   product_name: product.product_description,
                   color: 'Default', // Use Default for aggregated adjustments
                   size: 'Default', // Use Default for aggregated adjustments
-                  category: 'General',
-                  sub_category: product.category,
-                  transaction_type: 'adjustment',
-                  transaction_id: `ADJ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                  quantity: product.variation,
-                  reference_name: user.name, // Use user.name so it appears in user's inventory
+                  category: product.category,
+                  current_stock: product.current_stock,
+                  adjustment_quantity: product.variation,
+                  new_stock: product.actual_stock, // Required field: current_stock + adjustment_quantity
+                  reason: `Stock Count Batch: ${batchName}`,
+                  notes: `Product: ${product.product_name}. Aggregated adjustment - Current: ${product.current_stock}, Target: ${product.actual_stock}, Variation: ${product.variation}`,
+                  adjustment_type: 'bulk',
+                  batch_id: batchId,
+                  batch_name: batchName,
                   agency_id: agencyId,
-                  user_name: user.name || 'Unknown User',
-                  notes: `Stock Count Batch: ${batchName}. Product: ${product.product_name}. Aggregated adjustment - Current: ${product.current_stock}, Target: ${product.actual_stock}, Variation: ${product.variation}`,
-                  external_source: 'stock_count'
+                  requested_by: user.id,
+                  requested_by_name: user.name || 'Unknown User',
+                  status: 'pending'
                 });
 
               if (error) {
@@ -221,8 +223,8 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
       console.log('📋 Successfully processed adjustments:', allAdjustments);
 
       toast({
-        title: "Stock Count Submitted",
-        description: `Successfully applied ${allAdjustments.length} stock adjustments`,
+        title: "Stock Count Submitted for Approval",
+        description: `Successfully submitted ${allAdjustments.length} stock adjustments for superuser approval`,
       });
 
       // Force refresh inventory data after adjustments

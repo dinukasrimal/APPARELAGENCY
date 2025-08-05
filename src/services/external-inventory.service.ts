@@ -2,6 +2,7 @@ import { supabase } from '@/integrations/supabase/client';
 
 export interface ExternalInventoryItem {
   product_name: string;
+  original_product_name?: string; // Original product name from external_inventory_management for matching
   product_code: string | null;
   color: string; // Contains comma-separated values for consolidated view
   size: string; // Contains comma-separated values for consolidated view
@@ -251,6 +252,7 @@ export class ExternalInventoryService {
       if (!groupedData.has(key)) {
         groupedData.set(key, {
           product_name: displayName, // Use products.name for display
+          original_product_name: transaction.product_name, // Keep original for matching
           product_code: normalizedCode,
           color: normalizedColor,
           size: normalizedSize,
@@ -521,6 +523,7 @@ export class ExternalInventoryService {
       if (!groupedData.has(key)) {
         groupedData.set(key, {
           product_name: displayName, // Use products.name for display
+          original_product_name: transaction.product_name, // Keep original for matching
           product_code: normalizedCode,
           color: normalizedColor,
           size: normalizedSize,
