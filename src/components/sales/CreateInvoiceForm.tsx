@@ -8,6 +8,7 @@ import { ArrowLeft, FileText, Plus, Minus } from 'lucide-react';
 import SignatureCapture from './SignatureCapture';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { externalInventoryService } from '@/services/external-inventory.service';
 
 interface CreateInvoiceFormProps {
   user: User;
@@ -165,9 +166,65 @@ const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoi
 
       console.log('Invoice items created');
 
+      // Create external inventory transactions to reduce stock
+      try {
+        console.log('Creating external inventory transactions for invoice:', invoice.id);
+        
+        // Get user profile name for reference
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('name')
+          .eq('id', user.id)
+          .single();
+
+        const userName = profileData?.name || 'Unknown User';
+
+        for (const item of invoiceItems) {
+          console.log('Creating stock out transaction for:', {
+            agencyId: user.agencyId,
+            userName,
+            productName: item.productName,
+            color: item.color || 'Default',
+            size: item.size || 'Default',
+            quantity: item.quantity,
+            customerName: salesOrder.customerName,
+            invoiceId: invoice.id,
+            unitPrice: item.unitPrice
+          });
+          
+          await externalInventoryService.addSaleTransaction(
+            user.agencyId,
+            userName,
+            item.productName,
+            item.color || 'Default',
+            item.size || 'Default',
+            item.quantity,
+            salesOrder.customerName,
+            invoice.id,
+            item.unitPrice
+          );
+          
+          console.log('Stock out transaction created for item:', item.productName);
+        }
+
+        console.log('All external inventory transactions created successfully');
+      } catch (error) {
+        console.error('❌ CRITICAL: Error creating external inventory transactions:', error);
+        console.error('❌ Error details:', JSON.stringify(error, null, 2));
+        // Don't throw error to prevent invoice creation failure
+        console.log('❌ Invoice created but external inventory tracking failed');
+        
+        // Show error to user via toast for debugging
+        toast({
+          title: "Warning: Inventory not updated",
+          description: `Invoice created but stock was not reduced. Error: ${error?.message || 'Unknown error'}`,
+          variant: "destructive",
+        });
+      }
+
       toast({
         title: "Success",
-        description: "Invoice created successfully with GPS location captured",
+        description: "Invoice created successfully with GPS location captured and inventory updated",
       });
 
       const invoiceResponseData = {

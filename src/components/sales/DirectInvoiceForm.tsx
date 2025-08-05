@@ -13,6 +13,7 @@ import { ArrowLeft, MapPin, Plus, Trash2, FileText, Save } from 'lucide-react';
 import SignatureCapture from './SignatureCapture';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { externalInventoryService } from '@/services/external-inventory.service';
 
 interface DirectInvoiceFormProps {
   user: User;
@@ -259,9 +260,51 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
 
       if (itemsError) throw itemsError;
 
+      // Create external inventory transactions to reduce stock
+      try {
+        console.log('Creating external inventory transactions for direct invoice:', invoiceData.id);
+        
+        // Get user profile name for reference
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('name')
+          .eq('id', user.id)
+          .single();
+
+        const userName = profileData?.name || 'Unknown User';
+
+        for (const item of invoiceSummary) {
+          await externalInventoryService.addSaleTransaction(
+            user.agencyId,
+            userName,
+            item.productName,
+            item.color || 'Default',
+            item.size || 'Default',
+            item.quantity,
+            selectedCustomer?.name || '',
+            invoiceData.id,
+            item.unitPrice
+          );
+        }
+
+        console.log('External inventory transactions created successfully');
+      } catch (error) {
+        console.error('❌ CRITICAL: Error creating external inventory transactions:', error);
+        console.error('❌ Error details:', JSON.stringify(error, null, 2));
+        // Don't throw error to prevent invoice creation failure
+        console.log('❌ Direct invoice created but external inventory tracking failed');
+        
+        // Show error to user via toast for debugging
+        toast({
+          title: "Warning: Inventory not updated",
+          description: `Invoice created but stock was not reduced. Error: ${error?.message || 'Unknown error'}`,
+          variant: "destructive",
+        });
+      }
+
       toast({
         title: "Direct Invoice Created",
-        description: `Invoice ${invoiceData.id} has been created successfully`
+        description: `Invoice ${invoiceData.id} has been created successfully with inventory updated`
       });
 
       onSuccess();

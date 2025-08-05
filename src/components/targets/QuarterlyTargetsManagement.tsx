@@ -12,6 +12,8 @@ import { useToast } from '@/hooks/use-toast';
 import { useExternalTargetsWithAchievements, useExternalConnection } from '@/hooks/useExternalData';
 import { ExternalDataService } from '@/services/external-data.service';
 import { supabase } from '@/integrations/supabase/client';
+import AgencySelector from '@/components/common/AgencySelector';
+import { useAgencies } from '@/hooks/useAgency';
 
 interface QuarterlyTargetsManagementProps {
   user: User;
@@ -20,7 +22,11 @@ interface QuarterlyTargetsManagementProps {
 const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) => {
   const [currentUserName, setCurrentUserName] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
+    user.role === 'superuser' ? null : user.agencyId
+  );
   const { toast } = useToast();
+  const { agencies } = useAgencies();
 
   // External data hooks
   console.log('External hook called with user name:', currentUserName);
@@ -93,49 +99,56 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   } | null>(null);
   const [comparisonLoading, setComparisonLoading] = useState(false);
 
-  // Fetch user name from profiles table using the logged-in user ID
+  // Set agency name for targets filtering (either selected agency or user's agency)
   useEffect(() => {
-    const fetchUserNameFromProfile = async () => {
-      if (!user?.id) {
-        console.log('No user ID available');
-        setProfileLoading(false);
-        return;
-      }
-
+    const setTargetAgencyName = async () => {
       setProfileLoading(true);
       try {
-        console.log('🔍 Fetching user name from profiles table for user ID:', user.id);
+        let agencyName = null;
         
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('name')
-          .eq('id', user.id)
-          .single();
-
-        if (error) {
-          console.error('Error fetching user profile:', error);
-          // Fallback to user.name if profile fetch fails
-          setCurrentUserName(user.name || null);
-        } else {
-          console.log('✅ Found user name in profiles:', data.name);
-          setCurrentUserName(data.name || null);
-          // Trigger refetch when userName is found
+        if (user.role === 'superuser' && selectedAgencyId) {
+          // For superusers, use selected agency name
+          const selectedAgency = agencies.find(a => a.id === selectedAgencyId);
+          agencyName = selectedAgency?.name || null;
+          console.log('🏢 Superuser selected agency:', agencyName);
+        } else if (user.role !== 'superuser') {
+          // For regular users, get their agency name via profile
+          console.log('🔍 Fetching user name from profiles table for user ID:', user.id);
+          
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('name')
+            .eq('id', user.id)
+            .single();
+            
+          if (error) {
+            console.error('Error fetching user profile:', error);
+            agencyName = user.name || null;
+          } else {
+            console.log('✅ Found user name in profiles:', data.name);
+            agencyName = data.name || null;
+          }
+        }
+        
+        setCurrentUserName(agencyName);
+        
+        // Trigger refetch when agency name is set
+        if (agencyName) {
           setTimeout(() => {
-            console.log('🔄 Triggering manual refetch with new userName:', data.name);
+            console.log('🔄 Triggering manual refetch with agency name:', agencyName);
             refetchTargets();
           }, 100);
         }
       } catch (error) {
-        console.error('Exception fetching user profile:', error);
-        // Fallback to user.name if there's an exception
+        console.error('Exception setting target agency name:', error);
         setCurrentUserName(user.name || null);
       } finally {
         setProfileLoading(false);
       }
     };
 
-    fetchUserNameFromProfile();
-  }, [user]);
+    setTargetAgencyName();
+  }, [user, selectedAgencyId, agencies]);
 
   // Show external error if any
   useEffect(() => {
@@ -344,6 +357,16 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
           </p>
         </div>
       </div>
+
+      {/* Agency Selector for Superusers */}
+      <AgencySelector
+        user={user}
+        selectedAgencyId={selectedAgencyId}
+        onAgencyChange={(agencyId) => {
+          setSelectedAgencyId(agencyId);
+        }}
+        placeholder="Select agency to view targets..."
+      />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="grid w-full grid-cols-2">

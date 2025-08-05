@@ -15,6 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import InAppCamera from '@/components/camera/InAppCamera';
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import { uploadNonProductiveVisitPhoto, base64ToBlob } from '@/utils/storage';
+import AgencySelector from '@/components/common/AgencySelector';
 
 interface NonProductiveVisitsProps {
   user: User;
@@ -37,6 +38,9 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
   const [showCamera, setShowCamera] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
+    user.role === 'superuser' ? null : user.agencyId
+  );
   
   // New customer selection states
   const [customerType, setCustomerType] = useState<'existing' | 'new' | ''>('');
@@ -57,7 +61,7 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
     } else {
       fetchCustomers();
     }
-  }, [selectedDate, showCreateForm]);
+  }, [selectedDate, showCreateForm, selectedAgencyId]);
 
   useEffect(() => {
     if (showCreateForm) {
@@ -67,10 +71,15 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
 
   const fetchCustomers = async () => {
     try {
-      const { data, error } = await supabase
+      let customersQuery = supabase
         .from('customers')
-        .select('*')
-        .eq('agency_id', user.agencyId)
+        .select('*');
+      
+      if (selectedAgencyId) {
+        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
+      }
+      
+      const { data, error } = await customersQuery
         .order('name', { ascending: true });
 
       if (error) throw error;
@@ -99,10 +108,15 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
 
   const fetchVisits = async () => {
     try {
-      const { data, error } = await supabase
+      let visitsQuery = supabase
         .from('non_productive_visits')
-        .select('*')
-        .eq('agency_id', user.agencyId)
+        .select('*');
+      
+      if (selectedAgencyId) {
+        visitsQuery = visitsQuery.eq('agency_id', selectedAgencyId);
+      }
+      
+      const { data, error } = await visitsQuery
         .gte('created_at', selectedDate + 'T00:00:00')
         .lt('created_at', new Date(new Date(selectedDate).getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0] + 'T00:00:00')
         .order('created_at', { ascending: false });
@@ -277,7 +291,7 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
       const { data, error } = await supabase
         .from('non_productive_visits')
         .insert([{
-          agency_id: user.agencyId,
+          agency_id: selectedAgencyId || user.agencyId,
           user_id: user.id,
           reason: formData.reason,
           notes: formData.notes,
@@ -604,6 +618,16 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
             </div>
           </div>
         </div>
+
+        {/* Agency Selector for Superusers */}
+        <AgencySelector
+          user={user}
+          selectedAgencyId={selectedAgencyId}
+          onAgencyChange={(agencyId) => {
+            setSelectedAgencyId(agencyId);
+          }}
+          placeholder="Select agency to view visits..."
+        />
 
         {/* Modern Search and Filter Section */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-lg border border-white/20 mb-8">

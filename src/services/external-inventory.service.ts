@@ -308,7 +308,7 @@ export class ExternalInventoryService {
     }));
   }
 
-  // Helper method to build stock summary from raw transactions filtered by user profile name
+  // Helper method to build stock summary from raw transactions filtered by user profile name  
   private async buildStockSummaryFromTransactions(userId: string, filters?: { searchTerm?: string; category?: string }): Promise<ExternalInventoryItem[]> {
     // First get the user's profile name
     const { data: profileData, error: profileError } = await supabase
@@ -369,6 +369,19 @@ export class ExternalInventoryService {
     console.log(`🔍 Debug: Fetched ${transactions?.length || 0} transactions for agency ${agencyId}`);
     if (transactions && transactions.length > 0) {
       console.log('🔍 Debug: Sample transactions:', transactions.slice(0, 3));
+      
+      // Debug: Check for recent BRITNY-BLACK L transactions
+      const britnyTransactions = transactions.filter(t => 
+        t.product_name?.includes('BRITNY') && t.color === 'BLACK' && t.size === 'L'
+      );
+      console.log('🔍 Debug: BRITNY-BLACK L transactions:', britnyTransactions);
+      
+      // Debug: Check for sale transactions
+      const saleTransactions = transactions.filter(t => t.transaction_type === 'sale');
+      console.log('🔍 Debug: Sale transactions found:', saleTransactions.length);
+      if (saleTransactions.length > 0) {
+        console.log('🔍 Debug: Sample sale transactions:', saleTransactions.slice(-3));
+      }
     } else {
       console.log(`⚠️ Debug: No transactions found for agency ${agencyId} - this agency will show empty inventory`);
     }
@@ -529,6 +542,19 @@ export class ExternalInventoryService {
       }
       
       const item = groupedData.get(key)!;
+      
+      // Debug specific product
+      if (transaction.product_name?.includes('BRITNY') && normalizedColor === 'BLACK' && normalizedSize === 'L') {
+        console.log('🔍 Debug: Processing BRITNY-BLACK L transaction:', {
+          type: transaction.transaction_type,
+          quantity: transaction.quantity,
+          currentStock: item.current_stock,
+          newStock: item.current_stock + transaction.quantity,
+          transactionDate: transaction.transaction_date,
+          key: key
+        });
+      }
+      
       item.current_stock += transaction.quantity;
       item.transaction_count++;
       
@@ -556,13 +582,23 @@ export class ExternalInventoryService {
     });
 
     // Convert to array and clean up
-    return Array.from(groupedData.values()).map(item => ({
+    const result = Array.from(groupedData.values()).map(item => ({
       ...item,
       sources: Array.from(item.sources).join(', '),
       transaction_types: Array.from(item.transaction_types).join(', '),
       stock_status: this.calculateStockStatus(item.current_stock),
       total_value: item.current_stock * (item.avg_unit_price || 0)
     }));
+    
+    // Debug: Check final BRITNY-BLACK L result for user-specific function
+    const britnyResult = result.find(item => 
+      item.product_name?.includes('BRITNY') && item.color === 'BLACK' && item.size === 'L'
+    );
+    if (britnyResult) {
+      console.log('🔍 Debug: Final USER-SPECIFIC BRITNY-BLACK L stock result:', britnyResult);
+    }
+    
+    return result;
   }
 
   // Get transaction history for an agency
@@ -726,33 +762,71 @@ export class ExternalInventoryService {
     invoiceNumber?: string,
     unitPrice?: number
   ): Promise<void> {
+    console.log('🔄 addSaleTransaction called with:', {
+      agencyId,
+      userName,
+      productName,
+      color,
+      size,
+      quantity,
+      customerName,
+      invoiceNumber,
+      unitPrice
+    });
+    
     // No product matching needed - using direct relationship via product_name/description
     const matchedProduct = null;
     
-    const { error } = await supabase
+    // Try to match the product name format used by external bot sync
+    // External bot uses format like "[BBL] BRITNY-BLACK L"
+    // We need to find the correct product code and format
+    let formattedProductName = productName;
+    
+    // Check if we can find a matching product with a code
+    const { data: matchingProducts } = await supabase
       .from('external_inventory_management')
-      .insert({
-        product_name: productName,
-        color: color,
-        size: size,
-        unit_price: unitPrice || 0,
-        category: matchedProduct?.category || 'General',
-        sub_category: matchedProduct?.subCategory || 'General',
-        matched_product_id: matchedProduct?.id || null,
-        transaction_type: 'sale',
-        transaction_id: invoiceNumber || `SALE-${Date.now()}`,
-        quantity: -Math.abs(quantity), // Negative for stock OUT
-        reference_name: customerName,
-        agency_id: agencyId,
-        user_name: userName,
-        notes: `Sale to ${customerName}`,
-        external_source: 'manual'
-      });
+      .select('product_name, product_code')
+      .ilike('product_name', `%${productName.replace(/\s+/g, '%')}%`)
+      .not('product_code', 'is', null)
+      .limit(1);
+    
+    if (matchingProducts && matchingProducts.length > 0) {
+      formattedProductName = matchingProducts[0].product_name;
+      console.log('🔄 Using existing product name format:', formattedProductName);
+    }
+    
+    // Use 'Default' for color and size to match external bot format
+    const transactionData = {
+      product_name: formattedProductName,
+      color: 'Default',
+      size: 'Default',
+      unit_price: unitPrice || 0,
+      category: matchedProduct?.category || 'General',
+      sub_category: matchedProduct?.subCategory || 'General',
+      matched_product_id: matchedProduct?.id || null,
+      transaction_type: 'sale',
+      transaction_id: invoiceNumber || `SALE-${Date.now()}`,
+      quantity: -Math.abs(quantity), // Negative for stock OUT
+      reference_name: userName, // Use userName so it appears in user's inventory
+      agency_id: agencyId,
+      user_name: userName,
+      notes: `Sale to ${customerName} (Invoice: ${invoiceNumber})`,
+      external_source: 'manual'
+    };
+    
+    console.log('📦 Inserting transaction data:', transactionData);
+    
+    const { error, data } = await supabase
+      .from('external_inventory_management')
+      .insert(transactionData)
+      .select();
 
     if (error) {
-      console.error('Error adding sale transaction:', error);
+      console.error('❌ Error adding sale transaction:', error);
       throw error;
     }
+    
+    console.log('✅ Sale transaction created:', data);
   }
 
   // Add return transaction (stock IN) with product matching
@@ -782,7 +856,7 @@ export class ExternalInventoryService {
         transaction_type: 'customer_return',
         transaction_id: `RET-${Date.now()}`,
         quantity: Math.abs(quantity), // Positive for stock IN
-        reference_name: customerName,
+        reference_name: userName, // Use userName so it appears in user's inventory
         agency_id: agencyId,
         user_name: userName,
         notes: `Return from ${customerName}: ${reason}${originalInvoiceNumber ? ` (Original: ${originalInvoiceNumber})` : ''}`,

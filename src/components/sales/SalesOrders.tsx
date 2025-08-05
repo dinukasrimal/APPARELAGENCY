@@ -21,6 +21,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import AgencySelector from '@/components/common/AgencySelector';
 
 interface SalesOrdersProps {
   user: User;
@@ -42,11 +43,14 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('orders');
   const [showAllOrders, setShowAllOrders] = useState(false);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
+    user.role === 'superuser' ? null : user.agencyId
+  );
   const { toast } = useToast();
 
   useEffect(() => {
     fetchData();
-  }, [user.id, user.role, user.agencyId]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -70,6 +74,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         ordersQuery = ordersQuery.eq('created_by', user.id);
       } else if (user.role === 'agency') {
         ordersQuery = ordersQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        ordersQuery = ordersQuery.eq('agency_id', selectedAgencyId);
       }
       
       queries.push(ordersQuery.order('created_at', { ascending: false }).limit(100));
@@ -144,6 +150,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         invoicesQuery = invoicesQuery.eq('created_by', user.id);
       } else if (user.role === 'agency') {
         invoicesQuery = invoicesQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
       }
       
       additionalQueries.push(invoicesQuery.order('created_at', { ascending: false }).limit(100));
@@ -166,6 +174,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         customersQuery = customersQuery.eq('created_by', user.id);
       } else if (user.role === 'agency') {
         customersQuery = customersQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
       }
       
       additionalQueries.push(customersQuery.order('name'));
@@ -384,9 +394,14 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       );
     }
 
+    // For superusers, use selected agency if available
+    const effectiveUser = user.role === 'superuser' && selectedAgencyId 
+      ? { ...user, agencyId: selectedAgencyId }
+      : user;
+      
     return (
       <EnhancedSalesOrderForm
-        user={user}
+        user={effectiveUser}
         customers={customers}
         products={products}
         onSuccess={handleOrderSuccess}
@@ -430,9 +445,14 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       );
     }
 
+    // For superusers, use selected agency if available
+    const effectiveUser = user.role === 'superuser' && selectedAgencyId 
+      ? { ...user, agencyId: selectedAgencyId }
+      : user;
+      
     return (
       <DirectInvoiceForm
-        user={user}
+        user={effectiveUser}
         customers={customers}
         products={products}
         onSuccess={handleOrderSuccess}
@@ -442,9 +462,14 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   }
 
   if (editingOrder) {
+    // For superusers, use selected agency if available
+    const effectiveUser = user.role === 'superuser' && selectedAgencyId 
+      ? { ...user, agencyId: selectedAgencyId }
+      : user;
+      
     return (
       <EnhancedSalesOrderForm
-        user={user}
+        user={effectiveUser}
         customers={customers}
         products={products}
         editingOrder={editingOrder}
@@ -455,9 +480,14 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   }
 
   if (convertingToInvoiceOrder) {
+    // For superusers, use selected agency if available
+    const effectiveUser = user.role === 'superuser' && selectedAgencyId 
+      ? { ...user, agencyId: selectedAgencyId }
+      : user;
+      
     return (
       <CreateInvoiceForm
-        user={user}
+        user={effectiveUser}
         salesOrder={convertingToInvoiceOrder}
         onSubmit={handleOrderSuccess}
         onCancel={() => setConvertingToInvoiceOrder(null)}
@@ -466,10 +496,15 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   }
 
   if (selectedOrder) {
+    // For superusers, use selected agency if available
+    const effectiveUser = user.role === 'superuser' && selectedAgencyId 
+      ? { ...user, agencyId: selectedAgencyId }
+      : user;
+      
     return (
       <SalesOrderDetails
         order={selectedOrder}
-        user={user}
+        user={effectiveUser}
         onBack={() => setSelectedOrder(null)}
         onEdit={canEdit(selectedOrder) ? () => setEditingOrder(selectedOrder) : undefined}
       />
@@ -576,6 +611,19 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             </div>
           </div>
         </div>
+
+        {/* Agency Selector for Superusers */}
+        <AgencySelector
+          user={user}
+          selectedAgencyId={selectedAgencyId}
+          onAgencyChange={(agencyId) => {
+            setSelectedAgencyId(agencyId);
+            setSelectedOrder(null);
+            setEditingOrder(null);
+            setSearchTerm('');
+          }}
+          placeholder="Select agency to view sales data..."
+        />
 
         {/* Modern Setup Warning */}
         {(customers.length === 0 || products.length === 0) && (
@@ -764,7 +812,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
         <TabsContent value="invoices" className="flex-1">
           <InvoiceManagement 
-            user={user} 
+            user={user.role === 'superuser' && selectedAgencyId ? { ...user, agencyId: selectedAgencyId } : user} 
             invoices={invoices} 
             orders={orders}
           />
@@ -772,7 +820,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
         <TabsContent value="returns" className="flex-1">
           <ReturnsManagement 
-            user={user} 
+            user={user.role === 'superuser' && selectedAgencyId ? { ...user, agencyId: selectedAgencyId } : user} 
             returns={returns} 
             invoices={invoices}
             customers={customers}

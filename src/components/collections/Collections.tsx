@@ -12,6 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { CollectionForm } from './CollectionForm';
 import { CollectionDetails } from './CollectionDetails';
+import AgencySelector from '@/components/common/AgencySelector';
 
 interface CollectionsProps {
   user: User;
@@ -27,11 +28,14 @@ const Collections = ({ user }: CollectionsProps) => {
   const [loading, setLoading] = useState(true);
   const [showCollectionForm, setShowCollectionForm] = useState(false);
   const [viewingCollection, setViewingCollection] = useState<Collection | null>(null);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
+    user.role === 'superuser' ? null : user.agencyId
+  );
   const { toast } = useToast();
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [selectedAgencyId]);
 
   useEffect(() => {
     if (selectedCustomer) {
@@ -44,10 +48,15 @@ const Collections = ({ user }: CollectionsProps) => {
       setLoading(true);
       
       // Fetch customers for the agency
-      const { data: customersData, error: customersError } = await supabase
+      let customersQuery = supabase
         .from('customers')
-        .select('*')
-        .eq('agency_id', user.agencyId)
+        .select('*');
+      
+      if (selectedAgencyId) {
+        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
+      }
+      
+      const { data: customersData, error: customersError } = await customersQuery
         .order('name');
 
       if (customersError) {
@@ -73,10 +82,15 @@ const Collections = ({ user }: CollectionsProps) => {
       }));
 
       // Fetch invoices for the agency
-      const { data: invoicesData, error: invoicesError } = await supabase
+      let invoicesQuery = supabase
         .from('invoices')
-        .select('*')
-        .eq('agency_id', user.agencyId)
+        .select('*');
+      
+      if (selectedAgencyId) {
+        invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
+      }
+      
+      const { data: invoicesData, error: invoicesError } = await invoicesQuery
         .order('created_at', { ascending: false });
 
       if (invoicesError) {
@@ -107,14 +121,19 @@ const Collections = ({ user }: CollectionsProps) => {
       // Fetch collections for the agency
       let transformedCollections: Collection[] = [];
       try {
-        const { data: collectionsData, error: collectionsError } = await supabase
+        let collectionsQuery = supabase
           .from('collections')
           .select(`
             *,
             collection_cheques (*),
             collection_allocations (*)
-          `)
-          .eq('agency_id', user.agencyId)
+          `);
+        
+        if (selectedAgencyId) {
+          collectionsQuery = collectionsQuery.eq('agency_id', selectedAgencyId);
+        }
+        
+        const { data: collectionsData, error: collectionsError } = await collectionsQuery
           .order('created_at', { ascending: false });
 
         if (collectionsError) {
@@ -282,7 +301,7 @@ const Collections = ({ user }: CollectionsProps) => {
       const newCollection = {
         customer_id: formData.customerId,
         customer_name: formData.customerName,
-        agency_id: user.agencyId,
+        agency_id: selectedAgencyId || user.agencyId,
         total_amount: formData.totalAmount,
         payment_method: formData.paymentMethod,
         cash_amount: formData.cashAmount,
@@ -435,6 +454,19 @@ const Collections = ({ user }: CollectionsProps) => {
           <p className="text-sm sm:text-base text-gray-600">Manage customer payments and collections</p>
         </div>
       </div>
+
+      {/* Agency Selector for Superusers */}
+      <AgencySelector
+        user={user}
+        selectedAgencyId={selectedAgencyId}
+        onAgencyChange={(agencyId) => {
+          setSelectedAgencyId(agencyId);
+          setSelectedCustomer(null);
+          setCustomerInvoiceSummary(null);
+          setSearchTerm('');
+        }}
+        placeholder="Select agency to view collections..."
+      />
 
       {/* Customer Selection */}
       <Card>

@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ArrowLeft, Search, FileX, AlertTriangle, Calendar } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import AgencySelector from '@/components/common/AgencySelector';
 
 interface ReturnChequesLodgeProps {
   user: User;
@@ -37,11 +38,14 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
+    user.role === 'superuser' ? null : user.agencyId
+  );
   const { toast } = useToast();
 
   useEffect(() => {
     fetchCheques();
-  }, []);
+  }, [selectedAgencyId]);
 
   useEffect(() => {
     const filtered = cheques.filter(cheque => 
@@ -74,9 +78,9 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
         `)
         .not('collection_cheques', 'is', null);
 
-      // Filter by agency for non-superusers
-      if (user.role !== 'superuser' && user.agencyId) {
-        collectionsQuery = collectionsQuery.eq('agency_id', user.agencyId);
+      // Filter by agency
+      if (selectedAgencyId) {
+        collectionsQuery = collectionsQuery.eq('agency_id', selectedAgencyId);
       }
 
       const { data: collections, error } = await collectionsQuery;
@@ -203,6 +207,18 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
           <p className="text-gray-600">Mark cheques as returned and manage bounced payments</p>
         </div>
       </div>
+
+      {/* Agency Selector for Superusers */}
+      <AgencySelector
+        user={user}
+        selectedAgencyId={selectedAgencyId}
+        onAgencyChange={(agencyId) => {
+          setSelectedAgencyId(agencyId);
+          setSelectedCheque(null);
+          setSearchTerm('');
+        }}
+        placeholder="Select agency to view cheques..."
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Cheque Selection */}
