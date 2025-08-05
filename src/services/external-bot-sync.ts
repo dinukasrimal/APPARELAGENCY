@@ -56,7 +56,7 @@ export class ExternalBotSyncService {
     // Standardize spacing and formatting
     cleaned = cleaned
       .replace(/\s+/g, ' ')              // Multiple spaces -> single space
-      .replace(/\s*-\s*/g, '-')          // " - " -> "-" 
+      .replace(/\s*-\s*/g, '-')          // All dash variations -> "-" (no spaces around dash)
       .trim();
     
     console.log(`🧹 External bot - product name cleaning: "${productName}" -> "${cleaned}"`);
@@ -217,114 +217,14 @@ export class ExternalBotSyncService {
 
           console.log(`    🔍 Processing line: ${productName} (Qty: ${quantity})`);
 
-          // FUZZY MATCH with products table to get matched_product_id
-          let matchedProductId = null;
+          // No product matching needed - direct relationship via product_name/description
           let category = 'General';
           let subCategory = 'General';
-
-          try {
-            // Clean product name for matching by removing prefixes
-            const cleanProductName = this.cleanProductNameForMatching(productName);
-            console.log(`🧹 Cleaned: "${productName}" -> "${cleanProductName}"`);
-
-            // FIRST: Debug - show what products exist (no agency_id column exists)
-            console.log(`🔍 DEBUG: Checking all products in products table`);
-            const { data: debugProducts, error: debugError } = await supabase
-              .from('products')
-              .select('id, name')
-              .limit(10);
-            
-            if (!debugError && debugProducts) {
-              console.log(`📋 DEBUG: Found ${debugProducts.length} products in catalog:`);
-              debugProducts.forEach(p => console.log(`  - ID: ${p.id}, Name: "${p.name}"`));
-            } else {
-              console.log(`❌ DEBUG: Error or no products found:`, debugError);
-            }
-
-            // Get all products and do client-side matching (no agency filter since column doesn't exist)
-            const { data: allProducts, error: allError } = await supabase
-              .from('products')
-              .select('id, name, category, sub_category');
-
-            if (!allError && allProducts && allProducts.length > 0) {
-              console.log(`🔍 Fuzzy matching "${cleanProductName}" against ${allProducts.length} products from products table`);
-              
-              // Try multiple matching strategies
-              let foundMatch = null;
-              
-              // Strategy 1: Exact match (case insensitive)
-              foundMatch = allProducts.find(p => 
-                p.name && p.name.toLowerCase().trim() === cleanProductName.toLowerCase().trim()
-              );
-              if (foundMatch) {
-                console.log(`✅ EXACT match: "${cleanProductName}" -> "${foundMatch.name}"`);
-              }
-              
-              // Strategy 2: Product name contains the cleaned name
-              if (!foundMatch) {
-                foundMatch = allProducts.find(p => 
-                  p.name && p.name.toLowerCase().includes(cleanProductName.toLowerCase())
-                );
-                if (foundMatch) {
-                  console.log(`✅ CONTAINS match: "${cleanProductName}" -> "${foundMatch.name}"`);
-                }
-              }
-              
-              // Strategy 3: Cleaned name contains the product name
-              if (!foundMatch) {
-                foundMatch = allProducts.find(p => 
-                  p.name && cleanProductName.toLowerCase().includes(p.name.toLowerCase())
-                );
-                if (foundMatch) {
-                  console.log(`✅ REVERSE match: "${cleanProductName}" -> "${foundMatch.name}"`);
-                }
-              }
-              
-              // Strategy 4: Remove size/color variants and match base name
-              if (!foundMatch) {
-                const baseCleanName = cleanProductName
-                  .replace(/\s+(28|30|32|34|36|38|40|42|44|46|48|50|xs|s|m|l|xl|xxl)/gi, '')
-                  .replace(/-(white|black|beigh|red|blue|green|yellow|grey|gray)/gi, '')
-                  .trim();
-                console.log(`🔍 Trying base name match: "${baseCleanName}"`);
-                
-                foundMatch = allProducts.find(p => {
-                  if (!p.name) return false;
-                  const baseProductName = p.name
-                    .replace(/\s+(28|30|32|34|36|38|40|42|44|46|48|50|xs|s|m|l|xl|xxl)/gi, '')
-                    .replace(/-(white|black|beigh|red|blue|green|yellow|grey|gray)/gi, '')
-                    .trim();
-                  return baseProductName.toLowerCase() === baseCleanName.toLowerCase();
-                });
-                
-                if (foundMatch) {
-                  console.log(`✅ BASE match: "${baseCleanName}" -> "${foundMatch.name}"`);
-                }
-              }
-
-              if (foundMatch) {
-                matchedProductId = foundMatch.id;
-                category = foundMatch.category || 'General';
-                subCategory = foundMatch.sub_category || 'General';
-                globalMatchedProducts++;
-                console.log(`🎯 SUCCESS: Found products.id="${matchedProductId}" for "${cleanProductName}" -> "${foundMatch.name}"`);
-              } else {
-                globalUnmatchedProducts++;
-                console.log(`⚠️ NO match found for: "${cleanProductName}"`);
-                console.log(`📋 Sample products in database: ${allProducts.map(p => `"${p.name}"`).slice(0, 3).join(', ')}...`);
-              }
-            } else {
-              globalUnmatchedProducts++;
-              console.log(`❌ Error fetching products table: ${allError?.message || 'No products'}`);
-            }
-          } catch (matchError) {
-            console.warn(`Error matching product ${productName}:`, matchError);
-            globalUnmatchedProducts++;
-          }
+          
+          console.log(`📦 Processing product: "${productName}" (no matching required)`);
+          globalMatchedProducts++; // All products are considered "matched" since we have direct relationship
 
           // Insert into external_inventory_management
-          console.log(`💾 About to insert with matched_product_id: "${matchedProductId}" (${matchedProductId ? 'HAS VALUE' : 'NULL/UNDEFINED'})`);
-          
           const insertData = {
             product_name: productName,
             product_code: this.extractProductCode(productName),
@@ -332,7 +232,7 @@ export class ExternalBotSyncService {
             size: size,
             category: category,
             sub_category: subCategory,
-            matched_product_id: matchedProductId, // FUZZY MATCHED PRODUCT ID
+            matched_product_id: null, // No longer needed - direct relationship via product_name/description
             unit_price: unitPrice,
             transaction_type: 'external_invoice',
             transaction_id: invoice.name,
@@ -349,7 +249,6 @@ export class ExternalBotSyncService {
           
           console.log(`📋 Insert data:`, { 
             product_name: insertData.product_name, 
-            matched_product_id: insertData.matched_product_id,
             agency_id: insertData.agency_id
           });
           
@@ -362,7 +261,7 @@ export class ExternalBotSyncService {
             continue;
           }
 
-          console.log(`    ✅ Created transaction: ${productName} (matched_product_id: ${matchedProductId})`);
+          console.log(`    ✅ Created transaction: ${productName}`);
           createdTransactions++;
           processedCount++;
         }
@@ -664,89 +563,12 @@ export class ExternalBotSyncService {
           const productCodeMatch = productName.match(/\[([^\]]+)\]/);
           const productCode = productCodeMatch ? productCodeMatch[1] : null;
 
-          // Enhanced product matching - find matching product for linking
+          // No product matching needed - direct relationship via product_name/description
           let category = 'General';
           let subCategory = 'General';
-          let matchedProductId = null;
           
-          try {
-            // Helper function to escape special SQL ILIKE characters
-            const escapeForIlike = (str: string) => {
-              return str
-                .replace(/\\/g, '\\\\')  // Escape backslashes first
-                .replace(/\[/g, '\\[')   // Escape opening brackets
-                .replace(/\]/g, '\\]')   // Escape closing brackets
-                .replace(/%/g, '\\%')    // Escape percent signs
-                .replace(/_/g, '\\_');   // Escape underscores
-            };
-
-            // Method 1: Clean product name by removing various prefixes and standardizing
-            const cleanProductName = this.cleanProductNameForMatching(productName);
-            console.log(`🔧 External bot - cleaned: "${productName}" -> "${cleanProductName}"`);
-            
-            let { data: exactMatch, error: exactError } = await supabase
-              .from('products')
-              .select('id, name, category, sub_category')
-              .eq('agency_id', agencyId)
-              .ilike('name', escapeForIlike(cleanProductName))
-              .limit(1);
-
-            if (!exactError && exactMatch && exactMatch.length > 0) {
-              category = exactMatch[0].category || 'General';
-              subCategory = exactMatch[0].sub_category || 'General';
-              matchedProductId = exactMatch[0].id;
-              console.log(`✅ External bot - exact match: "${cleanProductName}" matches "${exactMatch[0].name}" (ID: ${matchedProductId})`);
-            } else {
-              // Method 2: Try matching by product code if available
-              if (productCode) {
-                const { data: codeMatch, error: codeError } = await supabase
-                  .from('products')
-                  .select('id, name, category, sub_category')
-                  .eq('agency_id', agencyId)
-                  .ilike('name', `%${escapeForIlike(productCode)}%`)
-                  .limit(1);
-
-                if (!codeError && codeMatch && codeMatch.length > 0) {
-                  category = codeMatch[0].category || 'General';
-                  subCategory = codeMatch[0].sub_category || 'General';
-                  matchedProductId = codeMatch[0].id;
-                  console.log(`✅ External bot - code match: "${productName}" -> "${codeMatch[0].name}" (ID: ${matchedProductId})`);
-                } else {
-                  // Method 3: Try fuzzy matching by base name
-                  const baseName = productName
-                    .replace(/^\[[^\]]+\]\s*/, '') // Remove product codes
-                    .replace(/-(black|beigh|white|red|blue|green|yellow|grey|gray)/gi, '') // Remove colors
-                    .replace(/\s+(xs|s|m|l|xl|xxl|xxxl|\d+)$/gi, '') // Remove sizes
-                    .trim();
-
-                  if (baseName && baseName !== productName) {
-                    const { data: fuzzyMatch, error: fuzzyError } = await supabase
-                      .from('products')
-                      .select('id, name, category, sub_category')
-                      .eq('agency_id', agencyId)
-                      .ilike('name', `%${escapeForIlike(baseName)}%`)
-                      .limit(1);
-
-                    if (!fuzzyError && fuzzyMatch && fuzzyMatch.length > 0) {
-                      category = fuzzyMatch[0].category || 'General';
-                      subCategory = fuzzyMatch[0].sub_category || 'General';
-                      matchedProductId = fuzzyMatch[0].id;
-                      console.log(`✅ External bot - fuzzy match: "${productName}" -> "${fuzzyMatch[0].name}" (ID: ${matchedProductId})`);
-                    } else {
-                      console.log(`⚠️ External bot - no product match found for: "${productName}" (agency: ${agencyId})`);
-                    }
-                  } else {
-                    console.log(`⚠️ External bot - no product match found for: "${productName}" (agency: ${agencyId})`);
-                  }
-                }
-              } else {
-                console.log(`⚠️ External bot - no product code and no exact match for: "${productName}" (agency: ${agencyId})`);
-              }
-            }
-          } catch (lookupError) {
-            console.warn(`Error looking up product ${productName}:`, lookupError);
-            // Continue with defaults
-          }
+          console.log(`📦 Processing product: "${productName}" (no matching required)`);
+          matchedProducts++; // All products are considered "matched" since we have direct relationship
 
           // Insert directly into external_inventory_management table
           const { error: insertError } = await supabase
@@ -758,7 +580,7 @@ export class ExternalBotSyncService {
               size: size,
               category: category,
               sub_category: subCategory,
-              matched_product_id: matchedProductId, // CRITICAL: Link to products table for proper matching
+              matched_product_id: null, // No longer needed - direct relationship via product_name/description
               external_product_id: externalProductId, // External system's product ID
               unit_price: unitPrice,
               transaction_type: 'external_invoice',
@@ -779,12 +601,7 @@ export class ExternalBotSyncService {
             continue;
           }
 
-          // Track product matching stats
-          if (matchedProductId) {
-            matchedProducts++;
-          } else {
-            unmatchedProducts++;
-          }
+          // All products are tracked as matched since we have direct relationship
 
           createdTransactions++;
           processedCount++;

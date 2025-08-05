@@ -87,14 +87,14 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     return grouped;
   }, [filteredItems]);
 
-  // Subcategory and matching statistics
+  // Subcategory statistics (matching no longer needed - direct relationship)
   const categoryStats = useMemo(() => {
-    const stats: { [key: string]: { total: number; lowStock: number; outOfStock: number; totalValue: number; matched: number; unmatched: number } } = {};
+    const stats: { [key: string]: { total: number; lowStock: number; outOfStock: number; totalValue: number } } = {};
     
     inventoryItems.forEach(item => {
       const category = item.sub_category || 'General';
       if (!stats[category]) {
-        stats[category] = { total: 0, lowStock: 0, outOfStock: 0, totalValue: 0, matched: 0, unmatched: 0 };
+        stats[category] = { total: 0, lowStock: 0, outOfStock: 0, totalValue: 0 };
       }
       
       stats[category].total += 1;
@@ -105,24 +105,19 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       } else if (item.current_stock <= 5) {
         stats[category].lowStock += 1;
       }
-
-      if (item.matched_product_id) {
-        stats[category].matched += 1;
-      } else {
-        stats[category].unmatched += 1;
-      }
     });
     
     return stats;
   }, [inventoryItems]);
 
-  // Overall matching statistics
-  const matchingStats = useMemo(() => {
-    const matched = inventoryItems.filter(item => item.matched_product_id).length;
-    const unmatched = inventoryItems.length - matched;
-    const matchRate = inventoryItems.length > 0 ? Math.round((matched / inventoryItems.length) * 100) : 0;
+  // Overall statistics (matching no longer needed - direct relationship)
+  const overallStats = useMemo(() => {
+    const totalItems = inventoryItems.length;
+    const inStock = inventoryItems.filter(item => item.current_stock > 0).length;
+    const lowStock = inventoryItems.filter(item => item.current_stock > 0 && item.current_stock <= 5).length;
+    const outOfStock = inventoryItems.filter(item => item.current_stock <= 0).length;
     
-    return { matched, unmatched, matchRate };
+    return { totalItems, inStock, lowStock, outOfStock };
   }, [inventoryItems]);
 
   const getStockStatus = (item: ExternalInventoryItem) => {
@@ -197,11 +192,24 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       // Use selectedAgencyId for superusers, user.agencyId for regular users
       const agencyIdToUse = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
       
+      // Use different methods based on user role
+      const stockSummaryPromise = user.role === 'superuser' 
+        ? externalInventoryService.getAgencyStockSummary(agencyIdToUse, forceRefresh)
+        : externalInventoryService.getStockSummary(user.id, forceRefresh);
+      
+      const categoriesPromise = user.role === 'superuser'
+        ? externalInventoryService.getAgencyCategories(agencyIdToUse)
+        : externalInventoryService.getCategories(user.id);
+
+      const metricsPromise = user.role === 'superuser'
+        ? externalInventoryService.getAgencyInventoryMetrics(agencyIdToUse)
+        : externalInventoryService.getInventoryMetrics(user.id);
+
       const [itemsData, transactionsData, metricsData, categoriesData] = await Promise.all([
-        externalInventoryService.getStockSummary(agencyIdToUse, forceRefresh),
+        stockSummaryPromise,
         externalInventoryService.getTransactionHistory(agencyIdToUse, 50),
-        externalInventoryService.getInventoryMetrics(agencyIdToUse),
-        externalInventoryService.getCategories(agencyIdToUse)
+        metricsPromise,
+        categoriesPromise
       ]);
 
       setInventoryItems(itemsData);
@@ -540,15 +548,15 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-600">Product Matching</p>
-                  <p className="text-2xl font-bold text-blue-600">{matchingStats.matchRate}%</p>
-                  <p className="text-xs text-gray-500">{matchingStats.matched}/{inventoryItems.length}</p>
+                  <p className="text-sm text-gray-600">In Stock Items</p>
+                  <p className="text-2xl font-bold text-green-600">{overallStats.inStock}</p>
+                  <p className="text-xs text-gray-500">{overallStats.inStock}/{overallStats.totalItems}</p>
                 </div>
                 <div className="flex flex-col items-center">
-                  <BarChart3 className="h-6 w-6 text-blue-600" />
+                  <Package className="h-6 w-6 text-green-600" />
                   <div className="text-xs text-center mt-1">
-                    {matchingStats.unmatched > 0 && (
-                      <span className="text-orange-600">⚠ {matchingStats.unmatched} unmatched</span>
+                    {overallStats.lowStock > 0 && (
+                      <span className="text-orange-600">⚠ {overallStats.lowStock} low stock</span>
                     )}
                   </div>
                 </div>
@@ -648,8 +656,8 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                           <span>LKR {stats.totalValue.toLocaleString()}</span>
                         </div>
                         <div className="flex justify-between text-blue-600">
-                          <span>Matched:</span>
-                          <span>{stats.matched}/{stats.total}</span>
+                          <span>Items:</span>
+                          <span>{stats.total}</span>
                         </div>
                       </div>
                     </button>
@@ -746,16 +754,6 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                                   <div className="flex gap-2 text-sm text-gray-600 flex-wrap">
                                     {item.product_code && (
                                       <span className="bg-gray-100 px-2 py-1 rounded text-xs">{item.product_code}</span>
-                                    )}
-                                    {item.matched_product_id && (
-                                      <span className="bg-green-100 px-2 py-1 rounded text-xs text-green-700">
-                                        ✓ Matched
-                                      </span>
-                                    )}
-                                    {!item.matched_product_id && (
-                                      <span className="bg-yellow-100 px-2 py-1 rounded text-xs text-yellow-700">
-                                        ⚠ Unmatched
-                                      </span>
                                     )}
                                     {item.variant_count && item.variant_count > 1 && (
                                       <span className="bg-blue-100 px-2 py-1 rounded text-xs text-blue-700">
@@ -868,16 +866,6 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                                       <div className="flex gap-2 text-sm text-gray-600 flex-wrap">
                                         {item.product_code && (
                                           <span className="bg-gray-100 px-2 py-1 rounded text-xs">{item.product_code}</span>
-                                        )}
-                                        {item.matched_product_id && (
-                                          <span className="bg-green-100 px-2 py-1 rounded text-xs text-green-700">
-                                            ✓ Matched
-                                          </span>
-                                        )}
-                                        {!item.matched_product_id && (
-                                          <span className="bg-yellow-100 px-2 py-1 rounded text-xs text-yellow-700">
-                                            ⚠ Unmatched
-                                          </span>
                                         )}
                                         {item.variant_count && item.variant_count > 1 && (
                                           <span className="bg-blue-100 px-2 py-1 rounded text-xs text-blue-700">
