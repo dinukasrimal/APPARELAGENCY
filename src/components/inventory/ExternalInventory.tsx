@@ -10,10 +10,11 @@ import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, Arrow
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
-import { localInvoiceSyncService } from '@/services/local-invoice-sync';
+import { externalBotSyncService } from '@/services/external-bot-sync';
 import SimpleBulkStockAdjustment from './SimpleBulkStockAdjustment';
 import ExternalStockAdjustmentApproval from './ExternalStockAdjustmentApproval';
 import ExternalStockAdjustmentHistory from './ExternalStockAdjustmentHistory';
+import SyncStatusDashboard from './SyncStatusDashboard';
 
 interface ExternalInventoryProps {
   user: User;
@@ -254,23 +255,15 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
         }
       }
       
-      const result = await localInvoiceSyncService.syncAllLocalTransactions(userIdForSync);
+      const result = await externalBotSyncService.syncAllUsersGlobalInvoices();
       
       if (result.success) {
         const details = result.details;
-        let description = `${result.message} - Total: ${result.syncedCount || 0} transactions`;
+        const matchedInvoices = details?.matchedInvoices || 0;
+        const createdTransactions = details?.createdTransactions || 0;
+        const matchedProducts = details?.matchedProducts || 0;
         
-        if (details) {
-          const parts = [];
-          if (details.externalInvoices?.syncedCount) parts.push(`External: ${details.externalInvoices.syncedCount}`);
-          if (details.localInvoices?.syncedCount) parts.push(`Sales: ${details.localInvoices.syncedCount}`);
-          if (details.customerReturns?.syncedCount) parts.push(`Customer Returns: ${details.customerReturns.syncedCount}`);
-          if (details.companyReturns?.syncedCount) parts.push(`Company Returns: ${details.companyReturns.syncedCount}`);
-          
-          if (parts.length > 0) {
-            description = `Synced successfully - ${parts.join(', ')}`;
-          }
-        }
+        const description = `Global bot sync completed - ${matchedInvoices} invoices processed, ${createdTransactions} transactions created, ${matchedProducts} products processed`;
         
         toast({
           title: "Sync Completed",
@@ -290,7 +283,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       console.error('Sync failed:', error);
       toast({
         title: "Sync Error",
-        description: "Failed to sync local database",
+        description: "Failed to sync external bot data",
         variant: "destructive"
       });
     } finally {
@@ -307,22 +300,20 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
         description: "Processing transactions for ALL users across all agencies...",
       });
 
-      const result = await localInvoiceSyncService.syncAllUsersGlobalTransactions();
+      const result = await externalBotSyncService.syncAllUsersGlobalInvoices();
       
       if (result.success) {
         const details = result.details as any;
-        const externalBot = details?.externalBotResult;
-        const externalBotCount = externalBot?.syncedCount || 0;
-        const localCount = details?.totalTransactions || 0;
-        const totalUsers = details?.totalUsers || 0;
-        const successfulUsers = details?.successfulUsers || 0;
+        const matchedInvoices = details?.matchedInvoices || 0;
+        const unmatchedInvoices = details?.unmatchedInvoices || 0;
+        const createdTransactions = details?.createdTransactions || 0;
+        const matchedProducts = details?.matchedProducts || 0;
+        const unmatchedProducts = details?.unmatchedProducts || 0;
         
-        const externalBotMatched = externalBot?.details?.matchedProducts || 0;
-        const externalBotUnmatched = externalBot?.details?.unmatchedProducts || 0;
-        const matchRate = externalBotMatched + externalBotUnmatched > 0 ? 
-          Math.round((externalBotMatched / (externalBotMatched + externalBotUnmatched)) * 100) : 100;
+        const matchRate = matchedProducts + unmatchedProducts > 0 ? 
+          Math.round((matchedProducts / (matchedProducts + unmatchedProducts)) * 100) : 100;
         
-        const description = `Global sync completed successfully! External bot: ${externalBotCount} invoices processed across all users (${externalBotMatched} products matched, ${externalBotUnmatched} unmatched - ${matchRate}% match rate). Local data: ${localCount} transactions from ${successfulUsers}/${totalUsers} users. Total: ${result.syncedCount || 0} transactions.`;
+        const description = `Global bot sync completed successfully! ${matchedInvoices} invoices processed (${unmatchedInvoices} unmatched), ${createdTransactions} transactions created, ${matchedProducts} products processed (${unmatchedProducts} unmatched) - ${matchRate}% match rate`;
         
         toast({
           title: "Global Sync Completed",
@@ -567,7 +558,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className={`grid w-full ${user.role === 'superuser' ? 'grid-cols-3' : 'grid-cols-2'}`}>
           <TabsTrigger value="overview" className="flex items-center gap-2">
             <Package className="h-4 w-4" />
             Stock Overview
@@ -576,6 +567,12 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             <RefreshCw className="h-4 w-4" />
             Transaction History
           </TabsTrigger>
+          {user.role === 'superuser' && (
+            <TabsTrigger value="sync-status" className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" />
+              Sync Status
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6 mt-6">
@@ -1028,6 +1025,15 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {user.role === 'superuser' && (
+          <TabsContent value="sync-status" className="space-y-6 mt-6">
+            <SyncStatusDashboard 
+              onRefresh={() => fetchData(true)} 
+              onGlobalSync={handleGlobalSync}
+            />
+          </TabsContent>
+        )}
       </Tabs>
 
       {/* Adjustment Forms and Modals */}

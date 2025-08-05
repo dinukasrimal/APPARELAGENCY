@@ -686,8 +686,8 @@ export class ExternalInventoryService {
     reason: string,
     notes?: string
   ): Promise<void> {
-    // Try to find matching product for consistency
-    const matchedProduct = await this.findMatchingProduct(productName, agencyId);
+    // No product matching needed - using direct relationship via product_name/description
+    const matchedProduct = null;
     
     const { error } = await supabase
       .from('external_inventory_management')
@@ -726,8 +726,8 @@ export class ExternalInventoryService {
     invoiceNumber?: string,
     unitPrice?: number
   ): Promise<void> {
-    // Try to find matching product for consistency
-    const matchedProduct = await this.findMatchingProduct(productName, agencyId);
+    // No product matching needed - using direct relationship via product_name/description
+    const matchedProduct = null;
     
     const { error } = await supabase
       .from('external_inventory_management')
@@ -767,8 +767,8 @@ export class ExternalInventoryService {
     reason: string,
     originalInvoiceNumber?: string
   ): Promise<void> {
-    // Try to find matching product for consistency
-    const matchedProduct = await this.findMatchingProduct(productName, agencyId);
+    // No product matching needed - using direct relationship via product_name/description
+    const matchedProduct = null;
     
     const { error } = await supabase
       .from('external_inventory_management')

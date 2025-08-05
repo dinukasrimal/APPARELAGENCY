@@ -33,6 +33,32 @@ interface SyncResult {
   details?: any;
 }
 
+export interface SyncStatus {
+  lastExternalBotSync: {
+    timestamp: string | null;
+    status: 'success' | 'error' | 'never';
+    message: string;
+    syncedCount: number;
+  };
+  lastGlobalBotSync: {
+    timestamp: string | null;
+    status: 'success' | 'error' | 'never' | 'pending';
+    message: string;
+    processedCount: number;
+  };
+  nextScheduledSync: {
+    externalBot: {
+      morning: string; // 6 AM UTC
+      evening: string; // 6 PM UTC
+    };
+    globalBot: {
+      morning: string; // 8 AM UTC  
+      evening: string; // 8 PM UTC
+    };
+  };
+  pendingGlobalSyncRequests: number;
+}
+
 export class ExternalBotSyncService {
   
   /**
@@ -304,156 +330,6 @@ export class ExternalBotSyncService {
     }
   }
 
-  async syncInvoices(userId: string): Promise<SyncResult> {
-    // EXTERNAL DATABASE SYNC RE-ENABLED
-    try {
-      console.log('🚀 Starting external bot invoices sync for user:', userId);
-
-      // Step 1: Get user profile data
-      const userProfile = await this.getUserProfile(userId);
-      if (!userProfile) {
-        return {
-          success: false,
-          message: 'Failed to get user profile data',
-          error: 'User profile not found'
-        };
-      }
-
-      console.log(`👤 User: ${userProfile.name}, Agency: ${userProfile.agencyId}`);
-
-      // Step 2: Test external connection
-      const connectionTest = await this.testExternalConnection();
-      if (!connectionTest.success) {
-        return connectionTest;
-      }
-
-      // Step 3: Fetch only the last 50 invoices from external database
-      console.log('📊 Fetching last 50 invoices from external database...');
-      const { data: externalInvoices, error: fetchError } = await this.externalSupabase
-        .from('invoices')
-        .select('*')
-        .order('id', { ascending: false })
-        .limit(50);
-
-      if (fetchError) {
-        return {
-          success: false,
-          message: 'Failed to fetch external invoices',
-          error: fetchError.message
-        };
-      }
-
-      if (!externalInvoices || externalInvoices.length === 0) {
-        return {
-          success: true,
-          message: 'No invoices found in external database',
-          syncedCount: 0
-        };
-      }
-
-      console.log(`✅ Fetched ${externalInvoices.length} invoices from external database`);
-
-      // Step 4: Filter invoices by partner_name matching user's name
-      console.log(`🔍 Filtering invoices for partner_name: "${userProfile.name}"`);
-      const filteredInvoices = externalInvoices.filter(invoice => {
-        return invoice.partner_name && 
-               invoice.partner_name.toLowerCase().trim() === userProfile.name.toLowerCase().trim();
-      });
-      
-      console.log(`📋 Filtered to ${filteredInvoices.length} invoices for user ${userProfile.name}`);
-
-      if (filteredInvoices.length === 0) {
-        return {
-          success: true,
-          message: `No invoices found for partner name "${userProfile.name}"`,
-          syncedCount: 0
-        };
-      }
-
-      // Step 5: Check which invoices are already processed to avoid duplicates
-      console.log('🔍 Checking for already processed invoices...');
-      const invoiceIds = filteredInvoices.map(inv => inv.name || inv.id?.toString()).filter(Boolean);
-      
-      const { data: existingInvoices } = await supabase
-        .from('external_inventory_management')
-        .select('external_id')
-        .eq('agency_id', userProfile.agencyId)
-        .eq('external_source', 'bot')
-        .in('external_id', invoiceIds);
-
-      const existingInvoiceIds = new Set(existingInvoices?.map(inv => inv.external_id) || []);
-      
-      // Filter out already processed invoices
-      const newInvoices = filteredInvoices.filter(invoice => {
-        const invoiceId = invoice.name || invoice.id?.toString();
-        return invoiceId && !existingInvoiceIds.has(invoiceId);
-      });
-
-      console.log(`📦 Found ${newInvoices.length} new invoices to process (${filteredInvoices.length - newInvoices.length} already processed)`);
-
-      if (newInvoices.length === 0) {
-        return {
-          success: true,
-          message: `All ${filteredInvoices.length} invoices for "${userProfile.name}" are already processed`,
-          syncedCount: 0
-        };
-      }
-
-      // Step 6: Process only new invoices directly into inventory
-      console.log(`📦 Processing ${newInvoices.length} new invoices into inventory for agency ${userProfile.agencyId}...`);
-      
-      // Transform new invoices for processing
-      const transformedInvoices = newInvoices.map((invoice: ExternalInvoice, index: number) => {
-        return {
-          invoice_number: invoice.name || invoice.id?.toString() || `INV-${Date.now() + index}`,
-          customer_name: invoice.partner_name || 'Unknown Customer',
-          invoice_date: invoice.date_order || null,
-          total_amount: invoice.amount_total || 0,
-          status: invoice.state || 'unknown',
-          payment_status: invoice.payment_state || 'pending',
-          notes: JSON.stringify(invoice.order_lines || []),
-          agency_id: userProfile.agencyId,
-          currency: invoice.currency_id || 'LKR'
-        };
-      });
-
-      // Process invoices directly into inventory
-      const inventoryResult = await this.processInvoicesToInventory(transformedInvoices, userProfile.agencyId, userProfile.name);
-      
-      if (!inventoryResult.success) {
-        return {
-          success: false,
-          message: `Failed to process invoices into inventory: ${inventoryResult.message}`,
-          error: inventoryResult.error
-        };
-      }
-
-      console.log(`✅ Successfully processed ${inventoryResult.details?.processedCount || 0} items into inventory`);
-
-      return {
-        success: true,
-        message: `External bot invoices processed successfully for ${userProfile.name}`,
-        syncedCount: newInvoices.length,
-        details: {
-          externalSource: 'tnduapjjyqhppclgnqsb.supabase.co',
-          syncTimestamp: new Date().toISOString(),
-          agencyId: userProfile.agencyId,
-          userName: userProfile.name,
-          processedCount: inventoryResult.details?.processedCount || 0,
-          createdItems: inventoryResult.details?.createdItems || 0,
-          createdTransactions: inventoryResult.details?.createdTransactions || 0
-        }
-      };
-
-    } catch (error: any) {
-      console.error('💥 Error in sync process:', error);
-      return {
-        success: false,
-        message: 'Sync process failed',
-        error: error.message
-      };
-    }
-  }
 
   async getSyncStatus(): Promise<SyncResult> {
     try {
@@ -495,6 +371,155 @@ export class ExternalBotSyncService {
     }
   }
 
+  async getDetailedSyncStatus(): Promise<SyncStatus> {
+    try {
+      // Get last external bot sync (from Odoo to external_bot_project_invoices)
+      const { data: lastExternalSync } = await supabase
+        .from('external_bot_sync_log')
+        .select('*')
+        .order('sync_timestamp', { ascending: false })
+        .limit(1)
+        .single();
+
+      // Get last global bot sync from new tracking table
+      const { data: lastGlobalSync } = await supabase
+        .from('global_bot_sync_log')
+        .select('*')
+        .order('sync_timestamp', { ascending: false })
+        .limit(1)
+        .single();
+
+      // Get pending global sync requests count
+      const { count: pendingGlobalRequests } = await supabase
+        .from('global_bot_sync_log')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'cron_requested');
+
+      // Calculate next scheduled sync times
+      const now = new Date();
+      
+      // External bot sync times (6 AM and 6 PM UTC)
+      const nextExternalMorning = new Date(now);
+      const nextExternalEvening = new Date(now);
+      nextExternalMorning.setUTCHours(6, 0, 0, 0);
+      nextExternalEvening.setUTCHours(18, 0, 0, 0);
+      
+      if (now.getUTCHours() >= 6) {
+        nextExternalMorning.setUTCDate(nextExternalMorning.getUTCDate() + 1);
+      }
+      if (now.getUTCHours() >= 18) {
+        nextExternalEvening.setUTCDate(nextExternalEvening.getUTCDate() + 1);
+      }
+
+      // Global bot sync times (8 AM and 8 PM UTC)
+      const nextGlobalMorning = new Date(now);
+      const nextGlobalEvening = new Date(now);
+      nextGlobalMorning.setUTCHours(8, 0, 0, 0);
+      nextGlobalEvening.setUTCHours(20, 0, 0, 0);
+      
+      if (now.getUTCHours() >= 8) {
+        nextGlobalMorning.setUTCDate(nextGlobalMorning.getUTCDate() + 1);
+      }
+      if (now.getUTCHours() >= 20) {
+        nextGlobalEvening.setUTCDate(nextGlobalEvening.getUTCDate() + 1);
+      }
+
+      // Determine global bot sync status
+      let globalSyncStatus: 'success' | 'error' | 'never' | 'pending' = 'never';
+      let globalSyncMessage = 'No global bot sync found';
+      
+      if (pendingGlobalRequests && pendingGlobalRequests > 0) {
+        globalSyncStatus = 'pending';
+        globalSyncMessage = `${pendingGlobalRequests} pending sync request${pendingGlobalRequests > 1 ? 's' : ''}`;
+      } else if (lastGlobalSync) {
+        globalSyncStatus = lastGlobalSync.status === 'success' || lastGlobalSync.status === 'processed_placeholder' ? 'success' : 'error';
+        globalSyncMessage = lastGlobalSync.message || 'Global bot sync completed';
+      }
+
+      const syncStatus: SyncStatus = {
+        lastExternalBotSync: {
+          timestamp: lastExternalSync?.sync_timestamp || null,
+          status: lastExternalSync ? (lastExternalSync.status === 'success' ? 'success' : 'error') : 'never',
+          message: lastExternalSync?.message || 'No external bot sync found',
+          syncedCount: lastExternalSync?.synced_count || 0
+        },
+        lastGlobalBotSync: {
+          timestamp: lastGlobalSync?.sync_timestamp || null,
+          status: globalSyncStatus,
+          message: globalSyncMessage,
+          processedCount: lastGlobalSync?.processed_invoices || 0
+        },
+        nextScheduledSync: {
+          externalBot: {
+            morning: nextExternalMorning.toISOString(),
+            evening: nextExternalEvening.toISOString()
+          },
+          globalBot: {
+            morning: nextGlobalMorning.toISOString(),
+            evening: nextGlobalEvening.toISOString()
+          }
+        },
+        pendingGlobalSyncRequests: pendingGlobalRequests || 0
+      };
+
+      return syncStatus;
+
+    } catch (error: any) {
+      console.error('Error getting detailed sync status:', error);
+      
+      // Return default status on error
+      const now = new Date();
+      const nextExternalMorning = new Date(now);
+      const nextExternalEvening = new Date(now);
+      const nextGlobalMorning = new Date(now);
+      const nextGlobalEvening = new Date(now);
+      
+      nextExternalMorning.setUTCHours(6, 0, 0, 0);
+      nextExternalEvening.setUTCHours(18, 0, 0, 0);
+      nextGlobalMorning.setUTCHours(8, 0, 0, 0);
+      nextGlobalEvening.setUTCHours(20, 0, 0, 0);
+      
+      if (now.getUTCHours() >= 6) {
+        nextExternalMorning.setUTCDate(nextExternalMorning.getUTCDate() + 1);
+      }
+      if (now.getUTCHours() >= 18) {
+        nextExternalEvening.setUTCDate(nextExternalEvening.getUTCDate() + 1);
+      }
+      if (now.getUTCHours() >= 8) {
+        nextGlobalMorning.setUTCDate(nextGlobalMorning.getUTCDate() + 1);
+      }
+      if (now.getUTCHours() >= 20) {
+        nextGlobalEvening.setUTCDate(nextGlobalEvening.getUTCDate() + 1);
+      }
+
+      return {
+        lastExternalBotSync: {
+          timestamp: null,
+          status: 'error',
+          message: 'Error checking sync status',
+          syncedCount: 0
+        },
+        lastGlobalBotSync: {
+          timestamp: null,
+          status: 'error',
+          message: 'Error checking sync status',
+          processedCount: 0
+        },
+        nextScheduledSync: {
+          externalBot: {
+            morning: nextExternalMorning.toISOString(),
+            evening: nextExternalEvening.toISOString()
+          },
+          globalBot: {
+            morning: nextGlobalMorning.toISOString(),
+            evening: nextGlobalEvening.toISOString()
+          }
+        },
+        pendingGlobalSyncRequests: 0
+      };
+    }
+  }
+
   // Get user profile data including name for matching
   private async getUserProfile(userId: string): Promise<{name: string, agencyId: string} | null> {
     try {
@@ -519,115 +544,6 @@ export class ExternalBotSyncService {
     }
   }
 
-  async processInvoicesToInventory(invoices: any[], agencyId: string, userName: string): Promise<SyncResult> {
-    try {
-      let processedCount = 0;
-      let createdTransactions = 0;
-      let matchedProducts = 0;
-      let unmatchedProducts = 0;
-
-      for (const invoice of invoices) {
-        if (!invoice.notes) continue;
-
-        let orderLines: any[] = [];
-        
-        // Parse order_lines from the notes field (where we stored the JSON)
-        try {
-          orderLines = JSON.parse(invoice.notes);
-          if (!Array.isArray(orderLines)) {
-            console.warn(`Order lines is not an array for invoice ${invoice.invoice_number}`);
-            continue;
-          }
-        } catch (e) {
-          console.warn(`Failed to parse order_lines for invoice ${invoice.invoice_number}:`, e);
-          continue;
-        }
-
-        // Process each order line item
-        for (const line of orderLines) {
-          if (!line.product_name || (!line.qty_delivered && !line.quantity)) continue;
-
-          // Extract product info from the line
-          const productName = line.product_name || line.name || 'Unknown Product';
-          const quantity = Math.abs(Number(line.qty_delivered || line.quantity) || 0);
-          const color = line.color || line.variant || 'Default';
-          const size = line.size || line.variant || 'Default';
-          const unitPrice = Number(line.price_unit || line.unit_price || 0);
-          const externalProductId = line.product_id?.[0] || line.product_id || null; // External system's product ID
-          
-          console.log(`🔗 External product ID: ${externalProductId} for product: ${productName}`);
-
-          if (quantity <= 0) continue;
-
-          // Extract product code from product name (e.g., "[CV90] COLOR VEST 90" -> "CV90")
-          const productCodeMatch = productName.match(/\[([^\]]+)\]/);
-          const productCode = productCodeMatch ? productCodeMatch[1] : null;
-
-          // No product matching needed - direct relationship via product_name/description
-          let category = 'General';
-          let subCategory = 'General';
-          
-          console.log(`📦 Processing product: "${productName}" (no matching required)`);
-          matchedProducts++; // All products are considered "matched" since we have direct relationship
-
-          // Insert directly into external_inventory_management table
-          const { error: insertError } = await supabase
-            .from('external_inventory_management')
-            .insert({
-              product_name: productName,
-              product_code: productCode,
-              color: color,
-              size: size,
-              category: category,
-              sub_category: subCategory,
-              matched_product_id: null, // No longer needed - direct relationship via product_name/description
-              external_product_id: externalProductId, // External system's product ID
-              unit_price: unitPrice,
-              transaction_type: 'external_invoice',
-              transaction_id: invoice.invoice_number,
-              quantity: quantity, // Positive for stock IN
-              reference_name: invoice.customer_name,
-              agency_id: agencyId,
-              user_name: userName,
-              transaction_date: invoice.invoice_date || new Date().toISOString(),
-              notes: JSON.stringify(line), // Store the complete order line data
-              external_source: 'bot',
-              external_id: invoice.invoice_number,
-              external_reference: `External Bot Invoice - ${invoice.customer_name}`
-            });
-
-          if (insertError) {
-            console.warn(`Failed to create inventory transaction for ${productName}:`, insertError);
-            continue;
-          }
-
-          // All products are tracked as matched since we have direct relationship
-
-          createdTransactions++;
-          processedCount++;
-        }
-      }
-
-      return {
-        success: true,
-        message: `Processed ${processedCount} line items into external inventory`,
-        details: {
-          processedCount,
-          createdTransactions,
-          matchedProducts,
-          unmatchedProducts,
-          agencyId
-        }
-      };
-
-    } catch (error: any) {
-      return {
-        success: false,
-        message: 'Failed to process invoices into external inventory',
-        error: error.message
-      };
-    }
-  }
 }
 
 // Create singleton instance
