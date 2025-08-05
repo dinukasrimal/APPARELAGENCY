@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react';
 import { User } from '@/types/auth';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { X, Save, ArrowLeft, ArrowRight, CheckCircle } from 'lucide-react';
+import { X, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem } from '@/services/external-inventory.service';
@@ -18,6 +17,7 @@ interface SimpleBulkStockAdjustmentProps {
 
 interface CategoryProduct {
   product_name: string;
+  product_description: string; // Store the description for inventory matching
   product_code?: string;
   color: string;
   size: string;
@@ -31,12 +31,10 @@ interface CategoryProduct {
 interface CategoryData {
   name: string;
   products: CategoryProduct[];
-  completed: boolean;
 }
 
 const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyId }: SimpleBulkStockAdjustmentProps) => {
   const [categories, setCategories] = useState<CategoryData[]>([]);
-  const [currentCategoryIndex, setCCurrentCategoryIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [batchName, setBatchName] = useState(`Stock Count ${new Date().toLocaleDateString()}`);
@@ -53,33 +51,66 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
     try {
       setLoading(true);
       
-      // Get current stock levels from external inventory system first
+      // Get all products from products table as source of truth
+      console.log('🔍 Fetching all products from products table...');
+      const { data: allProducts, error: productsError } = await supabase
+        .from('products')
+        .select('name, description, sub_category')
+        .order('name');
+
+      if (productsError) {
+        throw productsError;
+      }
+
+      console.log(`📦 Found ${allProducts?.length || 0} products in products table`);
+
+      // Get current stock levels from external inventory system
       console.log('🔍 Fetching current inventory data...');
-      const inventoryItems = await externalInventoryService.getStockSummary(agencyId);
+      const inventoryItems = await externalInventoryService.getStockSummary(user.id);
       
       console.log(`📦 Found ${inventoryItems.length} inventory items with current stock`);
 
-      // Convert inventory items to CategoryProduct format
+      // Convert all products to CategoryProduct format
       const allProductsMap = new Map<string, CategoryProduct>();
       
-      inventoryItems.forEach(item => {
-        // Create unique key for this product variant
-        const key = `${item.product_name}-${item.color}-${item.size}`;
+      // Use products table as single source of truth and aggregate inventory data
+      allProducts?.forEach(product => {
+        // Find all inventory items that match this product description
+        const matchingInventoryItems = inventoryItems.filter(item => 
+          item.product_name === product.description
+        );
+        
+        // Calculate total current stock across all variants
+        const totalCurrentStock = matchingInventoryItems.reduce((sum, item) => sum + item.current_stock, 0);
+        
+        // Get average unit price
+        const averageUnitPrice = matchingInventoryItems.length > 0 
+          ? matchingInventoryItems.reduce((sum, item) => sum + (item.avg_unit_price || 0), 0) / matchingInventoryItems.length
+          : 0;
+        
+        // Get first matching inventory item for additional details
+        const firstInventoryItem = matchingInventoryItems[0];
+        
+        // Create single entry per product from products table
+        const key = product.description;
         
         allProductsMap.set(key, {
-          product_name: item.product_name,
-          product_code: item.product_code || undefined,
-          color: item.color,
-          size: item.size,
-          category: item.category || 'General',
-          current_stock: item.current_stock, // Use actual current stock from inventory
-          actual_stock: item.current_stock, // Default actual to current stock
+          product_name: product.name, // Use display name from products table
+          product_description: product.description, // Store description for inventory matching
+          product_code: firstInventoryItem?.product_code || undefined,
+          color: 'All Variants', // Indicate this is aggregated across variants
+          size: 'All Sizes', // Indicate this is aggregated across sizes
+          category: product.sub_category || 'General', // Use sub_category from products table
+          current_stock: totalCurrentStock, // Aggregated stock from all variants
+          actual_stock: totalCurrentStock, // Default to current stock
           variation: 0, // Will be calculated when user changes actual_stock
-          unit_price: item.avg_unit_price || 0
+          unit_price: averageUnitPrice
         });
+        
+        console.log(`📊 Product: ${product.name} (${product.description}), Total Stock: ${totalCurrentStock}, Variants: ${matchingInventoryItems.length}`);
       });
 
-      console.log(`📊 Processed ${allProductsMap.size} products with current stock levels`);
+      console.log(`📊 Processed ${allProductsMap.size} unique products`);
 
       // Group products by category
       const categoryGroups: { [key: string]: CategoryProduct[] } = {};
@@ -94,7 +125,6 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
       // Convert to CategoryData format
       const categoryData: CategoryData[] = Object.entries(categoryGroups).map(([name, products]) => ({
         name,
-        completed: false,
         products: products.sort((a, b) => a.product_name.localeCompare(b.product_name))
       }));
 
@@ -113,28 +143,16 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
     }
   };
 
-  const updateActualStock = (productIndex: number, actualStock: number) => {
+  const updateActualStock = (categoryIndex: number, productIndex: number, actualStock: number) => {
     setCategories(prev => {
       const updated = [...prev];
-      const product = updated[currentCategoryIndex].products[productIndex];
+      const product = updated[categoryIndex].products[productIndex];
       product.actual_stock = actualStock;
       product.variation = actualStock - product.current_stock;
       return updated;
     });
   };
 
-  const markCategoryComplete = () => {
-    setCategories(prev => {
-      const updated = [...prev];
-      updated[currentCategoryIndex].completed = true;
-      return updated;
-    });
-    
-    // Auto-move to next category if available
-    if (currentCategoryIndex < categories.length - 1) {
-      setCCurrentCategoryIndex(currentCategoryIndex + 1);
-    }
-  };
 
   const submitAllAdjustments = async () => {
     try {
@@ -144,32 +162,52 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
       // Collect all adjustments from all categories
       const allAdjustments: any[] = [];
       
-      categories.forEach(category => {
-        category.products.forEach(product => {
+      // Use the external inventory service method for each adjustment
+      for (const category of categories) {
+        for (const product of category.products) {
           if (product.variation !== 0) { // Only include items with changes
-            allAdjustments.push({
-              product_name: product.product_name,
-              product_code: product.product_code,
-              color: product.color,
-              size: product.size,
-              category: product.category,
-              current_stock: product.current_stock,
-              adjustment_quantity: product.variation,
-              new_stock: product.actual_stock,
-              unit_price: product.unit_price,
-              reason: `Stock count adjustment - ${category.name}`,
-              notes: `Batch: ${batchName}. Current: ${product.current_stock}, Actual: ${product.actual_stock}, Variation: ${product.variation}`,
-              adjustment_type: 'bulk',
-              agency_id: agencyId,
-              requested_by: user.id,
-              requested_by_name: user.name,
-              batch_id: batchId,
-              batch_name: batchName,
-              external_source: 'bulk_form'
-            });
+            try {
+              console.log(`🔍 Adjusting aggregated product: ${product.product_description}, variation: ${product.variation}`);
+
+              // Since we're showing aggregated stock, create a single adjustment using Default color/size
+              // This will be treated as a general adjustment for the product across all variants
+              const { error } = await supabase
+                .from('external_inventory_management')
+                .insert({
+                  product_name: product.product_description,
+                  color: 'Default', // Use Default for aggregated adjustments
+                  size: 'Default', // Use Default for aggregated adjustments
+                  category: 'General',
+                  sub_category: product.category,
+                  transaction_type: 'adjustment',
+                  transaction_id: `ADJ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                  quantity: product.variation,
+                  reference_name: user.name, // Use user.name so it appears in user's inventory
+                  agency_id: agencyId,
+                  user_name: user.name || 'Unknown User',
+                  notes: `Stock Count Batch: ${batchName}. Product: ${product.product_name}. Aggregated adjustment - Current: ${product.current_stock}, Target: ${product.actual_stock}, Variation: ${product.variation}`,
+                  external_source: 'stock_count'
+                });
+
+              if (error) {
+                console.error(`Failed to add adjustment for ${product.product_name}:`, error);
+                throw error;
+              }
+
+              console.log(`✅ Added aggregated stock adjustment: ${product.product_name}, variation: ${product.variation}, reference_name: ${user.name}`);
+              
+              allAdjustments.push({
+                product_name: product.product_name,
+                variation: product.variation,
+                category: category.name
+              });
+            } catch (error) {
+              console.error(`Failed to add adjustment for ${product.product_name}:`, error);
+              throw error;
+            }
           }
-        });
-      });
+        }
+      }
 
       if (allAdjustments.length === 0) {
         toast({
@@ -180,28 +218,33 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
         return;
       }
 
-      // Insert all adjustments
-      const { error } = await supabase
-        .from('external_stock_adjustments')
-        .insert(allAdjustments);
-
-      if (error) {
-        throw error;
-      }
+      console.log('📋 Successfully processed adjustments:', allAdjustments);
 
       toast({
         title: "Stock Count Submitted",
-        description: `Successfully submitted ${allAdjustments.length} stock adjustments for approval`,
+        description: `Successfully applied ${allAdjustments.length} stock adjustments`,
       });
 
+      // Force refresh inventory data after adjustments
+      console.log('🔄 Forcing inventory refresh after stock count submission');
+      
       onSubmitted();
       onClose();
 
     } catch (error: any) {
       console.error('Error submitting stock count:', error);
+      
+      let errorMessage = "Failed to submit stock count";
+      if (error.message) {
+        errorMessage = error.message;
+      }
+      if (error.details) {
+        errorMessage += ` - ${error.details}`;
+      }
+      
       toast({
         title: "Submission Failed",
-        description: error.message || "Failed to submit stock count",
+        description: errorMessage,
         variant: "destructive"
       });
     } finally {
@@ -232,11 +275,10 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
     );
   }
 
-  const currentCategory = categories[currentCategoryIndex];
   const totalVariations = categories.reduce((sum, cat) => 
     sum + cat.products.reduce((catSum, prod) => catSum + Math.abs(prod.variation), 0), 0
   );
-  const completedCategories = categories.filter(cat => cat.completed).length;
+  const totalProducts = categories.reduce((sum, cat) => sum + cat.products.length, 0);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -244,14 +286,14 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b bg-gradient-to-r from-blue-50 to-purple-50">
           <div>
-            <h2 className="text-xl font-semibold">Simple Stock Count</h2>
+            <h2 className="text-xl font-semibold">Stock Count - All Products</h2>
             <p className="text-sm text-gray-600">
-              Category {currentCategoryIndex + 1} of {categories.length}: {currentCategory.name}
+              {totalProducts} products across {categories.length} categories
             </p>
           </div>
           <div className="flex items-center gap-4">
             <Badge variant="secondary">
-              {completedCategories}/{categories.length} Complete
+              {totalVariations} Changes
             </Badge>
             <Button variant="ghost" onClick={onClose} className="p-2">
               <X className="h-5 w-5" />
@@ -272,110 +314,85 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
           />
         </div>
 
-        {/* Current Category Products */}
-        <div className="p-6 overflow-y-auto max-h-[50vh]">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-medium">{currentCategory.name}</h3>
-            <div className="text-sm text-gray-600">
-              {currentCategory.products.length} products
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {currentCategory.products.map((product, index) => (
-              <div key={`${product.product_name}-${product.color}-${product.size}`} 
-                   className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50">
-                <div className="flex-1">
-                  <h4 className="font-medium">{product.product_name}</h4>
-                  <div className="flex gap-2 text-sm text-gray-600">
-                    {product.product_code && (
-                      <span className="bg-gray-100 px-2 py-1 rounded text-xs">{product.product_code}</span>
-                    )}
-                    <span>{product.color}</span>
-                    <span>•</span>
-                    <span>{product.size}</span>
+        {/* All Products by Category */}
+        <div className="p-6 overflow-y-auto max-h-[60vh]">
+          <div className="space-y-8">
+            {categories.map((category, categoryIndex) => (
+              <div key={category.name} className="border rounded-lg">
+                <div className="bg-gray-50 px-4 py-3 border-b">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-medium">{category.name}</h3>
+                    <div className="text-sm text-gray-600">
+                      {category.products.length} products
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-6">
-                  <div className="text-center">
-                    <p className="text-xs text-gray-600">System Stock</p>
-                    <p className="text-lg font-semibold">{product.current_stock}</p>
-                  </div>
+                <div className="p-4 space-y-3">
+                  {category.products.map((product, productIndex) => (
+                    <div key={`${product.product_name}-${product.color}-${product.size}`} 
+                         className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50">
+                      <div className="flex-1">
+                        <h4 className="font-medium">{product.product_name}</h4>
+                        <div className="flex gap-2 text-sm text-gray-600">
+                          {product.product_code && (
+                            <span className="bg-gray-100 px-2 py-1 rounded text-xs">{product.product_code}</span>
+                          )}
+                          <span>{product.color}</span>
+                          <span>•</span>
+                          <span>{product.size}</span>
+                        </div>
+                      </div>
 
-                  <div className="text-center">
-                    <p className="text-xs text-gray-600">Actual Stock</p>
-                    <Input
-                      type="number"
-                      value={product.actual_stock}
-                      onChange={(e) => updateActualStock(index, parseInt(e.target.value) || 0)}
-                      className="w-20 text-center text-lg font-semibold"
-                      min="0"
-                    />
-                  </div>
+                      <div className="flex items-center gap-6">
+                        <div className="text-center">
+                          <p className="text-xs text-gray-600">System Stock</p>
+                          <p className="text-lg font-semibold">{product.current_stock}</p>
+                        </div>
 
-                  <div className="text-center">
-                    <p className="text-xs text-gray-600">Variation</p>
-                    <p className={`text-lg font-semibold ${
-                      product.variation > 0 ? 'text-green-600' : 
-                      product.variation < 0 ? 'text-red-600' : 
-                      'text-gray-600'
-                    }`}>
-                      {product.variation > 0 ? '+' : ''}{product.variation}
-                    </p>
-                  </div>
+                        <div className="text-center">
+                          <p className="text-xs text-gray-600">Actual Stock</p>
+                          <Input
+                            type="number"
+                            value={product.actual_stock}
+                            onChange={(e) => updateActualStock(categoryIndex, productIndex, parseInt(e.target.value) || 0)}
+                            className="w-20 text-center text-lg font-semibold"
+                            min="0"
+                          />
+                        </div>
 
-                  {product.variation !== 0 && (
-                    <Badge variant={product.variation > 0 ? "default" : "destructive"}>
-                      {product.variation > 0 ? "Increase" : "Decrease"}
-                    </Badge>
-                  )}
+                        <div className="text-center">
+                          <p className="text-xs text-gray-600">Variation</p>
+                          <p className={`text-lg font-semibold ${
+                            product.variation > 0 ? 'text-green-600' : 
+                            product.variation < 0 ? 'text-red-600' : 
+                            'text-gray-600'
+                          }`}>
+                            {product.variation > 0 ? '+' : ''}{product.variation}
+                          </p>
+                        </div>
+
+                        {product.variation !== 0 && (
+                          <Badge variant={product.variation > 0 ? "default" : "destructive"}>
+                            {product.variation > 0 ? "Increase" : "Decrease"}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Footer Navigation */}
+        {/* Footer */}
         <div className="flex items-center justify-between p-6 border-t bg-gray-50">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="outline"
-              onClick={() => setCCurrentCategoryIndex(Math.max(0, currentCategoryIndex - 1))}
-              disabled={currentCategoryIndex === 0}
-            >
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Previous
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={() => setCCurrentCategoryIndex(Math.min(categories.length - 1, currentCategoryIndex + 1))}
-              disabled={currentCategoryIndex === categories.length - 1}
-            >
-              Next
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
+          <div className="text-sm text-gray-600">
+            Review all categories above and submit when ready
           </div>
 
           <div className="flex items-center gap-4">
-            {!currentCategory.completed && (
-              <Button
-                onClick={markCategoryComplete}
-                className="bg-green-600 hover:bg-green-700"
-              >
-                <CheckCircle className="h-4 w-4 mr-2" />
-                Mark {currentCategory.name} Complete
-              </Button>
-            )}
-
-            {currentCategory.completed && (
-              <Badge variant="default" className="bg-green-100 text-green-800">
-                <CheckCircle className="h-4 w-4 mr-1" />
-                Completed
-              </Badge>
-            )}
-
             <Button
               onClick={submitAllAdjustments}
               disabled={submitting || totalVariations === 0}
