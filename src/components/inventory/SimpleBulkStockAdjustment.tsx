@@ -169,26 +169,26 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
             try {
               console.log(`🔍 Adjusting aggregated product: ${product.product_description}, variation: ${product.variation}`);
 
-              // Submit stock adjustment for approval (creates pending record)
+              // Submit stock adjustment directly to external_inventory_management with pending status
               const { error } = await supabase
-                .from('external_stock_adjustments')
+                .from('external_inventory_management')
                 .insert({
                   product_name: product.product_description,
                   color: 'Default', // Use Default for aggregated adjustments
                   size: 'Default', // Use Default for aggregated adjustments
-                  category: product.category,
-                  current_stock: product.current_stock,
-                  adjustment_quantity: product.variation,
-                  new_stock: product.actual_stock, // Required field: current_stock + adjustment_quantity
-                  reason: `Stock Count Batch: ${batchName}`,
-                  notes: `Product: ${product.product_name}. Aggregated adjustment - Current: ${product.current_stock}, Target: ${product.actual_stock}, Variation: ${product.variation}`,
-                  adjustment_type: 'bulk',
-                  batch_id: batchId,
-                  batch_name: batchName,
+                  category: 'General',
+                  sub_category: product.category,
+                  transaction_type: 'adjustment',
+                  transaction_id: `STOCK-COUNT-${batchId}-${Date.now()}`,
+                  quantity: product.variation, // The adjustment amount (+ or -)
+                  reference_name: user.name, // User who submitted the stock count
                   agency_id: agencyId,
+                  user_name: user.name || 'Unknown User',
+                  notes: `Stock Count Batch: ${batchName}. Product: ${product.product_name}. Adjustment - Current: ${product.current_stock}, Target: ${product.actual_stock}, Variation: ${product.variation}`,
+                  external_source: 'stock_count',
+                  approval_status: 'pending', // Pending approval
                   requested_by: user.id,
-                  requested_by_name: user.name || 'Unknown User',
-                  status: 'pending'
+                  requested_by_name: user.name || 'Unknown User'
                 });
 
               if (error) {

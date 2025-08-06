@@ -95,6 +95,7 @@ export class ExternalInventoryService {
     console.log(`🔍 Debug: Getting ALL stock for agency ${agencyId} (superuser mode)`);
 
     // Get transactions first, then join with products table
+    // Only include approved transactions in stock calculations
     let query = supabase
       .from('external_inventory_management')
       .select(`
@@ -111,7 +112,8 @@ export class ExternalInventoryService {
         transaction_type,
         reference_name
       `)
-      .eq('agency_id', agencyId);
+      .eq('agency_id', agencyId)
+      .eq('approval_status', 'approved'); // Only approved transactions affect stock
 
     // Apply filters
     if (filters?.searchTerm) {
@@ -351,7 +353,8 @@ export class ExternalInventoryService {
         reference_name
       `)
       .eq('agency_id', agencyId)
-      .eq('reference_name', userProfileName); // Filter by user's profile name
+      .eq('reference_name', userProfileName) // Filter by user's profile name
+      .eq('approval_status', 'approved'); // Only approved transactions affect stock
 
     // Apply filters
     if (filters?.searchTerm) {
@@ -604,11 +607,28 @@ export class ExternalInventoryService {
     return result;
   }
 
-  // Get transaction history for an agency
+  // Get transaction history for an agency (include all statuses for history)
   async getTransactionHistory(agencyId: string, limit: number = 50): Promise<ExternalInventoryTransaction[]> {
     const { data, error } = await supabase
-      .from('external_inventory_transactions')
-      .select('*')
+      .from('external_inventory_management')
+      .select(`
+        id,
+        product_name,
+        product_code,
+        color,
+        size,
+        category,
+        sub_category,
+        unit_price,
+        quantity,
+        transaction_date,
+        external_source,
+        transaction_type,
+        reference_name,
+        approval_status,
+        user_name,
+        notes
+      `)
       .eq('agency_id', agencyId)
       .order('transaction_date', { ascending: false })
       .limit(limit);
@@ -637,7 +657,7 @@ export class ExternalInventoryService {
     return data || [];
   }
 
-  // Get current stock for a specific product
+  // Get current stock for a specific product (only approved transactions)
   async getCurrentStock(
     agencyId: string, 
     productName: string, 
@@ -645,19 +665,21 @@ export class ExternalInventoryService {
     size: string = 'Default'
   ): Promise<number> {
     const { data, error } = await supabase
-      .rpc('get_external_inventory_stock', {
-        p_agency_id: agencyId,
-        p_product_name: productName,
-        p_color: color,
-        p_size: size
-      });
+      .from('external_inventory_management')
+      .select('quantity')
+      .eq('agency_id', agencyId)
+      .eq('product_name', productName)
+      .eq('color', color)
+      .eq('size', size)
+      .eq('approval_status', 'approved'); // Only approved transactions
 
     if (error) {
       console.error('Error getting current stock:', error);
       return 0;
     }
 
-    return data || 0;
+    const totalStock = data?.reduce((sum, row) => sum + row.quantity, 0) || 0;
+    return totalStock;
   }
 
   // Calculate inventory metrics for user

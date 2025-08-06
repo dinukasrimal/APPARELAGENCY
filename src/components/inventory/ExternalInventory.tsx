@@ -12,7 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
 import { externalBotSyncService } from '@/services/external-bot-sync';
 import SimpleBulkStockAdjustment from './SimpleBulkStockAdjustment';
-import ExternalStockAdjustmentApproval from './ExternalStockAdjustmentApproval';
+import SingleTableStockApproval from './SingleTableStockApproval';
 import ExternalStockAdjustmentHistory from './ExternalStockAdjustmentHistory';
 import SyncStatusDashboard from './SyncStatusDashboard';
 
@@ -1053,7 +1053,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       )}
 
       {showApprovals && (
-        <ExternalStockAdjustmentApproval
+        <SingleTableStockApproval
           user={user}
           selectedAgencyId={selectedAgencyId}
           onClose={() => setShowApprovals(false)}
