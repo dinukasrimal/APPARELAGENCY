@@ -316,9 +316,14 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex items-center gap-2">
-              <Phone className="h-4 w-4 text-gray-500" />
-              <span>{customer.phone}</span>
+            <div className="flex items-start gap-2">
+              <Phone className="h-4 w-4 text-gray-500 mt-0.5" />
+              <div>
+                <div>{customer.phone}</div>
+                {customer.secondaryPhone && (
+                  <div className="text-sm text-gray-500 mt-1">Alt: {customer.secondaryPhone}</div>
+                )}
+              </div>
             </div>
             <div className="flex items-start gap-2">
               <MapPin className="h-4 w-4 text-gray-500 mt-0.5" />

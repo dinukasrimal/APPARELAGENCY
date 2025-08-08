@@ -73,6 +73,7 @@ const CustomerManagement = ({ user }: CustomerManagementProps) => {
         id: customer.id,
         name: customer.name,
         phone: customer.phone,
+        secondaryPhone: customer.secondary_phone || undefined,
         address: customer.address,
         storefrontPhoto: customer.storefront_photo || undefined,
         signature: customer.signature || undefined,
@@ -121,6 +122,7 @@ const CustomerManagement = ({ user }: CustomerManagementProps) => {
         .insert([{
           name: customerData.name,
           phone: customerData.phone,
+          secondary_phone: customerData.secondaryPhone || null,
           address: customerData.address,
           storefront_photo: customerData.storefrontPhoto,
           signature: customerData.signature,
@@ -177,6 +179,7 @@ const CustomerManagement = ({ user }: CustomerManagementProps) => {
         .update({
           name: customerData.name,
           phone: customerData.phone,
+          secondary_phone: customerData.secondaryPhone || null,
           address: customerData.address,
           storefront_photo: customerData.storefrontPhoto,
           signature: customerData.signature,
@@ -400,7 +403,14 @@ const CustomerManagement = ({ user }: CustomerManagementProps) => {
                     <div className="bg-blue-100 rounded-full w-8 h-8 flex items-center justify-center">
                       <Phone className="h-4 w-4 text-blue-600" />
                     </div>
-                    <span className="text-blue-800 font-medium">{customer.phone}</span>
+                    <div>
+                      <span className="text-blue-800 font-medium">{customer.phone}</span>
+                      {customer.secondaryPhone && (
+                        <div className="text-sm text-blue-600 mt-1">
+                          Alt: {customer.secondaryPhone}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   
                   <div className="flex items-start gap-3 p-3 bg-green-50 rounded-xl border border-green-100">

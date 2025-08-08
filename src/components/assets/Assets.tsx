@@ -13,16 +13,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/components/ui/use-toast';
 import InAppCamera from '@/components/camera/InAppCamera';
-
-interface Customer {
-  id: string;
-  name: string;
-  address: string;
-  phone: string;
-  agency_id: string;
-  latitude?: number;
-  longitude?: number;
-}
+import CustomerSearch from '@/components/customers/CustomerSearch';
+import { Customer } from '@/types/customer';
 
 interface Asset {
   id: string;
@@ -46,7 +38,7 @@ const Assets = ({ user }: AssetsProps) => {
   
   const [assets, setAssets] = useState<Asset[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [selectedCustomer, setSelectedCustomer] = useState<string>('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [assetType, setAssetType] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [photo, setPhoto] = useState<string>('');
@@ -82,7 +74,7 @@ const Assets = ({ user }: AssetsProps) => {
       console.log('Assets: Fetching customers for user:', user);
       const { data, error } = await supabase
         .from('customers')
-        .select('id, name, address, phone, agency_id, latitude, longitude')
+        .select('id, name, address, phone, secondary_phone, agency_id, latitude, longitude, created_at, created_by')
         .order('name');
 
       if (error) {
@@ -96,7 +88,24 @@ const Assets = ({ user }: AssetsProps) => {
       }
 
       console.log('Assets: Customers fetched:', data?.length || 0);
-      setCustomers(data || []);
+      
+      // Transform database data to match Customer interface
+      const transformedCustomers: Customer[] = (data || []).map(customer => ({
+        id: customer.id,
+        name: customer.name,
+        phone: customer.phone,
+        secondaryPhone: customer.secondary_phone || undefined,
+        address: customer.address,
+        agencyId: customer.agency_id,
+        gpsCoordinates: {
+          latitude: customer.latitude || 0,
+          longitude: customer.longitude || 0
+        },
+        createdAt: new Date(customer.created_at),
+        createdBy: customer.created_by || ''
+      }));
+      
+      setCustomers(transformedCustomers);
     } catch (error) {
       console.error('Error fetching customers:', error);
       toast({
@@ -172,6 +181,22 @@ const Assets = ({ user }: AssetsProps) => {
     }
   };
 
+  const resetForm = () => {
+    setSelectedCustomer(null);
+    setAssetType('');
+    setDescription('');
+    setPhoto('');
+    setLatitude(null);
+    setLongitude(null);
+  };
+
+  const handleDialogOpenChange = (open: boolean) => {
+    setDialogOpen(open);
+    if (open) {
+      resetForm(); // Reset form when opening dialog
+    }
+  };
+
   const handlePhotoTaken = (photoData: string) => {
     setPhoto(photoData);
     setShowCamera(false); // Close camera after photo is taken
@@ -195,7 +220,7 @@ const Assets = ({ user }: AssetsProps) => {
         .from('customer_assets')
         .insert([
           {
-            customer_id: selectedCustomer,
+            customer_id: selectedCustomer.id,
             asset_type: assetType,
             description: description,
             photo_url: photo,
@@ -226,7 +251,7 @@ const Assets = ({ user }: AssetsProps) => {
 
       setAssets(prev => [...(data || []), ...prev]);
       
-      setSelectedCustomer('');
+      setSelectedCustomer(null);
       setAssetType('');
       setDescription('');
       setPhoto('');
@@ -276,7 +301,7 @@ const Assets = ({ user }: AssetsProps) => {
           <p className="text-gray-600">Manage assets given to customers</p>
         </div>
         
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
           <DialogTrigger asChild>
             <Button className="flex items-center gap-2">
               <Plus className="h-4 w-4" />
@@ -290,18 +315,12 @@ const Assets = ({ user }: AssetsProps) => {
             <div className="space-y-4">
               <div>
                 <Label htmlFor="customer">Customer *</Label>
-                <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select customer" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {customers.map((customer) => (
-                      <SelectItem key={customer.id} value={customer.id}>
-                        {customer.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <CustomerSearch
+                  customers={customers}
+                  selectedCustomer={selectedCustomer}
+                  onCustomerSelect={setSelectedCustomer}
+                  onCustomerChange={() => setSelectedCustomer(null)}
+                />
               </div>
 
               <div>
@@ -373,7 +392,10 @@ const Assets = ({ user }: AssetsProps) => {
                 </Button>
                 <Button 
                   variant="outline" 
-                  onClick={() => setDialogOpen(false)}
+                  onClick={() => {
+                    resetForm();
+                    setDialogOpen(false);
+                  }}
                   disabled={saving}
                 >
                   Cancel

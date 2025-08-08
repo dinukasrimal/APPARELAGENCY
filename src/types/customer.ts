@@ -3,6 +3,7 @@ export interface Customer {
   id: string;
   name: string;
   phone: string;
+  secondaryPhone?: string; // Optional secondary phone number
   address: string;
   storefrontPhoto?: string;
   signature?: string;

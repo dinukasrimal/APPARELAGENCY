@@ -271,6 +271,9 @@ export type Database = {
           longitude: number | null
           name: string
           phone: string
+          secondary_phone: string | null
+          shop_owner_birthday: string | null
+          shop_owner_name: string | null
           signature: string | null
           storefront_photo: string | null
         }
@@ -284,6 +287,9 @@ export type Database = {
           longitude?: number | null
           name: string
           phone: string
+          secondary_phone?: string | null
+          shop_owner_birthday?: string | null
+          shop_owner_name?: string | null
           signature?: string | null
           storefront_photo?: string | null
         }
@@ -297,6 +303,9 @@ export type Database = {
           longitude?: number | null
           name?: string
           phone?: string
+          secondary_phone?: string | null
+          shop_owner_birthday?: string | null
+          shop_owner_name?: string | null
           signature?: string | null
           storefront_photo?: string | null
         }

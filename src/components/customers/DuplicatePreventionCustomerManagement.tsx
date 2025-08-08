@@ -90,6 +90,7 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         id: customer.id,
         name: customer.name,
         phone: customer.phone,
+        secondaryPhone: customer.secondary_phone || undefined,
         address: customer.address,
         storefrontPhoto: customer.storefront_photo || undefined,
         signature: customer.signature || undefined,
@@ -205,6 +206,7 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         .insert([{
           name: customerData.name,
           phone: customerData.phone,
+          secondary_phone: customerData.secondaryPhone || null,
           address: customerData.address,
           storefront_photo: storefrontPhotoUrl,
           signature: customerData.signature,
@@ -311,6 +313,7 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         .update({
           name: customerData.name,
           phone: customerData.phone,
+          secondary_phone: customerData.secondaryPhone || null,
           address: customerData.address,
           storefront_photo: storefrontPhotoUrl,
           signature: customerData.signature,
@@ -562,9 +565,16 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <Phone className="h-4 w-4" />
-                {customer.phone}
+              <div className="flex items-start gap-2 text-sm text-gray-600">
+                <Phone className="h-4 w-4 mt-0.5" />
+                <div>
+                  <div>{customer.phone}</div>
+                  {customer.secondaryPhone && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      Alt: {customer.secondaryPhone}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="flex items-start gap-2 text-sm text-gray-600">
                 <MapPin className="h-4 w-4 mt-0.5 flex-shrink-0" />

@@ -70,7 +70,12 @@ const CustomerSearch = ({
                 </div>
                 <div>
                   <h4 className="font-semibold text-blue-900 text-lg">{selectedCustomer.name}</h4>
-                  <p className="text-blue-700 font-medium">{selectedCustomer.phone}</p>
+                  <div>
+                    <p className="text-blue-700 font-medium">{selectedCustomer.phone}</p>
+                    {selectedCustomer.secondaryPhone && (
+                      <p className="text-blue-600 text-sm">Alt: {selectedCustomer.secondaryPhone}</p>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 text-sm text-blue-600 mt-1">
                     <MapPin className="h-4 w-4" />
                     <span>{selectedCustomer.address}</span>
@@ -120,6 +125,9 @@ const CustomerSearch = ({
                       <div className="flex-1">
                         <div className="font-semibold text-slate-800 group-hover:text-blue-800 transition-colors duration-200">{customer.name}</div>
                         <div className="text-sm text-slate-600 font-medium">{customer.phone}</div>
+                        {customer.secondaryPhone && (
+                          <div className="text-xs text-slate-500 font-medium">Alt: {customer.secondaryPhone}</div>
+                        )}
                         <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
                           <MapPin className="h-3 w-3" />
                           {customer.address}

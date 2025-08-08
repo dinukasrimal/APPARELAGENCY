@@ -23,6 +23,7 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
   const [formData, setFormData] = useState({
     name: customer?.name || '',
     phone: customer?.phone || '',
+    secondaryPhone: customer?.secondaryPhone || '',
     address: customer?.address || '',
     agencyId: customer?.agencyId || user.agencyId || '00000000-0000-0000-0000-000000000000',
     shopOwnerName: customer?.shopOwnerName || '',
@@ -41,6 +42,7 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
   const [signature, setSignature] = useState<string>(customer?.signature || '');
   const [phoneError, setPhoneError] = useState('');
+  const [secondaryPhoneError, setSecondaryPhoneError] = useState('');
   const { toast } = useToast();
 
   const validatePhone = (phone: string) => {
@@ -61,6 +63,25 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
     return true;
   };
 
+  const validateSecondaryPhone = (phone: string) => {
+    // Remove any non-numeric characters
+    const numericPhone = phone.replace(/\D/g, '');
+    
+    // Secondary phone is optional - empty is valid
+    if (numericPhone.length === 0) {
+      setSecondaryPhoneError('');
+      return true;
+    }
+    
+    if (numericPhone.length !== 10) {
+      setSecondaryPhoneError('Secondary phone number must be exactly 10 digits');
+      return false;
+    }
+    
+    setSecondaryPhoneError('');
+    return true;
+  };
+
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const input = e.target.value;
     // Only allow numeric characters
@@ -70,6 +91,18 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
     if (numericOnly.length <= 10) {
       setFormData({ ...formData, phone: numericOnly });
       validatePhone(numericOnly);
+    }
+  };
+
+  const handleSecondaryPhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target.value;
+    // Only allow numeric characters
+    const numericOnly = input.replace(/\D/g, '');
+    
+    // Limit to 10 digits
+    if (numericOnly.length <= 10) {
+      setFormData({ ...formData, secondaryPhone: numericOnly });
+      validateSecondaryPhone(numericOnly);
     }
   };
 
@@ -99,6 +132,16 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
       toast({
         title: "Validation Error",
         description: "Please enter a valid 10-digit phone number",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Validate secondary phone if provided
+    if (formData.secondaryPhone && !validateSecondaryPhone(formData.secondaryPhone)) {
+      toast({
+        title: "Validation Error",
+        description: "Please enter a valid 10-digit secondary phone number or leave it empty",
         variant: "destructive",
       });
       return;
@@ -308,6 +351,23 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
                   <p className="text-red-500 text-sm mt-1">{phoneError}</p>
                 )}
                 <p className="text-gray-500 text-xs mt-1">Enter 10-digit phone number (numbers only)</p>
+              </div>
+
+              <div>
+                <Label htmlFor="secondaryPhone">Secondary Phone Number (Optional)</Label>
+                <Input
+                  id="secondaryPhone"
+                  type="tel"
+                  value={formData.secondaryPhone}
+                  onChange={handleSecondaryPhoneChange}
+                  placeholder="1234567890"
+                  className={`text-base ${secondaryPhoneError ? 'border-red-500' : ''}`}
+                  maxLength={10}
+                />
+                {secondaryPhoneError && (
+                  <p className="text-red-500 text-sm mt-1">{secondaryPhoneError}</p>
+                )}
+                <p className="text-gray-500 text-xs mt-1">Optional secondary contact number (numbers only)</p>
               </div>
 
               <div>
