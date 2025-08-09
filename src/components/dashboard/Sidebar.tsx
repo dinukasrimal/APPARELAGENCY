@@ -24,6 +24,8 @@ import {
   DollarSign,
   Image,
   FileX,
+  Percent,
+  CheckSquare,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -34,7 +36,7 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques';
+type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management';
 
 const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: SidebarProps) => {
   const { agency } = useAgency(user.agencyId);
@@ -54,6 +56,8 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'time-tracking', label: 'Time Tracking', icon: Clock, roles: ['agency', 'agent'] },
     { id: 'targets', label: 'Targets', icon: Target, roles: ['agency', 'superuser'] },
     { id: 'user-management', label: 'User Management', icon: UserCog, roles: ['superuser'] },
+    { id: 'approval-management', label: 'Order Approvals', icon: CheckSquare, roles: ['superuser'] },
+    { id: 'discount-management', label: 'Discount Management', icon: Percent, roles: ['superuser'] },
     {
       id: 'reports',
       label: 'Reports & Analytics',

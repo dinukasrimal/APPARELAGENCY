@@ -14,6 +14,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import { useDraftSalesOrder } from '@/hooks/useDraftSalesOrder';
+import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 
 interface EnhancedSalesOrderFormProps {
   user: User;
@@ -58,12 +59,11 @@ const EnhancedSalesOrderForm = ({
   }>>([]);
   const [orderSummary, setOrderSummary] = useState<OrderSummaryItem[]>([]);
   const [discountPercentage, setDiscountPercentage] = useState(0);
-  const [discountAmountInput, setDiscountAmountInput] = useState(0);
-  const [discountType, setDiscountType] = useState('percentage');
   const [gpsCoordinates, setGpsCoordinates] = useState({ latitude: 0, longitude: 0 });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const { toast } = useToast();
+  const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
 
   // Load draft or editing order on mount
   useEffect(() => {
@@ -97,7 +97,7 @@ const EnhancedSalesOrderForm = ({
       setOrderSummary(draftItems);
       setDiscountPercentage(draft.discountPercentage);
     }
-  }, [editingOrder, draft, customers, isEditing, updateCustomer, updateItems, updateDiscount]);
+  }, [editingOrder, draft, customers, isEditing]);
 
   // Save to draft on changes
   useEffect(() => {
@@ -110,13 +110,10 @@ const EnhancedSalesOrderForm = ({
     if (!isEditing) {
       updateItems(orderSummary);
     }
-  }, [orderSummary, isEditing, updateItems]);
+  }, [orderSummary, isEditing]);
 
-  useEffect(() => {
-    if (!isEditing) {
-      updateDiscount(discountPercentage);
-    }
-  }, [discountPercentage, isEditing, updateDiscount]);
+  // Remove automatic discount draft updates to prevent infinite loop
+  // Discount will be saved when user manually changes it
 
   const handleCustomerSelect = (customer: Customer) => {
     setSelectedCustomer(customer);
@@ -384,8 +381,9 @@ const EnhancedSalesOrderForm = ({
 
       const { subtotal, discountAmount, total } = calculateTotals();
       
-      // Determine if approval is required and status based on discount
-      const requiresApproval = discountPercentage > 20;
+      // Validate discount using agency limits
+      const discountValidation = validateDiscount(discountPercentage);
+      const requiresApproval = discountValidation.requiresApproval;
       const status = requiresApproval ? 'pending' : 'approved';
 
       let salesOrderData;
@@ -473,7 +471,7 @@ const EnhancedSalesOrderForm = ({
 
       toast({
         title: "Sales Order Saved",
-        description: `Order ${orderData.id} has been ${requiresApproval ? 'submitted for approval' : 'approved'} ${discountPercentage > 0 ? `with ${discountPercentage}% discount` : ''}`
+        description: `Order ${orderData.id} has been ${requiresApproval ? 'submitted for approval' : 'approved'} ${discountPercentage > 0 ? `with ${discountPercentage}% discount` : ''}${discountValidation.message ? ` - ${discountValidation.message}` : ''}`
       });
 
       // Clear draft if not editing
@@ -709,57 +707,48 @@ const EnhancedSalesOrderForm = ({
                   {/* Discount Section */}
                   <div className="border-t pt-3 space-y-3">
                     <div>
-                      <Label>Discount Type</Label>
-                      <div className="flex gap-4 mt-1">
-                        <label className="flex items-center gap-1">
-                          <input
-                            type="radio"
-                            name="discountType"
-                            value="percentage"
-                            checked={discountType === 'percentage'}
-                            onChange={() => setDiscountType('percentage')}
-                          />
-                          Percentage (%)
-                        </label>
-                        <label className="flex items-center gap-1">
-                          <input
-                            type="radio"
-                            name="discountType"
-                            value="amount"
-                            checked={discountType === 'amount'}
-                            onChange={() => setDiscountType('amount')}
-                          />
-                          Fixed Amount (LKR)
-                        </label>
-                      </div>
-                    </div>
-                    <div>
-                      <Label>{discountType === 'percentage' ? 'Discount (%)' : 'Discount Amount (LKR)'}</Label>
+                      <Label>Discount Percentage (%)</Label>
+                      {!discountLoading && agencyDiscountLimit !== null && user.role !== 'superuser' && (
+                        <p className="text-xs text-gray-600 mt-1">
+                          Your agency limit: {agencyDiscountLimit}%
+                        </p>
+                      )}
                       <Input
                         type="number"
                         min="0"
-                        max={discountType === 'percentage' ? '100' : undefined}
-                        value={discountType === 'percentage' ? discountPercentage : discountAmountInput}
+                        max="100"
+                        step="0.01"
+                        value={discountPercentage}
                         onChange={(e) => {
-                          if (discountType === 'percentage') setDiscountPercentage(Number(e.target.value));
-                          else setDiscountAmountInput(Number(e.target.value));
+                          const newDiscount = Number(e.target.value);
+                          setDiscountPercentage(newDiscount);
+                          if (!isEditing) {
+                            updateDiscount(newDiscount);
+                          }
                         }}
-                        placeholder={discountType === 'percentage' ? '0' : '0'}
+                        placeholder="0.00"
+                        disabled={discountLoading}
                       />
-                      {discountType === 'percentage' && discountPercentage > 20 && (
-                        <p className="text-sm text-orange-600 mt-1">
-                          ⚠ Discount &gt; 20% requires approval
-                        </p>
-                      )}
+                      {!discountLoading && discountPercentage > 0 && (() => {
+                        const validation = validateDiscount(discountPercentage);
+                        return validation.message && (
+                          <div className={`text-sm mt-1 flex items-center gap-1 ${
+                            validation.requiresApproval ? 'text-orange-600' : 'text-green-600'
+                          }`}>
+                            <AlertTriangle className="h-3 w-3" />
+                            {validation.message}
+                          </div>
+                        );
+                      })()}
                     </div>
                     <div className="space-y-2">
                       <div className="flex justify-between">
                         <span>Subtotal:</span>
                         <span>LKR {subtotal.toLocaleString()}</span>
                       </div>
-                      {(discountType === 'percentage' ? discountPercentage > 0 : discountAmountInput > 0) && (
+                      {discountPercentage > 0 && (
                         <div className="flex justify-between text-green-600">
-                          <span>Discount ({discountType === 'percentage' ? `${discountPercentage}%` : `LKR ${discountAmountInput}`}):</span>
+                          <span>Discount ({discountPercentage}%):</span>
                           <span>-LKR {discountAmount.toLocaleString()}</span>
                         </div>
                       )}

@@ -16,6 +16,8 @@ const NonProductiveVisits = lazy(() => import('@/components/visits/NonProductive
 const TimeTracking = lazy(() => import('@/components/visits/TimeTracking'));
 const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/QuarterlyTargetsManagement'));
 const UserManagement = lazy(() => import('@/components/admin/UserManagement'));
+const SuperuserApprovalManagement = lazy(() => import('@/components/sales/SuperuserApprovalManagement'));
+const DiscountManagement = lazy(() => import('@/components/admin/DiscountManagement'));
 const SimpleCompanyReturns = lazy(() => import('@/components/returns/SimpleCompanyReturns'));
 const Reports = lazy(() => import('@/components/reports/Reports'));
 const Collections = lazy(() => import('@/components/collections/Collections'));
@@ -105,6 +107,18 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
         return (
           <Suspense fallback={<ModuleLoader />}>
             <UserManagement user={user} />
+          </Suspense>
+        );
+      case 'approval-management':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <SuperuserApprovalManagement user={user} />
+          </Suspense>
+        );
+      case 'discount-management':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <DiscountManagement />
           </Suspense>
         );
       case 'reports':

@@ -42,17 +42,19 @@ export const useDraftSalesOrder = () => {
 
   // Save draft to localStorage whenever it changes
   const saveDraft = useCallback((newDraft: Partial<DraftSalesOrder>) => {
-    const updatedDraft = {
-      ...draft,
-      ...newDraft,
-      isDraft: true,
-      lastModified: new Date()
-    };
-    
-    setDraft(updatedDraft);
-    localStorage.setItem('salesOrderDraft', JSON.stringify(updatedDraft));
-    setHasUnsavedChanges(true);
-  }, [draft]);
+    setDraft(prevDraft => {
+      const updatedDraft = {
+        ...prevDraft,
+        ...newDraft,
+        isDraft: true,
+        lastModified: new Date()
+      };
+      
+      localStorage.setItem('salesOrderDraft', JSON.stringify(updatedDraft));
+      setHasUnsavedChanges(true);
+      return updatedDraft;
+    });
+  }, []);
 
   const updateCustomer = useCallback((customer: Customer | null) => {
     if (customer) {
