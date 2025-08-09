@@ -41,6 +41,7 @@ export interface Invoice {
   customerId: string;
   customerName: string;
   agencyId: string;
+  agencyName: string;
   items: InvoiceItem[];
   subtotal: number;
   discountAmount: number;
@@ -113,4 +114,42 @@ export interface ReturnItem {
   unitPrice: number;
   total: number;
   reason: string;
+}
+
+export interface Delivery {
+  id: string;
+  invoiceId: string;
+  deliveryAgentId: string;
+  agencyId: string;
+  status: 'pending' | 'out_for_delivery' | 'delivered' | 'failed' | 'cancelled';
+  scheduledDate?: Date;
+  deliveredAt?: Date;
+  deliveryLatitude?: number;
+  deliveryLongitude?: number;
+  deliverySignature?: string;
+  deliveryNotes?: string;
+  receivedByName?: string;
+  receivedByPhone?: string;
+  createdAt: Date;
+  createdBy: string;
+  updatedAt: Date;
+  
+  // Related data
+  invoice?: Invoice;
+  items?: DeliveryItem[];
+  deliveryAgentName?: string;
+}
+
+export interface DeliveryItem {
+  id: string;
+  deliveryId: string;
+  invoiceItemId: string;
+  productId: string;
+  productName: string;
+  color: string;
+  size: string;
+  quantity: number;
+  itemCondition: 'good' | 'damaged' | 'missing';
+  conditionNotes?: string;
+  createdAt: Date;
 }

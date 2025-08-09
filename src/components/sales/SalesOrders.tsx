@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
-import { SalesOrder, Invoice, Return } from '@/types/sales';
+import { SalesOrder, Invoice, Return, Delivery } from '@/types/sales';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -31,6 +31,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   const [orders, setOrders] = useState<SalesOrder[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [returns, setReturns] = useState<Return[]>([]);
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -162,6 +163,12 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         .select('id, invoice_id, product_id, product_name, color, size, quantity, unit_price, total');
       additionalQueries.push(invoiceItemsQuery);
 
+      // Fetch agencies for agency name lookup
+      const agenciesQuery = supabase
+        .from('agencies')
+        .select('id, name');
+      additionalQueries.push(agenciesQuery);
+
       // Build optimized customers query
       let customersQuery = supabase
         .from('customers')
@@ -189,21 +196,46 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         `);
       additionalQueries.push(productsQuery);
       
-      const [invoicesResult, invoiceItemsResult, customersResult, productsResult] = await Promise.all(additionalQueries);
+      // Build optimized deliveries query
+      let deliveriesQuery = supabase
+        .from('deliveries')
+        .select(`
+          id, invoice_id, delivery_agent_id, agency_id, status,
+          scheduled_date, delivered_at, delivery_latitude, delivery_longitude,
+          delivery_signature, delivery_notes, received_by_name, received_by_phone,
+          created_at, created_by, updated_at
+        `);
+      
+      if (user.role === 'agent') {
+        deliveriesQuery = deliveriesQuery.or(`created_by.eq.${user.id},delivery_agent_id.eq.${user.id}`);
+      } else if (user.role === 'agency') {
+        deliveriesQuery = deliveriesQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        deliveriesQuery = deliveriesQuery.eq('agency_id', selectedAgencyId);
+      }
+      
+      additionalQueries.push(deliveriesQuery.order('created_at', { ascending: false }).limit(100));
+      
+      const [invoicesResult, invoiceItemsResult, agenciesResult, customersResult, productsResult, deliveriesResult] = await Promise.all(additionalQueries);
       
       if (invoicesResult.error) throw invoicesResult.error;
       if (invoiceItemsResult.error) throw invoiceItemsResult.error;
+      if (agenciesResult.error) throw agenciesResult.error;
       if (customersResult.error) throw customersResult.error;
       if (productsResult.error) throw productsResult.error;
+      if (deliveriesResult.error) throw deliveriesResult.error;
       
       const invoicesData = invoicesResult.data;
       const invoiceItemsData = invoiceItemsResult.data;
+      const agenciesData = agenciesResult.data;
       const customersData = customersResult.data;
       const productsData = productsResult.data;
+      const deliveriesData = deliveriesResult.data;
 
       // Transform invoices with items
       const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => {
         const invoiceItems = (invoiceItemsData || []).filter(item => item.invoice_id === invoice.id);
+        const agency = (agenciesData || []).find((ag: any) => ag.id === invoice.agency_id);
         
         return {
           id: invoice.id,
@@ -212,6 +244,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           customerId: invoice.customer_id,
           customerName: invoice.customer_name,
           agencyId: invoice.agency_id,
+          agencyName: agency?.name || 'Unknown Agency',
           items: invoiceItems.map((item: any) => ({
             id: item.id,
             productId: item.product_id,
@@ -268,6 +301,28 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       setCustomers(transformedCustomers);
       setProducts(transformedProducts);
+
+      // Transform deliveries
+      const transformedDeliveries: Delivery[] = (deliveriesData || []).map(delivery => ({
+        id: delivery.id,
+        invoiceId: delivery.invoice_id,
+        deliveryAgentId: delivery.delivery_agent_id,
+        agencyId: delivery.agency_id,
+        status: delivery.status,
+        scheduledDate: delivery.scheduled_date ? new Date(delivery.scheduled_date) : undefined,
+        deliveredAt: delivery.delivered_at ? new Date(delivery.delivered_at) : undefined,
+        deliveryLatitude: delivery.delivery_latitude,
+        deliveryLongitude: delivery.delivery_longitude,
+        deliverySignature: delivery.delivery_signature,
+        deliveryNotes: delivery.delivery_notes,
+        receivedByName: delivery.received_by_name,
+        receivedByPhone: delivery.received_by_phone,
+        createdAt: new Date(delivery.created_at),
+        createdBy: delivery.created_by,
+        updatedAt: new Date(delivery.updated_at)
+      }));
+
+      setDeliveries(transformedDeliveries);
 
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -730,31 +785,32 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
               {filteredOrders.map((order) => (
                 <Card key={order.id} className="hover:shadow-md transition-shadow">
                   <CardContent className="p-3 md:p-4">
-                    <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-2 md:gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1 md:gap-2 mb-1">
-                          <h3 className="font-semibold text-base md:text-lg truncate">{order.orderNumber}</h3>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="font-bold text-xl text-gray-900 min-w-0">
+                            {order.customerName || 'Unknown Customer'}
+                          </h3>
                           {getStatusBadge(order.status)}
                           {order.requiresApproval && order.status === 'pending' && (
                             <Badge variant="destructive" className="text-xs">Requires Approval</Badge>
                           )}
                         </div>
-                        <p className="text-sm text-gray-600 truncate">{order.customerName}</p>
-                        <div className="text-xs md:text-sm text-gray-500">
+                        <p className="text-sm text-gray-600">Order #{order.orderNumber}</p>
+                        <div className="text-sm text-gray-500">
                           {order.items.length} item{order.items.length !== 1 ? 's' : ''} • {order.createdAt.toLocaleDateString()}
                         </div>
                       </div>
                       
-                      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4">
-                        <div className="text-right">
-                          <p className="text-lg md:text-xl font-bold">LKR {order.total.toLocaleString()}</p>
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-xl font-bold text-gray-900">LKR {order.total.toLocaleString()}</p>
                           {order.discountPercentage > 0 && (
-                            <p className="text-xs md:text-sm text-gray-500 line-through">
+                            <p className="text-sm text-gray-500 line-through">
                               LKR {order.subtotal.toLocaleString()}
                             </p>
                           )}
                         </div>
-                        
                         <div className="flex gap-1 md:gap-2 flex-wrap">
                           <Button 
                             size="sm" 
@@ -815,6 +871,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             user={user.role === 'superuser' && selectedAgencyId ? { ...user, agencyId: selectedAgencyId } : user} 
             invoices={invoices} 
             orders={orders}
+            deliveries={deliveries}
+            onRefresh={fetchData}
           />
         </TabsContent>
 

@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { Invoice, SalesOrder } from '@/types/sales';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Printer } from 'lucide-react';
+import { ArrowLeft, Printer, Download } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 interface PrintableInvoiceProps {
   invoice: Invoice;
@@ -10,8 +11,229 @@ interface PrintableInvoiceProps {
 }
 
 const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProps) => {
+  const { toast } = useToast();
+
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleDownloadPDF = async () => {
+    try {
+      // Create a new window for PDF generation
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        throw new Error('Popup blocked. Please allow popups for PDF download.');
+      }
+
+      // Get the printable content
+      const printableContent = document.querySelector('.print-container');
+      if (!printableContent) {
+        throw new Error('Printable content not found');
+      }
+
+      // Create HTML content for PDF
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Invoice ${invoice.invoiceNumber}</title>
+          <style>
+            * { box-sizing: border-box; }
+            body { 
+              margin: 0; 
+              padding: 20px; 
+              font-family: Arial, sans-serif; 
+              font-size: 12px;
+              line-height: 1.4;
+              color: #333;
+            }
+            .invoice-container { 
+              max-width: 800px; 
+              margin: 0 auto; 
+              background: white;
+            }
+            .header { 
+              text-align: center; 
+              border-bottom: 2px solid #333; 
+              padding-bottom: 20px; 
+              margin-bottom: 20px; 
+            }
+            .company-name { 
+              font-size: 24px; 
+              font-weight: bold; 
+              margin-bottom: 10px; 
+            }
+            .invoice-details { 
+              display: flex; 
+              justify-content: space-between; 
+              margin-bottom: 20px; 
+            }
+            .invoice-details > div { 
+              flex: 1; 
+            }
+            .items-table { 
+              width: 100%; 
+              border-collapse: collapse; 
+              margin-bottom: 20px; 
+            }
+            .items-table th, .items-table td { 
+              border: 1px solid #333; 
+              padding: 8px; 
+              text-align: left; 
+            }
+            .items-table th { 
+              background-color: #f0f0f0; 
+              font-weight: bold; 
+            }
+            .items-table td:nth-child(4), 
+            .items-table td:nth-child(5), 
+            .items-table td:nth-child(6) { 
+              text-align: right; 
+            }
+            .totals { 
+              text-align: right; 
+              margin-bottom: 20px; 
+            }
+            .totals-table { 
+              margin-left: auto; 
+              width: 300px; 
+            }
+            .totals-table td { 
+              padding: 5px 10px; 
+              border: none; 
+            }
+            .total-row { 
+              font-weight: bold; 
+              font-size: 14px; 
+              border-top: 1px solid #333; 
+            }
+            .signature-section { 
+              border-top: 1px solid #333; 
+              padding-top: 20px; 
+              text-align: right; 
+            }
+            .signature-image { 
+              max-width: 200px; 
+              max-height: 60px; 
+              border-bottom: 1px solid #333; 
+            }
+            .footer { 
+              margin-top: 20px; 
+              font-size: 10px; 
+              color: #666; 
+            }
+          </style>
+        </head>
+        <body>
+          <div class="invoice-container">
+            <div class="header">
+              <div class="company-name">DAG Clothing Pvt Ltd</div>
+              <div>Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</div>
+              <div>Phone: 0412259525 | Website: www.dag.lk</div>
+              <div>Email: order@dag-apparel.com</div>
+            </div>
+            
+            <div class="invoice-details">
+              <div>
+                <h2 style="margin: 0 0 15px 0; font-size: 18px;">INVOICE</h2>
+                <div><strong>Invoice Number:</strong> ${invoice.invoiceNumber}</div>
+                <div><strong>Date:</strong> ${invoice.createdAt.toLocaleDateString()}</div>
+                ${invoice.salesOrderId ? `<div><strong>Sales Order:</strong> ${invoice.salesOrderId}</div>` : ''}
+                <div><strong>Agency:</strong> ${invoice.agencyName}</div>
+              </div>
+              <div>
+                <h3 style="margin: 0 0 10px 0; font-size: 14px;">Bill To:</h3>
+                <div><strong>${invoice.customerName}</strong></div>
+                <div>Customer ID: ${invoice.customerId}</div>
+              </div>
+            </div>
+            
+            <table class="items-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Product</th>
+                  <th>Color/Size</th>
+                  <th>Unit Price</th>
+                  <th>Quantity</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${invoice.items.map((item, index) => `
+                  <tr>
+                    <td>${index + 1}</td>
+                    <td>${item.productName}</td>
+                    <td>${item.color}, ${item.size}</td>
+                    <td>LKR ${item.unitPrice.toLocaleString()}</td>
+                    <td>${item.quantity}</td>
+                    <td>LKR ${item.total.toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+            
+            <div class="totals">
+              <table class="totals-table">
+                <tr>
+                  <td>Subtotal:</td>
+                  <td>LKR ${invoice.subtotal.toLocaleString()}</td>
+                </tr>
+                <tr style="color: green;">
+                  <td>Discount:</td>
+                  <td>-LKR ${invoice.discountAmount.toLocaleString()}</td>
+                </tr>
+                <tr class="total-row">
+                  <td>Total Amount:</td>
+                  <td>LKR ${invoice.total.toLocaleString()}</td>
+                </tr>
+              </table>
+            </div>
+            
+            <div class="signature-section">
+              <div style="margin-bottom: 10px;">Customer Signature</div>
+              ${invoice.signature ? 
+                `<img src="${invoice.signature}" alt="Customer Signature" class="signature-image" />` : 
+                '<div style="width: 200px; height: 60px; border-bottom: 1px solid #333; margin-left: auto;"></div>'
+              }
+            </div>
+            
+            <div class="footer">
+              <div>Invoice generated on: ${new Date().toLocaleString()}</div>
+              <div>GPS Location: ${invoice.gpsCoordinates.latitude.toFixed(6)}, ${invoice.gpsCoordinates.longitude.toFixed(6)}</div>
+              ${salesOrder ? `<div>Original Order Date: ${salesOrder.createdAt.toLocaleString()}</div>` : ''}
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      // Write content to the new window
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+
+      // Wait for content to load, then trigger print dialog
+      printWindow.onload = () => {
+        setTimeout(() => {
+          printWindow.print();
+          printWindow.close();
+        }, 500);
+      };
+
+      toast({
+        title: 'PDF Download Initiated',
+        description: 'Invoice PDF will be downloaded shortly',
+      });
+
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      toast({
+        title: 'PDF Download Failed',
+        description: error instanceof Error ? error.message : 'Failed to generate PDF',
+        variant: 'destructive',
+      });
+    }
   };
 
   useEffect(() => {
@@ -117,10 +339,16 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back
         </Button>
-        <Button onClick={handlePrint} className="bg-blue-600 hover:bg-blue-700">
-          <Printer className="h-4 w-4 mr-2" />
-          Print Invoice
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={handleDownloadPDF} variant="outline" className="border-green-600 text-green-600 hover:bg-green-50">
+            <Download className="h-4 w-4 mr-2" />
+            Download PDF
+          </Button>
+          <Button onClick={handlePrint} className="bg-blue-600 hover:bg-blue-700">
+            <Printer className="h-4 w-4 mr-2" />
+            Print Invoice
+          </Button>
+        </div>
       </div>
 
       {/* Printable Invoice */}
@@ -143,7 +371,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               {invoice.salesOrderId && (
                 <p><span className="font-semibold">Sales Order:</span> {invoice.salesOrderId}</p>
               )}
-              <p><span className="font-semibold">Agency:</span> {invoice.agencyId}</p>
+              <p><span className="font-semibold">Agency:</span> {invoice.agencyName}</p>
             </div>
           </div>
           <div>

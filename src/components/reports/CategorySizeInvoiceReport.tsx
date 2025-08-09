@@ -1,12 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, ChevronDown, ChevronRight, Package, TrendingUp, Download, Filter } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Package, TrendingUp, Download, Filter, Search, User as UserIcon, X } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/components/ui/use-toast';
 
@@ -60,12 +59,16 @@ const CategorySizeInvoiceReport = ({ user, onBack }: CategorySizeInvoiceReportPr
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<string>('all');
+  const [selectedCustomerName, setSelectedCustomerName] = useState<string>('All customers');
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [reportData, setReportData] = useState<ReportData>({});
   const [loading, setLoading] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [expandedSubCategories, setExpandedSubCategories] = useState<Set<string>>(new Set());
   const [expandedColors, setExpandedColors] = useState<Set<string>>(new Set());
+  const customerDropdownRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -77,6 +80,20 @@ const CategorySizeInvoiceReport = ({ user, onBack }: CategorySizeInvoiceReportPr
     const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
     setEndDate(today.toISOString().split('T')[0]);
     setStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
+  }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (customerDropdownRef.current && !customerDropdownRef.current.contains(event.target as Node)) {
+        setShowCustomerDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
   const fetchCustomers = async () => {
@@ -406,21 +423,115 @@ const CategorySizeInvoiceReport = ({ user, onBack }: CategorySizeInvoiceReportPr
                 onChange={(e) => setEndDate(e.target.value)}
               />
             </div>
-            <div>
+            <div className="relative" ref={customerDropdownRef}>
               <Label htmlFor="customer">Customer (Optional)</Label>
-              <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All customers" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All customers</SelectItem>
-                  {customers.map((customer) => (
-                    <SelectItem key={customer.id} value={customer.id}>
-                      {customer.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Search className="h-4 w-4 text-gray-400" />
+                </div>
+                <Input
+                  type="text"
+                  placeholder="Search customers or select all..."
+                  value={customerSearchTerm}
+                  onChange={(e) => {
+                    setCustomerSearchTerm(e.target.value);
+                    setShowCustomerDropdown(true);
+                  }}
+                  onFocus={() => setShowCustomerDropdown(true)}
+                  className="pl-10"
+                />
+                {selectedCustomer !== 'all' && selectedCustomerName !== 'All customers' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 h-6 w-6 p-0 hover:bg-gray-100"
+                    onClick={() => {
+                      setSelectedCustomer('all');
+                      setSelectedCustomerName('All customers');
+                      setCustomerSearchTerm('');
+                      setShowCustomerDropdown(false);
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                )}
+              </div>
+              
+              {/* Selected Customer Display */}
+              {selectedCustomer !== 'all' && selectedCustomerName !== 'All customers' && (
+                <div className="mt-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                  <div className="flex items-center gap-2">
+                    <UserIcon className="h-4 w-4 text-blue-600" />
+                    <span className="text-sm font-medium text-blue-900">{selectedCustomerName}</span>
+                  </div>
+                </div>
+              )}
+              
+              {/* Searchable Dropdown */}
+              {showCustomerDropdown && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                  {/* All customers option */}
+                  <div
+                    className="px-3 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100"
+                    onClick={() => {
+                      setSelectedCustomer('all');
+                      setSelectedCustomerName('All customers');
+                      setCustomerSearchTerm('');
+                      setShowCustomerDropdown(false);
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
+                        <Package className="h-4 w-4 text-gray-600" />
+                      </div>
+                      <div>
+                        <div className="font-medium text-gray-900">All customers</div>
+                        <div className="text-xs text-gray-500">Include all customers in report</div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Filtered customers */}
+                  {customers
+                    .filter(customer => 
+                      customer.name.toLowerCase().includes(customerSearchTerm.toLowerCase())
+                    )
+                    .map((customer) => (
+                      <div
+                        key={customer.id}
+                        className="px-3 py-2 hover:bg-blue-50 cursor-pointer transition-colors"
+                        onClick={() => {
+                          setSelectedCustomer(customer.id);
+                          setSelectedCustomerName(customer.name);
+                          setCustomerSearchTerm('');
+                          setShowCustomerDropdown(false);
+                        }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                            <UserIcon className="h-4 w-4 text-blue-600" />
+                          </div>
+                          <div>
+                            <div className="font-medium text-gray-900">{customer.name}</div>
+                            <div className="text-xs text-gray-500">Customer ID: {customer.id}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  }
+                  
+                  {/* No results */}
+                  {customerSearchTerm && customers.filter(customer => 
+                    customer.name.toLowerCase().includes(customerSearchTerm.toLowerCase())
+                  ).length === 0 && (
+                    <div className="px-3 py-4 text-center text-gray-500">
+                      <Search className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                      <div className="text-sm">No customers found</div>
+                      <div className="text-xs">Try a different search term</div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex items-end gap-2">
               <Button onClick={fetchReportData} disabled={loading} className="flex-1">

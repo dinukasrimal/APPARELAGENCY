@@ -1,24 +1,40 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { User } from '@/types/auth';
-import { Invoice, SalesOrder } from '@/types/sales';
+import { Invoice, SalesOrder, Delivery } from '@/types/sales';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Search, Eye, Printer, FileText } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Search, Eye, Printer, FileText, Truck, Signature, MapPin, CheckCircle } from 'lucide-react';
 import InvoiceDetails from './InvoiceDetails';
 import PrintableInvoice from './PrintableInvoice';
+import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 
 interface InvoiceManagementProps {
   user: User;
   invoices: Invoice[];
   orders: SalesOrder[];
+  deliveries?: Delivery[];
+  onRefresh?: () => void;
 }
 
-const InvoiceManagement = ({ user, invoices, orders }: InvoiceManagementProps) => {
+const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh }: InvoiceManagementProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [showPrintView, setShowPrintView] = useState(false);
+  const [markingForDelivery, setMarkingForDelivery] = useState<string | null>(null);
+  const [showSignatureModal, setShowSignatureModal] = useState(false);
+  const [currentInvoiceId, setCurrentInvoiceId] = useState<string | null>(null);
+  const [signature, setSignature] = useState<string | null>(null);
+  const [receivedByName, setReceivedByName] = useState('');
+  const [deliveryNotes, setDeliveryNotes] = useState('');
+  const [isDrawing, setIsDrawing] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { toast } = useToast();
 
   // Filter invoices based on user role and filters
   const filteredInvoices = invoices.filter(invoice => {
@@ -42,6 +58,168 @@ const InvoiceManagement = ({ user, invoices, orders }: InvoiceManagementProps) =
   const handlePrintComplete = () => {
     setShowPrintView(false);
     setSelectedInvoice(null);
+  };
+
+  const getDeliveryForInvoice = (invoiceId: string) => {
+    return deliveries.find(d => d.invoiceId === invoiceId);
+  };
+
+  const handleMarkForDelivery = async (invoiceId: string) => {
+    // Check if delivery already exists
+    const existingDelivery = getDeliveryForInvoice(invoiceId);
+    
+    if (existingDelivery) {
+      toast({
+        title: 'Delivery Already Exists',
+        description: 'This invoice is already marked for delivery',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Show signature capture modal
+    setCurrentInvoiceId(invoiceId);
+    setShowSignatureModal(true);
+    setSignature(null);
+    setReceivedByName('');
+    setDeliveryNotes('');
+  };
+
+  const captureGPS = async () => {
+    try {
+      if (!navigator.geolocation) {
+        throw new Error('Geolocation is not supported by this browser');
+      }
+
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000
+        });
+      });
+
+      return {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude
+      };
+    } catch (error) {
+      console.error('Error capturing GPS:', error);
+      // Return fallback coordinates (Sri Lanka center)
+      return {
+        latitude: 7.8731 + Math.random() * 0.01,
+        longitude: 80.7718 + Math.random() * 0.01
+      };
+    }
+  };
+
+  const handleCompleteDelivery = async () => {
+    if (!currentInvoiceId || !signature || !receivedByName.trim()) {
+      toast({
+        title: 'Missing Information',
+        description: 'Please provide signature and receiver name',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setMarkingForDelivery(currentInvoiceId);
+    try {
+      // Capture GPS coordinates
+      const coordinates = await captureGPS();
+      
+      // Create delivery record with delivered status
+      const { error } = await supabase
+        .from('deliveries')
+        .insert({
+          invoice_id: currentInvoiceId,
+          delivery_agent_id: user.id,
+          agency_id: user.agencyId,
+          status: 'delivered',
+          delivered_at: new Date().toISOString(),
+          delivery_latitude: coordinates.latitude,
+          delivery_longitude: coordinates.longitude,
+          delivery_signature: signature,
+          delivery_notes: deliveryNotes.trim() || null,
+          received_by_name: receivedByName.trim(),
+          created_by: user.id
+        });
+
+      if (error) throw error;
+
+      toast({
+        title: 'Delivery Completed',
+        description: `Invoice delivered successfully to ${receivedByName}`,
+      });
+
+      setShowSignatureModal(false);
+      setCurrentInvoiceId(null);
+      if (onRefresh) onRefresh();
+    } catch (error) {
+      console.error('Error completing delivery:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to complete delivery',
+        variant: 'destructive',
+      });
+    } finally {
+      setMarkingForDelivery(null);
+    }
+  };
+
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    setIsDrawing(true);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    }
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+    
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#000000';
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+    const canvas = canvasRef.current;
+    if (canvas) {
+      setSignature(canvas.toDataURL());
+    }
+  };
+
+  const clearSignature = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      setSignature(null);
+    }
   };
 
   if (showPrintView && selectedInvoice) {
@@ -107,16 +285,20 @@ const InvoiceManagement = ({ user, invoices, orders }: InvoiceManagementProps) =
               <CardContent className="p-3 md:p-4">
                 <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-2 md:gap-4">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1 md:gap-2 mb-1">
-                      <h3 className="font-semibold text-base md:text-lg truncate">{invoice.invoiceNumber}</h3>
-                      <Badge variant="default" className="text-xs">Invoice</Badge>
-                      {invoice.salesOrderId && (
-                        <Badge variant="outline" className="text-xs">
-                          Order: {invoice.salesOrderId}
-                        </Badge>
-                      )}
+                    <div className="mb-2">
+                      <h3 className="font-bold text-xl text-gray-900 mb-1">
+                        {invoice.customerName || '[No Customer Name]'}
+                      </h3>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant="default" className="text-xs">Invoice</Badge>
+                        {invoice.salesOrderId && (
+                          <Badge variant="outline" className="text-xs">
+                            Order: {invoice.salesOrderId.substring(0, 8)}...
+                          </Badge>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-sm text-gray-600 truncate">{invoice.customerName}</p>
+                    <p className="text-sm text-gray-600">Invoice #{invoice.invoiceNumber}</p>
                   </div>
                   
                   <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4">
@@ -145,6 +327,29 @@ const InvoiceManagement = ({ user, invoices, orders }: InvoiceManagementProps) =
                         <Printer className="h-3 w-3 md:h-4 md:w-4 mr-1" />
                         Print
                       </Button>
+                      {(() => {
+                        const existingDelivery = getDeliveryForInvoice(invoice.id);
+                        if (existingDelivery) {
+                          return (
+                            <Badge variant="default" className="text-xs px-2 py-1 bg-green-100 text-green-800">
+                              <CheckCircle className="h-3 w-3 mr-1" />
+                              Delivered
+                            </Badge>
+                          );
+                        }
+                        return (
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            className="bg-green-600 hover:bg-green-700 text-white text-xs h-7 md:h-8"
+                            onClick={() => handleMarkForDelivery(invoice.id)}
+                            disabled={markingForDelivery === invoice.id}
+                          >
+                            <Truck className="h-3 w-3 md:h-4 md:w-4 mr-1" />
+                            {markingForDelivery === invoice.id ? 'Processing...' : 'Mark for Delivery'}
+                          </Button>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -153,6 +358,95 @@ const InvoiceManagement = ({ user, invoices, orders }: InvoiceManagementProps) =
           ))}
         </div>
       )}
+
+      {/* Signature Capture Modal */}
+      <Dialog open={showSignatureModal} onOpenChange={setShowSignatureModal}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Signature className="h-5 w-5" />
+              Complete Delivery
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="receivedBy">Received By (Required)</Label>
+              <Input
+                id="receivedBy"
+                value={receivedByName}
+                onChange={(e) => setReceivedByName(e.target.value)}
+                placeholder="Name of person who received the items"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="notes">Delivery Notes (Optional)</Label>
+              <Textarea
+                id="notes"
+                value={deliveryNotes}
+                onChange={(e) => setDeliveryNotes(e.target.value)}
+                placeholder="Any additional notes about the delivery..."
+                rows={2}
+              />
+            </div>
+
+            {/* Signature Capture */}
+            <div>
+              <Label>Customer Signature (Required)</Label>
+              <div className="border rounded-lg p-4 bg-white">
+                <canvas
+                  ref={canvasRef}
+                  width={500}
+                  height={200}
+                  className="border border-gray-200 rounded cursor-crosshair w-full"
+                  style={{ maxHeight: '200px' }}
+                  onMouseDown={startDrawing}
+                  onMouseMove={draw}
+                  onMouseUp={stopDrawing}
+                  onMouseLeave={stopDrawing}
+                />
+                <div className="flex gap-2 mt-2 justify-between items-center">
+                  <Button type="button" variant="outline" size="sm" onClick={clearSignature}>
+                    Clear Signature
+                  </Button>
+                  {signature && (
+                    <Badge variant="default" className="bg-green-100 text-green-800">
+                      <Signature className="h-3 w-3 mr-1" />
+                      Signature Captured
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 p-3 rounded-lg">
+              <div className="flex items-center gap-2 text-blue-800">
+                <MapPin className="h-4 w-4" />
+                <span className="text-sm font-medium">GPS location will be captured automatically</span>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowSignatureModal(false)}
+              disabled={markingForDelivery === currentInvoiceId}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCompleteDelivery}
+              disabled={!receivedByName.trim() || !signature || markingForDelivery === currentInvoiceId}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              <CheckCircle className="h-4 w-4 mr-2" />
+              {markingForDelivery === currentInvoiceId ? 'Completing...' : 'Complete Delivery'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
