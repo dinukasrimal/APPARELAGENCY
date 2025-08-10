@@ -36,7 +36,7 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management';
+type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management' | 'agency-pricing-configuration';
 
 const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: SidebarProps) => {
   const { agency } = useAgency(user.agencyId);
@@ -58,6 +58,7 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'user-management', label: 'User Management', icon: UserCog, roles: ['superuser'] },
     { id: 'approval-management', label: 'Order Approvals', icon: CheckSquare, roles: ['superuser'] },
     { id: 'discount-management', label: 'Discount Management', icon: Percent, roles: ['superuser'] },
+    { id: 'agency-pricing-configuration', label: 'Agency Pricing', icon: Settings, roles: ['superuser'] },
     {
       id: 'reports',
       label: 'Reports & Analytics',

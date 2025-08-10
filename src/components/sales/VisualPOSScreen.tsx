@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, MapPin, AlertTriangle, ShoppingCart, Plus, Minus, Trash } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 
 interface VisualPOSScreenProps {
   user: User;
@@ -24,6 +25,7 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [agencyPriceType, setAgencyPriceType] = useState<PriceType>('billing_price');
   const { toast } = useToast();
 
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -46,6 +48,11 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
   const fetchData = async () => {
     try {
       setIsLoading(true);
+      
+      // Load agency pricing preference
+      const priceType = await getAgencyPriceType(user.agencyId);
+      setAgencyPriceType(priceType);
+      
       await Promise.all([fetchCustomers(), fetchProducts()]);
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -168,8 +175,8 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
         color: selectedColor,
         size: selectedSize,
         quantity,
-        unitPrice: selectedProduct.sellingPrice,
-        total: selectedProduct.sellingPrice * quantity
+        unitPrice: getProductPriceForAgency(selectedProduct, agencyPriceType),
+        total: getProductPriceForAgency(selectedProduct, agencyPriceType) * quantity
       };
       setOrderItems([...orderItems, newItem]);
     }
@@ -387,7 +394,7 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
                           <h3 className="font-medium text-sm mb-1">{product.name}</h3>
                           <p className="text-xs text-gray-600 mb-2">{product.subCategory}</p>
                           <div className="flex justify-between items-center">
-                            <span className="font-bold text-blue-600">LKR {product.sellingPrice}</span>
+                            <span className="font-bold text-blue-600">LKR {getProductPriceForAgency(product, agencyPriceType)}</span>
                             <Badge variant="outline" className="text-xs">
                               {product.colors.length} colors
                             </Badge>
@@ -577,7 +584,7 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
                   <div>
                     <h3 className="font-medium">{selectedProduct.name}</h3>
                     <p className="text-sm text-gray-600">{selectedProduct.description}</p>
-                    <p className="font-bold text-blue-600">LKR {selectedProduct.sellingPrice}</p>
+                    <p className="font-bold text-blue-600">LKR {getProductPriceForAgency(selectedProduct, agencyPriceType)}</p>
                   </div>
                 </div>
 
@@ -644,7 +651,7 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
                   <div className="p-3 bg-blue-50 rounded-md">
                     <div className="flex justify-between items-center">
                       <span className="text-sm font-medium">Unit Price:</span>
-                      <span className="text-blue-600 font-medium">LKR {selectedProduct.sellingPrice.toLocaleString()}</span>
+                      <span className="text-blue-600 font-medium">LKR {getProductPriceForAgency(selectedProduct, agencyPriceType).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between items-center mt-1">
                       <span className="text-sm font-medium">Quantity:</span>
@@ -652,7 +659,7 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
                     </div>
                     <div className="flex justify-between items-center mt-2 border-t pt-2 border-blue-200">
                       <span className="font-bold">Total Value:</span>
-                      <span className="text-blue-700 font-bold text-lg">LKR {(selectedProduct.sellingPrice * quantity).toLocaleString()}</span>
+                      <span className="text-blue-700 font-bold text-lg">LKR {(getProductPriceForAgency(selectedProduct, agencyPriceType) * quantity).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>

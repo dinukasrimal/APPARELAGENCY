@@ -18,6 +18,7 @@ const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/Quart
 const UserManagement = lazy(() => import('@/components/admin/UserManagement'));
 const SuperuserApprovalManagement = lazy(() => import('@/components/sales/SuperuserApprovalManagement'));
 const DiscountManagement = lazy(() => import('@/components/admin/DiscountManagement'));
+const AgencyPricingConfiguration = lazy(() => import('@/components/admin/AgencyPricingConfiguration'));
 const SimpleCompanyReturns = lazy(() => import('@/components/returns/SimpleCompanyReturns'));
 const Reports = lazy(() => import('@/components/reports/Reports'));
 const Collections = lazy(() => import('@/components/collections/Collections'));
@@ -119,6 +120,12 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
         return (
           <Suspense fallback={<ModuleLoader />}>
             <DiscountManagement />
+          </Suspense>
+        );
+      case 'agency-pricing-configuration':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <AgencyPricingConfiguration user={user} onBack={() => setActiveModule('dashboard')} />
           </Suspense>
         );
       case 'reports':
