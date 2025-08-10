@@ -2,7 +2,7 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, User, DollarSign, MapPin, Calendar, FileText } from 'lucide-react';
+import { ArrowLeft, User, DollarSign, MapPin, Calendar, FileText, CreditCard, Building } from 'lucide-react';
 import { Collection } from '@/types/collections';
 
 interface CollectionDetailsProps {
@@ -100,29 +100,102 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
             </div>
 
             {/* Cheque Details */}
-            {collection.chequeDetails.length > 0 && (
+            {collection.chequeDetails && collection.chequeDetails.length > 0 && (
               <div className="border-t pt-4">
-                <h4 className="font-medium text-sm text-gray-700 mb-3">Cheque Details</h4>
-                <div className="space-y-2">
+                <h4 className="font-medium text-gray-700 mb-3 flex items-center gap-2">
+                  <CreditCard className="h-4 w-4" />
+                  Cheque Details ({collection.chequeDetails.length})
+                </h4>
+                <div className="space-y-3">
                   {collection.chequeDetails.map((cheque, index) => (
-                    <div key={index} className="p-3 border rounded-lg">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="font-medium text-sm">{cheque.chequeNumber}</p>
-                          <p className="text-xs text-gray-600">{cheque.bankName}</p>
-                          <p className="text-xs text-gray-600">
-                            Date: {cheque.chequeDate.toLocaleDateString()}
-                          </p>
+                    <Card key={cheque.id || index} className="border-l-4 border-l-blue-400">
+                      <CardContent className="p-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <CreditCard className="h-4 w-4 text-blue-600" />
+                              <span className="font-medium text-gray-900">Cheque #{cheque.chequeNumber}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Building className="h-4 w-4 text-gray-500" />
+                              <span className="text-sm text-gray-600">{cheque.bankName}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Calendar className="h-4 w-4 text-gray-500" />
+                              <span className="text-sm text-gray-600">
+                                Date: {cheque.chequeDate.toLocaleDateString('en-US', {
+                                  year: 'numeric',
+                                  month: 'long', 
+                                  day: 'numeric'
+                                })}
+                              </span>
+                            </div>
+                            {cheque.clearedAt && (
+                              <div className="flex items-center gap-2">
+                                <Calendar className="h-4 w-4 text-green-500" />
+                                <span className="text-sm text-green-600">
+                                  Cleared: {cheque.clearedAt.toLocaleDateString('en-US', {
+                                    year: 'numeric',
+                                    month: 'long', 
+                                    day: 'numeric'
+                                  })}
+                                </span>
+                              </div>
+                            )}
+                            {cheque.returnedAt && (
+                              <div className="flex items-center gap-2">
+                                <Calendar className="h-4 w-4 text-red-500" />
+                                <span className="text-sm text-red-600">
+                                  Returned: {cheque.returnedAt.toLocaleDateString('en-US', {
+                                    year: 'numeric',
+                                    month: 'long', 
+                                    day: 'numeric'
+                                  })}
+                                </span>
+                              </div>
+                            )}
+                            {cheque.returnReason && (
+                              <div className="flex items-start gap-2">
+                                <FileText className="h-4 w-4 text-red-500 mt-0.5" />
+                                <span className="text-sm text-red-600">
+                                  Return Reason: {cheque.returnReason}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="space-y-2">
+                            <div className="text-right md:text-left">
+                              <p className="text-xs text-gray-500 mb-1">Amount</p>
+                              <p className="text-xl font-bold text-green-600">LKR {cheque.amount.toLocaleString()}</p>
+                            </div>
+                            <div className="flex justify-end md:justify-start">
+                              <Badge 
+                                variant={cheque.status === 'cleared' ? 'default' : 
+                                        cheque.status === 'returned' ? 'destructive' : 'secondary'}
+                                className="capitalize"
+                              >
+                                {cheque.status.replace('_', ' ')}
+                              </Badge>
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <p className="font-medium text-sm">LKR {cheque.amount.toLocaleString()}</p>
-                          <Badge variant="outline" className="text-xs mt-1">
-                            {cheque.status}
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
+                      </CardContent>
+                    </Card>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Show message if no cheques */}
+            {collection.paymentMethod === 'mixed' && (!collection.chequeDetails || collection.chequeDetails.length === 0) && (
+              <div className="border-t pt-4">
+                <h4 className="font-medium text-gray-700 mb-3 flex items-center gap-2">
+                  <CreditCard className="h-4 w-4" />
+                  Cheque Details
+                </h4>
+                <div className="text-center py-4 text-gray-500 bg-gray-50 rounded-lg">
+                  <CreditCard className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                  <p className="text-sm">No cheque details available</p>
                 </div>
               </div>
             )}
@@ -130,8 +203,11 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
             {/* Notes */}
             {collection.notes && (
               <div className="border-t pt-4">
-                <h4 className="font-medium text-sm text-gray-700 mb-2">Notes</h4>
-                <p className="text-sm text-gray-600">{collection.notes}</p>
+                <h4 className="font-medium text-gray-700 mb-2 flex items-center gap-2">
+                  <FileText className="h-4 w-4" />
+                  Notes
+                </h4>
+                <p className="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg">{collection.notes}</p>
               </div>
             )}
           </CardContent>

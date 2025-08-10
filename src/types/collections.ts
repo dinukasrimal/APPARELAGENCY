@@ -27,6 +27,8 @@ export interface ChequeDetail {
   chequeDate: Date;
   status: string;
   clearedAt?: Date;
+  returnedAt?: Date;
+  returnReason?: string;
 }
 
 export interface CollectionAllocation {
@@ -43,7 +45,9 @@ export interface CustomerInvoiceSummary {
   customerName: string;
   totalInvoiced: number;
   totalCollected: number;
+  unrealizedPayments: number;
   outstandingAmount: number;
+  outstandingWithUnrealized: number;
   outstandingWithCheques: number;
   outstandingWithoutCheques: number;
   returnedChequesAmount: number;

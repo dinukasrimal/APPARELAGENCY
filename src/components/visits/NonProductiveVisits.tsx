@@ -209,6 +209,8 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
         .insert([{
           agency_id: selectedAgencyId || user.agencyId,
           user_id: user.id,
+          customer_id: selectedCustomer?.id || null,
+          customer_name: customerInfo,
           reason: formData.reason,
           notes: formData.notes,
           potential_customer: customerInfo,

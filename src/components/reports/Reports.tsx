@@ -2,17 +2,18 @@ import { useState } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, BarChart3, Calendar, TrendingUp, FileText } from 'lucide-react';
+import { ArrowLeft, BarChart3, Calendar, TrendingUp, FileText, Users } from 'lucide-react';
 import EnhancedReports from './EnhancedReports';
 import DailyLogReport from './DailyLogReport';
 import CategorySizeInvoiceReport from './CategorySizeInvoiceReport';
+import CustomerEngagementReport from './CustomerEngagementReport';
 
 interface ReportsProps {
   user: User;
   onBack: () => void;
 }
 
-type ReportType = 'main' | 'enhanced' | 'daily-log' | 'category-size';
+type ReportType = 'main' | 'enhanced' | 'daily-log' | 'category-size' | 'customer-engagement';
 
 const Reports = ({ user, onBack }: ReportsProps) => {
   const [activeReport, setActiveReport] = useState<ReportType>('main');
@@ -39,6 +40,13 @@ const Reports = ({ user, onBack }: ReportsProps) => {
       icon: BarChart3,
       color: 'bg-purple-500',
     },
+    {
+      id: 'customer-engagement',
+      title: 'Customer Engagement Analytics',
+      description: 'Analyze customer engagement, lead conversion rates, and non-productive visit effectiveness',
+      icon: Users,
+      color: 'bg-orange-500',
+    },
   ];
 
   const renderActiveReport = () => {
@@ -49,6 +57,8 @@ const Reports = ({ user, onBack }: ReportsProps) => {
         return <DailyLogReport user={user} onBack={() => setActiveReport('main')} />;
       case 'category-size':
         return <CategorySizeInvoiceReport user={user} onBack={() => setActiveReport('main')} />;
+      case 'customer-engagement':
+        return <CustomerEngagementReport user={user} onBack={() => setActiveReport('main')} />;
       default:
         return null;
     }
@@ -109,7 +119,7 @@ const Reports = ({ user, onBack }: ReportsProps) => {
 
       <div className="mt-8 p-6 bg-gray-50 rounded-lg">
         <h3 className="text-lg font-semibold text-gray-900 mb-2">Quick Tips</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm text-gray-600">
           <div>
             <strong>Enhanced Daily Report:</strong> Best for tracking overall business performance and KPI monitoring.
           </div>
@@ -118,6 +128,9 @@ const Reports = ({ user, onBack }: ReportsProps) => {
           </div>
           <div>
             <strong>Category & Size Report:</strong> Ideal for inventory insights and sales analysis by product attributes.
+          </div>
+          <div>
+            <strong>Customer Engagement Analytics:</strong> Essential for analyzing lead conversion and sales team effectiveness.
           </div>
         </div>
       </div>

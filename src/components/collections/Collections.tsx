@@ -125,7 +125,18 @@ const Collections = ({ user }: CollectionsProps) => {
           .from('collections')
           .select(`
             *,
-            collection_cheques (*),
+            collection_cheques (
+              id,
+              cheque_number,
+              bank_name,
+              amount,
+              cheque_date,
+              status,
+              cleared_at,
+              return_reason,
+              returned_at,
+              created_at
+            ),
             collection_allocations (*)
           `);
         
@@ -158,7 +169,9 @@ const Collections = ({ user }: CollectionsProps) => {
               amount: cheque.amount,
               chequeDate: new Date(cheque.cheque_date),
               status: cheque.status,
-              clearedAt: cheque.cleared_at ? new Date(cheque.cleared_at) : undefined
+              clearedAt: cheque.cleared_at ? new Date(cheque.cleared_at) : undefined,
+              returnedAt: cheque.returned_at ? new Date(cheque.returned_at) : undefined,
+              returnReason: cheque.return_reason || undefined
             })),
             notes: collection.notes,
             gpsCoordinates: {
@@ -196,39 +209,50 @@ const Collections = ({ user }: CollectionsProps) => {
       const customerInvoices = invoices.filter(inv => inv.customerId === customerId);
       const customerCollections = collections.filter(col => col.customerId === customerId);
 
-      // Calculate cheque payments with date validation
+      // Calculate payments with proper date validation
       const today = new Date();
+      today.setHours(23, 59, 59, 999); // Set to end of day for comparison
+      
       let totalCashCollected = 0;
-      let totalChequeCollected = 0;
-      let totalValidChequeCollected = 0; // Only cheques with past dates
+      let totalRealizedChequePayments = 0; // Only past/current dated cheques
+      let totalUnrealizedChequePayments = 0; // Future-dated cheques
       let returnedChequesAmount = 0;
       let returnedChequesCount = 0;
 
       customerCollections.forEach(collection => {
         totalCashCollected += collection.cashAmount;
         
-        // Process cheques
+        // Process cheques with proper date logic
         collection.chequeDetails?.forEach(cheque => {
+          const chequeDate = new Date(cheque.chequeDate);
+          chequeDate.setHours(23, 59, 59, 999); // Set to end of cheque date
+          
           if (cheque.status === 'returned') {
+            // Returned cheques add back to outstanding
             returnedChequesAmount += cheque.amount;
             returnedChequesCount++;
+          } else if (chequeDate <= today) {
+            // Only count cheques whose date has arrived as realized payments
+            totalRealizedChequePayments += cheque.amount;
           } else {
-            totalChequeCollected += cheque.amount;
-            
-            // Only count as valid payment if cheque date has passed
-            if (new Date(cheque.chequeDate) <= today) {
-              totalValidChequeCollected += cheque.amount;
-            }
+            // Future-dated cheques are unrealized payments
+            totalUnrealizedChequePayments += cheque.amount;
           }
         });
       });
 
       // Calculate totals
       const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
-      const totalCollectedWithAllCheques = totalCashCollected + totalChequeCollected;
-      const totalCollectedWithValidCheques = totalCashCollected + totalValidChequeCollected;
-      const outstandingWithAllCheques = totalInvoiced - totalCollectedWithAllCheques + returnedChequesAmount;
-      const outstandingWithoutFutureCheques = totalInvoiced - totalCollectedWithValidCheques + returnedChequesAmount;
+      const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments;
+      
+      // Outstanding calculation:
+      // Outstanding = Total Invoiced - Realized Payments + Returned Cheques
+      // Future cheques don't count as payments until their date arrives
+      const outstandingAmount = totalInvoiced - totalRealizedPayments + returnedChequesAmount;
+      
+      // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) + Returned Cheques
+      const totalAllPayments = totalRealizedPayments + totalUnrealizedChequePayments;
+      const outstandingWithUnrealized = totalInvoiced - totalAllPayments + returnedChequesAmount;
 
       // Create invoice summaries with proper collection calculations
       const invoiceSummaries: InvoiceSummary[] = await Promise.all(
@@ -265,10 +289,12 @@ const Collections = ({ user }: CollectionsProps) => {
           customerId,
           customerName: customer.name,
           totalInvoiced,
-          totalCollected: totalCollectedWithValidCheques,
-          outstandingAmount: outstandingWithoutFutureCheques,
-          outstandingWithCheques: outstandingWithAllCheques,
-          outstandingWithoutCheques: outstandingWithoutFutureCheques,
+          totalCollected: totalRealizedPayments,
+          unrealizedPayments: totalUnrealizedChequePayments,
+          outstandingAmount: outstandingAmount,
+          outstandingWithUnrealized: outstandingWithUnrealized,
+          outstandingWithCheques: outstandingAmount, // Same as outstanding amount now
+          outstandingWithoutCheques: outstandingAmount, // Same as outstanding amount now  
           returnedChequesAmount,
           returnedChequesCount,
           invoices: invoiceSummaries
@@ -331,6 +357,33 @@ const Collections = ({ user }: CollectionsProps) => {
         return;
       }
 
+      // Save cheque details if any
+      if (formData.chequeDetails && formData.chequeDetails.length > 0) {
+        const chequeDetailsToSave = formData.chequeDetails.map((cheque: any) => ({
+          collection_id: savedCollection.id,
+          cheque_number: cheque.chequeNumber,
+          bank_name: cheque.bankName,
+          amount: cheque.amount,
+          cheque_date: cheque.chequeDate.toISOString().split('T')[0], // Date only
+          status: 'pending' // Default status
+        }));
+
+        const { error: chequeError } = await supabase
+          .from('collection_cheques')
+          .insert(chequeDetailsToSave);
+
+        if (chequeError) {
+          console.error('Error saving cheque details:', chequeError);
+          toast({
+            title: "Warning",
+            description: "Collection saved but cheque details failed to save",
+            variant: "destructive",
+          });
+        } else {
+          console.log('Cheque details saved successfully');
+        }
+      }
+
       // If this is a direct payment, create allocations immediately
       if (formData.paymentType === 'direct' && formData.invoiceAllocations && formData.invoiceAllocations.length > 0) {
         const allocations = formData.invoiceAllocations.map((allocation: any) => ({
@@ -367,7 +420,14 @@ const Collections = ({ user }: CollectionsProps) => {
         cashAmount: savedCollection.cash_amount,
         chequeAmount: savedCollection.cheque_amount,
         cashDate: new Date(savedCollection.cash_date),
-        chequeDetails: [], // You might want to save cheque details separately
+        chequeDetails: (formData.chequeDetails || []).map((cheque: any) => ({
+          id: `temp-${Date.now()}-${Math.random()}`, // Temporary ID for display
+          chequeNumber: cheque.chequeNumber,
+          bankName: cheque.bankName,
+          amount: cheque.amount,
+          chequeDate: new Date(cheque.chequeDate),
+          status: 'pending'
+        })),
         notes: savedCollection.notes,
         gpsCoordinates: {
           latitude: savedCollection.latitude,
@@ -380,7 +440,10 @@ const Collections = ({ user }: CollectionsProps) => {
 
       handleCollectionCreated(transformedCollection);
       
-      const successMessage = "Payment recorded and allocated to invoices successfully";
+      const chequeCount = formData.chequeDetails?.length || 0;
+      const successMessage = chequeCount > 0 
+        ? `Payment recorded with ${chequeCount} cheque${chequeCount > 1 ? 's' : ''} and allocated to invoices successfully`
+        : "Payment recorded and allocated to invoices successfully";
       
       toast({
         title: "Success",
@@ -546,7 +609,7 @@ const Collections = ({ user }: CollectionsProps) => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
               <div className="text-center p-4 bg-blue-50 rounded-lg">
                 <div className="text-xl font-bold text-blue-600">
                   LKR {customerInvoiceSummary.totalInvoiced.toLocaleString()}
@@ -557,19 +620,25 @@ const Collections = ({ user }: CollectionsProps) => {
                 <div className="text-xl font-bold text-green-600">
                   LKR {customerInvoiceSummary.totalCollected.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">Total Collected</div>
+                <div className="text-sm text-gray-600">Realized Payments</div>
+              </div>
+              <div className="text-center p-4 bg-yellow-50 rounded-lg">
+                <div className="text-xl font-bold text-yellow-600">
+                  LKR {customerInvoiceSummary.unrealizedPayments.toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600">Unrealized Payments</div>
               </div>
               <div className="text-center p-4 bg-red-50 rounded-lg">
                 <div className="text-xl font-bold text-red-600">
-                  LKR {customerInvoiceSummary.outstandingWithCheques.toLocaleString()}
+                  LKR {customerInvoiceSummary.outstandingAmount.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">Outstanding (With Cheques)</div>
+                <div className="text-sm text-gray-600">Outstanding Amount</div>
               </div>
               <div className="text-center p-4 bg-orange-50 rounded-lg">
                 <div className="text-xl font-bold text-orange-600">
-                  LKR {customerInvoiceSummary.outstandingWithoutCheques.toLocaleString()}
+                  LKR {customerInvoiceSummary.outstandingWithUnrealized.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">Outstanding (Without Future Cheques)</div>
+                <div className="text-sm text-gray-600">Outstanding with Unrealized</div>
               </div>
               <div className="text-center p-4 bg-purple-50 rounded-lg">
                 <div className="text-xl font-bold text-purple-600">
