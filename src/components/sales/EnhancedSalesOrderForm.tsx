@@ -15,6 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import { useDraftSalesOrder } from '@/hooks/useDraftSalesOrder';
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
+import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 
 interface EnhancedSalesOrderFormProps {
   user: User;
@@ -62,8 +63,20 @@ const EnhancedSalesOrderForm = ({
   const [gpsCoordinates, setGpsCoordinates] = useState({ latitude: 0, longitude: 0 });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [agencyPriceType, setAgencyPriceType] = useState<PriceType>('billing_price');
   const { toast } = useToast();
   const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
+
+  // Load agency pricing preference
+  useEffect(() => {
+    const loadAgencyPricing = async () => {
+      if (user.agencyId) {
+        const priceType = await getAgencyPriceType(user.agencyId);
+        setAgencyPriceType(priceType);
+      }
+    };
+    loadAgencyPricing();
+  }, [user.agencyId]);
 
   // Load draft or editing order on mount
   useEffect(() => {
@@ -97,7 +110,8 @@ const EnhancedSalesOrderForm = ({
       setOrderSummary(draftItems);
       setDiscountPercentage(draft.discountPercentage);
     }
-  }, [editingOrder, draft, customers, isEditing]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingOrder?.id, draft.customerId, customers.length, isEditing]);
 
   // Save to draft on changes
   useEffect(() => {
@@ -110,7 +124,7 @@ const EnhancedSalesOrderForm = ({
     if (!isEditing) {
       updateItems(orderSummary);
     }
-  }, [orderSummary, isEditing]);
+  }, [orderSummary, isEditing, updateItems]);
 
   // Remove automatic discount draft updates to prevent infinite loop
   // Discount will be saved when user manually changes it
@@ -255,8 +269,8 @@ const EnhancedSalesOrderForm = ({
             color: gridItem.color,
             size: sizeItem.size,
             quantity: sizeItem.quantity,
-            unitPrice: gridItem.product.sellingPrice,
-            total: gridItem.product.sellingPrice * sizeItem.quantity
+            unitPrice: getProductPriceForAgency(gridItem.product, agencyPriceType),
+            total: getProductPriceForAgency(gridItem.product, agencyPriceType) * sizeItem.quantity
           });
         }
       });
