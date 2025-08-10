@@ -94,8 +94,8 @@ const EnhancedSalesOrderForm = ({
       }));
       setOrderSummary(orderItems);
       updateItems(orderItems);
-      setDiscountPercentage(editingOrder.discountPercentage || 20);
-      updateDiscount(editingOrder.discountPercentage || 20);
+      setDiscountPercentage(editingOrder.discountPercentage || 0);
+      updateDiscount(editingOrder.discountPercentage || 0);
     } else if (draft.customerId && !isEditing) {
       // Load from draft
       const customer = customers.find(c => c.id === draft.customerId);
@@ -137,7 +137,7 @@ const EnhancedSalesOrderForm = ({
     setSelectedCustomer(null);
     changeCustomer();
     setOrderSummary([]);
-    setDiscountPercentage(20);
+    setDiscountPercentage(0);
     toast({
       title: "Customer Changed",
       description: "Order has been reset due to customer change"

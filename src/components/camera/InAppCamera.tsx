@@ -110,9 +110,18 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
 
   const confirmPhoto = () => {
     if (capturedPhoto) {
-      onPhotoTaken(capturedPhoto);
+      console.log('InAppCamera: confirmPhoto called with photo data length:', capturedPhoto.length);
+      // Store the photo data before clearing state
+      const photoDataToSend = capturedPhoto;
+      
+      // Clear the captured photo state first
       setCapturedPhoto('');
-      // Don't call onCancel() here - let the parent component handle closing
+      
+      // Then send the photo data to parent
+      console.log('InAppCamera: Calling onPhotoTaken with photo data');
+      onPhotoTaken(photoDataToSend);
+    } else {
+      console.log('InAppCamera: confirmPhoto called but no capturedPhoto available');
     }
   };
 

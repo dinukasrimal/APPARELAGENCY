@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Search, Eye, Printer, FileText, Truck, Signature, MapPin, CheckCircle } from 'lucide-react';
+import { Search, Eye, Printer, FileText, Truck, CheckCircle, Signature, MapPin } from 'lucide-react';
 import InvoiceDetails from './InvoiceDetails';
 import PrintableInvoice from './PrintableInvoice';
 import { useToast } from '@/hooks/use-toast';
@@ -65,24 +65,93 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
   };
 
   const handleMarkForDelivery = async (invoiceId: string) => {
-    // Check if delivery already exists
-    const existingDelivery = getDeliveryForInvoice(invoiceId);
-    
-    if (existingDelivery) {
-      toast({
-        title: 'Delivery Already Exists',
-        description: 'This invoice is already marked for delivery',
-        variant: 'destructive',
-      });
-      return;
-    }
-
     // Show signature capture modal
     setCurrentInvoiceId(invoiceId);
     setShowSignatureModal(true);
     setSignature(null);
     setReceivedByName('');
     setDeliveryNotes('');
+  };
+
+  const handleSubmitSignature = async () => {
+    if (!currentInvoiceId || !signature || !receivedByName.trim()) {
+      toast({
+        title: 'Missing Information',
+        description: 'Please provide signature and receiver name',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setMarkingForDelivery(currentInvoiceId);
+    try {
+      // Capture GPS coordinates
+      const coordinates = await captureGPS();
+      
+      // Check if delivery already exists
+      const { data: existingDelivery } = await supabase
+        .from('deliveries')
+        .select('*')
+        .eq('invoice_id', currentInvoiceId)
+        .single();
+
+      if (existingDelivery) {
+        // Update existing delivery to delivered status with signature and GPS
+        const { error } = await supabase
+          .from('deliveries')
+          .update({
+            status: 'delivered',
+            delivery_agent_id: user.id,
+            delivery_latitude: coordinates.latitude,
+            delivery_longitude: coordinates.longitude,
+            delivery_signature: signature,
+            delivery_notes: deliveryNotes.trim() || null,
+            received_by_name: receivedByName.trim(),
+            delivered_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existingDelivery.id);
+
+        if (error) throw error;
+      } else {
+        // Create new delivery record with delivered status
+        const { error } = await supabase
+          .from('deliveries')
+          .insert({
+            invoice_id: currentInvoiceId,
+            delivery_agent_id: user.id,
+            agency_id: user.agencyId,
+            status: 'delivered',
+            delivery_latitude: coordinates.latitude,
+            delivery_longitude: coordinates.longitude,
+            delivery_signature: signature,
+            delivery_notes: deliveryNotes.trim() || null,
+            received_by_name: receivedByName.trim(),
+            delivered_at: new Date().toISOString(),
+            created_by: user.id
+          });
+
+        if (error) throw error;
+      }
+
+      toast({
+        title: 'Delivery Completed',
+        description: `Invoice delivered successfully to ${receivedByName}`,
+      });
+
+      setShowSignatureModal(false);
+      setCurrentInvoiceId(null);
+      if (onRefresh) onRefresh();
+    } catch (error) {
+      console.error('Error marking for delivery:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to mark invoice for delivery',
+        variant: 'destructive',
+      });
+    } finally {
+      setMarkingForDelivery(null);
+    }
   };
 
   const captureGPS = async () => {
@@ -110,60 +179,6 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
         latitude: 7.8731 + Math.random() * 0.01,
         longitude: 80.7718 + Math.random() * 0.01
       };
-    }
-  };
-
-  const handleCompleteDelivery = async () => {
-    if (!currentInvoiceId || !signature || !receivedByName.trim()) {
-      toast({
-        title: 'Missing Information',
-        description: 'Please provide signature and receiver name',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setMarkingForDelivery(currentInvoiceId);
-    try {
-      // Capture GPS coordinates
-      const coordinates = await captureGPS();
-      
-      // Create delivery record with delivered status
-      const { error } = await supabase
-        .from('deliveries')
-        .insert({
-          invoice_id: currentInvoiceId,
-          delivery_agent_id: user.id,
-          agency_id: user.agencyId,
-          status: 'delivered',
-          delivered_at: new Date().toISOString(),
-          delivery_latitude: coordinates.latitude,
-          delivery_longitude: coordinates.longitude,
-          delivery_signature: signature,
-          delivery_notes: deliveryNotes.trim() || null,
-          received_by_name: receivedByName.trim(),
-          created_by: user.id
-        });
-
-      if (error) throw error;
-
-      toast({
-        title: 'Delivery Completed',
-        description: `Invoice delivered successfully to ${receivedByName}`,
-      });
-
-      setShowSignatureModal(false);
-      setCurrentInvoiceId(null);
-      if (onRefresh) onRefresh();
-    } catch (error) {
-      console.error('Error completing delivery:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to complete delivery',
-        variant: 'destructive',
-      });
-    } finally {
-      setMarkingForDelivery(null);
     }
   };
 
@@ -329,26 +344,35 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
                       </Button>
                       {(() => {
                         const existingDelivery = getDeliveryForInvoice(invoice.id);
-                        if (existingDelivery) {
+                        if (existingDelivery && existingDelivery.status === 'delivered') {
                           return (
                             <Badge variant="default" className="text-xs px-2 py-1 bg-green-100 text-green-800">
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Delivered
                             </Badge>
                           );
+                        } else if (existingDelivery && existingDelivery.status === 'out_for_delivery') {
+                          return (
+                            <Badge variant="outline" className="text-xs px-2 py-1 bg-blue-100 text-blue-800">
+                              <Truck className="h-3 w-3 mr-1" />
+                              Out for Delivery
+                            </Badge>
+                          );
+                        } else if (!existingDelivery || existingDelivery.status === 'pending') {
+                          return (
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              className="bg-green-600 hover:bg-green-700 text-white text-xs h-7 md:h-8"
+                              onClick={() => handleMarkForDelivery(invoice.id)}
+                              disabled={markingForDelivery === invoice.id}
+                            >
+                              <Truck className="h-3 w-3 md:h-4 md:w-4 mr-1" />
+                              {markingForDelivery === invoice.id ? 'Processing...' : 'Mark for Delivery'}
+                            </Button>
+                          );
                         }
-                        return (
-                          <Button 
-                            size="sm" 
-                            variant="outline"
-                            className="bg-green-600 hover:bg-green-700 text-white text-xs h-7 md:h-8"
-                            onClick={() => handleMarkForDelivery(invoice.id)}
-                            disabled={markingForDelivery === invoice.id}
-                          >
-                            <Truck className="h-3 w-3 md:h-4 md:w-4 mr-1" />
-                            {markingForDelivery === invoice.id ? 'Processing...' : 'Mark for Delivery'}
-                          </Button>
-                        );
+                        return null;
                       })()}
                     </div>
                   </div>
@@ -365,7 +389,7 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Signature className="h-5 w-5" />
-              Complete Delivery
+              Mark for Delivery
             </DialogTitle>
           </DialogHeader>
           
@@ -376,7 +400,7 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
                 id="receivedBy"
                 value={receivedByName}
                 onChange={(e) => setReceivedByName(e.target.value)}
-                placeholder="Name of person who received the items"
+                placeholder="Name of person who will receive the items"
               />
             </div>
 
@@ -393,7 +417,7 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
 
             {/* Signature Capture */}
             <div>
-              <Label>Customer Signature (Required)</Label>
+              <Label>Agent/Customer Signature (Required)</Label>
               <div className="border rounded-lg p-4 bg-white">
                 <canvas
                   ref={canvasRef}
@@ -437,12 +461,12 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
               Cancel
             </Button>
             <Button
-              onClick={handleCompleteDelivery}
+              onClick={handleSubmitSignature}
               disabled={!receivedByName.trim() || !signature || markingForDelivery === currentInvoiceId}
               className="bg-green-600 hover:bg-green-700"
             >
-              <CheckCircle className="h-4 w-4 mr-2" />
-              {markingForDelivery === currentInvoiceId ? 'Completing...' : 'Complete Delivery'}
+              <Truck className="h-4 w-4 mr-2" />
+              {markingForDelivery === currentInvoiceId ? 'Processing...' : 'Mark for Delivery'}
             </Button>
           </DialogFooter>
         </DialogContent>

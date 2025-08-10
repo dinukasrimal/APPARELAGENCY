@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { AlertCircle, Camera, MapPin, Package, Plus, Search, Calendar, User as UserIcon } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { supabase } from '@/integrations/supabase/client';
-import { useToast } from '@/components/ui/use-toast';
+import { useToast } from '@/hooks/use-toast';
 import InAppCamera from '@/components/camera/InAppCamera';
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import { Customer } from '@/types/customer';
@@ -33,7 +33,7 @@ interface AssetsProps {
   user: User;
 }
 
-const Assets = ({ user }: AssetsProps) => {
+const Assets = memo(({ user }: AssetsProps) => {
   console.log('Assets component mounting with user:', user);
   
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -51,7 +51,113 @@ const Assets = ({ user }: AssetsProps) => {
   const [filterAssetType, setFilterAssetType] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
+  const photoRef = useRef<string>(''); // Backup reference for photo data
   const { toast } = useToast();
+
+  // localStorage keys for persisting data
+  const PHOTO_STORAGE_KEY = `assets_photo_${user.id}`;
+  const DIALOG_STATE_KEY = `assets_dialog_${user.id}`;
+  const FORM_DATA_KEY = `assets_form_${user.id}`;
+
+  // Save photo to localStorage
+  const savePhotoToStorage = (photoData: string) => {
+    try {
+      localStorage.setItem(PHOTO_STORAGE_KEY, photoData);
+      console.log('Assets: Photo saved to localStorage, length:', photoData.length);
+    } catch (error) {
+      console.error('Assets: Failed to save photo to localStorage:', error);
+    }
+  };
+
+  // Load photo from localStorage
+  const loadPhotoFromStorage = (): string => {
+    try {
+      const savedPhoto = localStorage.getItem(PHOTO_STORAGE_KEY) || '';
+      console.log('Assets: Photo loaded from localStorage, length:', savedPhoto.length);
+      return savedPhoto;
+    } catch (error) {
+      console.error('Assets: Failed to load photo from localStorage:', error);
+      return '';
+    }
+  };
+
+  // Clear photo from localStorage
+  const clearPhotoFromStorage = () => {
+    try {
+      localStorage.removeItem(PHOTO_STORAGE_KEY);
+      console.log('Assets: Photo cleared from localStorage');
+    } catch (error) {
+      console.error('Assets: Failed to clear photo from localStorage:', error);
+    }
+  };
+
+  // Save dialog and form state to localStorage
+  const saveFormStateToStorage = () => {
+    try {
+      const formState = {
+        dialogOpen,
+        assetType,
+        description,
+        selectedCustomerId: selectedCustomer?.id || null,
+        latitude,
+        longitude
+      };
+      
+      // Force dialog to be open if we have photo data
+      const hasPhoto = photo || photoRef.current;
+      const shouldKeepDialogOpen = dialogOpen || hasPhoto;
+      
+      localStorage.setItem(FORM_DATA_KEY, JSON.stringify(formState));
+      localStorage.setItem(DIALOG_STATE_KEY, JSON.stringify({ dialogOpen: shouldKeepDialogOpen }));
+      console.log('Assets: Form and dialog state saved to localStorage, forcedOpen:', shouldKeepDialogOpen);
+    } catch (error) {
+      console.error('Assets: Failed to save form state to localStorage:', error);
+    }
+  };
+
+  // Load dialog and form state from localStorage
+  const loadFormStateFromStorage = () => {
+    try {
+      const dialogStateStr = localStorage.getItem(DIALOG_STATE_KEY);
+      const formStateStr = localStorage.getItem(FORM_DATA_KEY);
+      
+      if (dialogStateStr) {
+        const dialogState = JSON.parse(dialogStateStr);
+        console.log('Assets: Restoring dialog state:', dialogState);
+        if (dialogState.dialogOpen) {
+          setDialogOpen(true);
+        }
+      }
+      
+      if (formStateStr) {
+        const formState = JSON.parse(formStateStr);
+        console.log('Assets: Restoring form state:', formState);
+        
+        if (formState.assetType) setAssetType(formState.assetType);
+        if (formState.description) setDescription(formState.description);
+        if (formState.latitude) setLatitude(formState.latitude);
+        if (formState.longitude) setLongitude(formState.longitude);
+        
+        // We'll handle customer restoration separately since it needs the customers array
+        return formState;
+      }
+    } catch (error) {
+      console.error('Assets: Failed to load form state from localStorage:', error);
+    }
+    return null;
+  };
+
+  // Clear all localStorage data
+  const clearAllStorageData = () => {
+    try {
+      localStorage.removeItem(PHOTO_STORAGE_KEY);
+      localStorage.removeItem(DIALOG_STATE_KEY);
+      localStorage.removeItem(FORM_DATA_KEY);
+      console.log('Assets: All storage data cleared');
+    } catch (error) {
+      console.error('Assets: Failed to clear storage data:', error);
+    }
+  };
 
   const assetTypes = [
     'Rack',
@@ -65,9 +171,98 @@ const Assets = ({ user }: AssetsProps) => {
   ];
 
   useEffect(() => {
+    // Test database connection first
+    testDatabaseConnection();
     fetchCustomers();
     fetchAssets();
+    
+    // Load photo from localStorage if it exists
+    const savedPhoto = loadPhotoFromStorage();
+    if (savedPhoto) {
+      setPhoto(savedPhoto);
+      photoRef.current = savedPhoto;
+      console.log('Assets: Restored photo from localStorage on mount');
+    }
+    
+    // Load form and dialog state from localStorage
+    const formState = loadFormStateFromStorage();
+    
+    // If we have a photo but dialog is closed, reopen it (recovery from re-mount)
+    setTimeout(() => {
+      const currentPhoto = loadPhotoFromStorage();
+      if (currentPhoto && !dialogOpen) {
+        console.log('Assets: Found orphaned photo, reopening dialog for recovery');
+        setDialogOpen(true);
+      }
+    }, 500);
   }, []);
+
+  const testDatabaseConnection = async () => {
+    try {
+      console.log('Assets: Testing database connection to customer_assets table...');
+      
+      // Test 1: Check if table exists and is accessible
+      const { data: tableTest, error: tableError } = await supabase
+        .from('customer_assets')
+        .select('count')
+        .limit(0);
+        
+      console.log('Assets: Table access test result:', { tableTest, tableError });
+      
+      if (tableError) {
+        console.error('Assets: Database table access failed:', tableError);
+        toast({
+          title: "Database Error",
+          description: `Cannot access customer_assets table: ${tableError.message}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      // Test 2: Check RLS policies by trying a simple select
+      const { data: policyTest, error: policyError } = await supabase
+        .from('customer_assets')
+        .select('id')
+        .limit(1);
+        
+      console.log('Assets: RLS policy test result:', { policyTest, policyError });
+      
+      if (policyError) {
+        console.error('Assets: RLS policy test failed:', policyError);
+        toast({
+          title: "Permission Error", 
+          description: `Database access restricted: ${policyError.message}`,
+          variant: "destructive",
+        });
+      } else {
+        console.log('Assets: Database connection and RLS policies working correctly');
+      }
+    } catch (error) {
+      console.error('Assets: Database connection test failed:', error);
+      toast({
+        title: "Database Error",
+        description: "Failed to connect to database",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Debug photo state changes and restore from ref if lost
+  useEffect(() => {
+    console.log('Assets: Photo state changed, photo length:', photo ? photo.length : 0);
+    console.log('Assets: Photo ref has data:', photoRef.current ? photoRef.current.length : 0);
+    
+    // If photo state is empty but ref has data, restore it
+    if (!photo && photoRef.current) {
+      console.log('Assets: Restoring photo from ref');
+      setPhoto(photoRef.current);
+    }
+  }, [photo]);
+
+  // Save form state whenever it changes
+  useEffect(() => {
+    saveFormStateToStorage();
+  }, [dialogOpen, assetType, description, selectedCustomer, latitude, longitude]);
 
   const fetchCustomers = async () => {
     try {
@@ -186,25 +381,64 @@ const Assets = ({ user }: AssetsProps) => {
     setAssetType('');
     setDescription('');
     setPhoto('');
+    photoRef.current = ''; // Clear ref backup too
     setLatitude(null);
     setLongitude(null);
+    clearAllStorageData(); // Clear all localStorage data
   };
 
   const handleDialogOpenChange = (open: boolean) => {
+    console.log('Assets: handleDialogOpenChange called with:', open);
+    console.trace('Assets: Dialog open change stack trace');
     setDialogOpen(open);
     if (open) {
       resetForm(); // Reset form when opening dialog
     }
   };
 
-  const handlePhotoTaken = (photoData: string) => {
+  const handlePhotoTaken = useCallback((photoData: string) => {
+    console.log('Assets: handlePhotoTaken called with photo data length:', photoData.length);
+    
+    // Ensure we have valid photo data
+    if (!photoData || !photoData.startsWith('data:image/')) {
+      console.error('Assets: Invalid photo data received');
+      toast({
+        title: "Photo Error",
+        description: "Invalid photo data received",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    console.log('Assets: Setting photo state with data length:', photoData.length);
+    photoRef.current = photoData; // Store in ref as backup
+    savePhotoToStorage(photoData); // Save to localStorage
     setPhoto(photoData);
-    setShowCamera(false); // Close camera after photo is taken
-    getCurrentLocation();
-  };
+    console.log('Assets: photo state updated, stored in ref and localStorage');
+    
+    // Use setTimeout to ensure state update completes before closing camera
+    setTimeout(() => {
+      console.log('Assets: closing camera');
+      setShowCamera(false);
+      getCurrentLocation();
+      console.log('Assets: getCurrentLocation called');
+      
+      // Ensure dialog stays open after photo is taken
+      setTimeout(() => {
+        if (!dialogOpen) {
+          console.log('Assets: Reopening dialog after photo taken');
+          setDialogOpen(true);
+        }
+      }, 200);
+    }, 100);
+  }, [toast]); // Include toast in dependencies
 
   const handleAddAsset = async () => {
+    console.log('handleAddAsset called');
+    console.log('Form data:', { selectedCustomer, assetType, description, photo: !!photo, latitude, longitude });
+    
     if (!selectedCustomer || !assetType || !description || !photo) {
+      console.log('Validation failed - missing fields');
       toast({
         title: "Missing Information",
         description: "Please fill in all required fields and take a photo.",
@@ -214,36 +448,78 @@ const Assets = ({ user }: AssetsProps) => {
     }
 
     try {
+      console.log('Starting asset insertion...');
       setSaving(true);
 
-      const { data, error } = await supabase
-        .from('customer_assets')
-        .insert([
-          {
-            customer_id: selectedCustomer.id,
-            asset_type: assetType,
-            description: description,
-            photo_url: photo,
-            latitude: latitude,
-            longitude: longitude,
-            given_by: user.name,
-          }
-        ])
-        .select(`
-          *,
-          customer:customers(id, name, address, phone)
-        `);
-
-      if (error) {
-        console.error('Error adding asset:', error);
+      const assetData = {
+        customer_id: selectedCustomer.id,
+        asset_type: assetType,
+        description: description,
+        photo_url: photo,
+        latitude: latitude,
+        longitude: longitude,
+        given_by: user.name,
+      };
+      
+      console.log('Asset data to insert:', assetData);
+      console.log('User details:', { userId: user.id, userAgencyId: user.agencyId, userName: user.name });
+      console.log('Selected customer details:', { 
+        customerId: selectedCustomer.id, 
+        customerName: selectedCustomer.name,
+        customerAgencyId: selectedCustomer.agencyId
+      });
+      
+      // Check if customer belongs to user's agency
+      if (selectedCustomer.agencyId !== user.agencyId && user.role !== 'superuser') {
+        console.error('Agency mismatch - Customer agency:', selectedCustomer.agencyId, 'User agency:', user.agencyId);
         toast({
-          title: "Error",
-          description: "Failed to add asset",
+          title: "Permission Error",
+          description: "You can only add assets to customers in your agency",
           variant: "destructive",
         });
         return;
       }
 
+      // Test database connection first
+      console.log('Testing database connection...');
+      const { data: testData, error: testError } = await supabase
+        .from('customer_assets')
+        .select('id')
+        .limit(1);
+      
+      console.log('Database test result:', { testData, testError });
+
+      const { data, error } = await supabase
+        .from('customer_assets')
+        .insert([assetData])
+        .select(`
+          *,
+          customer:customers(id, name, address, phone)
+        `);
+
+      console.log('Supabase response:', { data, error });
+
+      if (error) {
+        console.error('Supabase error details:', error);
+        toast({
+          title: "Database Error",
+          description: `Failed to add asset: ${error.message}`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        console.error('No data returned from insert');
+        toast({
+          title: "Error",
+          description: "No data returned from database",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      console.log('Asset added successfully:', data);
       toast({
         title: "Asset Added",
         description: "Asset has been successfully added to the customer.",
@@ -251,21 +527,25 @@ const Assets = ({ user }: AssetsProps) => {
 
       setAssets(prev => [...(data || []), ...prev]);
       
+      // Clear all form data and storage
       setSelectedCustomer(null);
       setAssetType('');
       setDescription('');
       setPhoto('');
+      photoRef.current = '';
       setLatitude(null);
       setLongitude(null);
       setDialogOpen(false);
+      clearAllStorageData(); // Clear all localStorage data
     } catch (error) {
-      console.error('Error adding asset:', error);
+      console.error('Catch block error:', error);
       toast({
         title: "Error",
-        description: "Failed to add asset",
+        description: `Failed to add asset: ${error instanceof Error ? error.message : 'Unknown error'}`,
         variant: "destructive",
       });
     } finally {
+      console.log('Setting saving to false');
       setSaving(false);
     }
   };
@@ -368,7 +648,11 @@ const Assets = ({ user }: AssetsProps) => {
                         alt="Asset preview" 
                         className="w-full h-32 object-cover rounded-lg border"
                       />
+                      <p className="text-xs text-gray-500 mt-1">Photo captured (Length: {photo.length})</p>
                     </div>
+                  )}
+                  {!photo && (
+                    <p className="text-xs text-gray-500 mt-1">No photo taken yet</p>
                   )}
                 </div>
               </div>
@@ -384,9 +668,13 @@ const Assets = ({ user }: AssetsProps) => {
 
               <div className="flex gap-2">
                 <Button 
-                  onClick={handleAddAsset} 
+                  onClick={() => {
+                    console.log('Add Asset button clicked');
+                    handleAddAsset();
+                  }} 
                   disabled={saving}
                   className="flex-1"
+                  type="button"
                 >
                   {saving ? 'Adding...' : 'Add Asset'}
                 </Button>
@@ -530,6 +818,8 @@ const Assets = ({ user }: AssetsProps) => {
       </div>
     );
   }
-};
+});
+
+Assets.displayName = 'Assets';
 
 export default Assets;

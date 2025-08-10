@@ -16,7 +16,7 @@ export const useDraftSalesOrder = () => {
     customerId: null,
     customerName: '',
     items: [],
-    discountPercentage: 20,
+    discountPercentage: 0,
     isDraft: true,
     lastModified: new Date()
   });
@@ -83,7 +83,7 @@ export const useDraftSalesOrder = () => {
       customerId: null,
       customerName: '',
       items: [],
-      discountPercentage: 20,
+      discountPercentage: 0,
       isDraft: true,
       lastModified: new Date()
     };
@@ -104,7 +104,7 @@ export const useDraftSalesOrder = () => {
       customerId: null,
       customerName: '',
       items: [],
-      discountPercentage: 20
+      discountPercentage: 0
     });
   }, [saveDraft]);
 
