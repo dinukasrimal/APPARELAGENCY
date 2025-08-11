@@ -574,8 +574,8 @@ const Assets = memo(({ user }: AssetsProps) => {
 
   try {
     return (
-      <div className="p-6 space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div className="p-3 md:p-6 space-y-4 md:space-y-6 touch-manipulation">
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 md:gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Customer Assets</h1>
           <p className="text-gray-600">Manage assets given to customers</p>
@@ -583,16 +583,16 @@ const Assets = memo(({ user }: AssetsProps) => {
         
         <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
           <DialogTrigger asChild>
-            <Button className="flex items-center gap-2">
+            <Button className="flex items-center gap-2 touch-manipulation h-11 md:h-10 text-base md:text-sm px-6 md:px-4">
               <Plus className="h-4 w-4" />
               Add Asset
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[500px]">
+          <DialogContent className="sm:max-w-[500px] mx-2 md:mx-auto max-h-[95vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Add New Asset</DialogTitle>
             </DialogHeader>
-            <div className="space-y-4">
+            <div className="space-y-4 md:space-y-3">
               <div>
                 <Label htmlFor="customer">Customer *</Label>
                 <CustomerSearch
@@ -636,7 +636,7 @@ const Assets = memo(({ user }: AssetsProps) => {
                     type="button" 
                     variant="outline" 
                     onClick={() => setShowCamera(true)}
-                    className="w-full flex items-center gap-2"
+                    className="w-full flex items-center gap-2 touch-manipulation h-12 md:h-10 text-base md:text-sm"
                   >
                     <Camera className="h-4 w-4" />
                     Take Photo
@@ -666,14 +666,14 @@ const Assets = memo(({ user }: AssetsProps) => {
                 </Alert>
               )}
 
-              <div className="flex gap-2">
+              <div className="flex gap-3 md:gap-2">
                 <Button 
                   onClick={() => {
                     console.log('Add Asset button clicked');
                     handleAddAsset();
                   }} 
                   disabled={saving}
-                  className="flex-1"
+                  className="flex-1 touch-manipulation h-12 md:h-10 text-base md:text-sm"
                   type="button"
                 >
                   {saving ? 'Adding...' : 'Add Asset'}
@@ -685,6 +685,7 @@ const Assets = memo(({ user }: AssetsProps) => {
                     setDialogOpen(false);
                   }}
                   disabled={saving}
+                  className="touch-manipulation h-12 md:h-10 text-base md:text-sm px-6 md:px-4"
                 >
                   Cancel
                 </Button>
@@ -694,19 +695,19 @@ const Assets = memo(({ user }: AssetsProps) => {
         </Dialog>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-4">
         <div className="relative">
           <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
           <Input
             placeholder="Search assets..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
+            className="pl-10 touch-manipulation h-11 md:h-10 text-base md:text-sm"
           />
         </div>
         
         <Select value={filterCustomer} onValueChange={setFilterCustomer}>
-          <SelectTrigger>
+          <SelectTrigger className="touch-manipulation h-11 md:h-10 text-base md:text-sm">
             <SelectValue placeholder="Filter by customer" />
           </SelectTrigger>
           <SelectContent>
@@ -720,7 +721,7 @@ const Assets = memo(({ user }: AssetsProps) => {
         </Select>
 
         <Select value={filterAssetType} onValueChange={setFilterAssetType}>
-          <SelectTrigger>
+          <SelectTrigger className="touch-manipulation h-11 md:h-10 text-base md:text-sm">
             <SelectValue placeholder="Filter by asset type" />
           </SelectTrigger>
           <SelectContent>
@@ -734,9 +735,9 @@ const Assets = memo(({ user }: AssetsProps) => {
         </Select>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
         {filteredAssets.map((asset) => (
-          <Card key={asset.id} className="overflow-hidden">
+          <Card key={asset.id} className="overflow-hidden touch-manipulation hover:shadow-lg transition-shadow duration-200">
             <div className="aspect-video bg-gray-100 relative">
               <img 
                 src={asset.photo_url} 
@@ -747,34 +748,34 @@ const Assets = memo(({ user }: AssetsProps) => {
                 {asset.asset_type}
               </Badge>
             </div>
-            <CardContent className="p-4">
-              <div className="space-y-2">
+            <CardContent className="p-3 md:p-4">
+              <div className="space-y-2 md:space-y-1.5">
                 <div className="flex items-center gap-2">
                   <Package className="h-4 w-4 text-blue-600" />
-                  <span className="font-medium">{asset.asset_type}</span>
+                  <span className="font-medium text-base md:text-sm">{asset.asset_type}</span>
                 </div>
                 
-                <p className="text-sm text-gray-600">{asset.description}</p>
+                <p className="text-base md:text-sm text-gray-600 leading-relaxed md:leading-normal">{asset.description}</p>
                 
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                  <UserIcon className="h-3 w-3" />
-                  <span>{asset.customer?.name}</span>
+                <div className="flex items-center gap-2 text-sm md:text-xs text-gray-500">
+                  <UserIcon className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate">{asset.customer?.name}</span>
                 </div>
                 
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                  <Calendar className="h-3 w-3" />
+                <div className="flex items-center gap-2 text-sm md:text-xs text-gray-500">
+                  <Calendar className="h-3 w-3 flex-shrink-0" />
                   <span>{new Date(asset.created_at).toLocaleDateString()}</span>
                 </div>
                 
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                  <UserIcon className="h-3 w-3" />
-                  <span>Given by: {asset.given_by}</span>
+                <div className="flex items-center gap-2 text-sm md:text-xs text-gray-500">
+                  <UserIcon className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate">Given by: {asset.given_by}</span>
                 </div>
                 
                 {asset.latitude && asset.longitude && (
-                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <MapPin className="h-3 w-3" />
-                    <span>
+                  <div className="flex items-center gap-2 text-sm md:text-xs text-gray-500">
+                    <MapPin className="h-3 w-3 flex-shrink-0" />
+                    <span className="font-mono text-xs">
                       {asset.latitude.toFixed(4)}, {asset.longitude.toFixed(4)}
                     </span>
                   </div>

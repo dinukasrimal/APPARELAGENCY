@@ -283,28 +283,28 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
   const totalProducts = categories.reduce((sum, cat) => sum + cat.products.length, 0);
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-hidden">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4 touch-manipulation">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-7xl max-h-[95vh] overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b bg-gradient-to-r from-blue-50 to-purple-50">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 md:p-6 border-b bg-gradient-to-r from-blue-50 to-purple-50 gap-3 sm:gap-0">
           <div>
             <h2 className="text-xl font-semibold">Stock Count - All Products</h2>
             <p className="text-sm text-gray-600">
               {totalProducts} products across {categories.length} categories
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            <Badge variant="secondary">
+          <div className="flex items-center gap-3 md:gap-4">
+            <Badge variant="secondary" className="text-sm px-3 py-1">
               {totalVariations} Changes
             </Badge>
-            <Button variant="ghost" onClick={onClose} className="p-2">
+            <Button variant="ghost" onClick={onClose} className="p-2 touch-manipulation hover:bg-gray-100" size="sm">
               <X className="h-5 w-5" />
             </Button>
           </div>
         </div>
 
         {/* Batch Name */}
-        <div className="p-4 border-b bg-gray-50">
+        <div className="p-3 md:p-4 border-b bg-gray-50">
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Batch Name:
           </label>
@@ -312,31 +312,31 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
             value={batchName}
             onChange={(e) => setBatchName(e.target.value)}
             placeholder="Enter batch name..."
-            className="max-w-md"
+            className="w-full md:max-w-md text-base md:text-sm touch-manipulation"
           />
         </div>
 
         {/* All Products by Category */}
-        <div className="p-6 overflow-y-auto max-h-[60vh]">
-          <div className="space-y-8">
+        <div className="p-3 md:p-6 overflow-y-auto max-h-[65vh] md:max-h-[60vh]">
+          <div className="space-y-4 md:space-y-8">
             {categories.map((category, categoryIndex) => (
               <div key={category.name} className="border rounded-lg">
-                <div className="bg-gray-50 px-4 py-3 border-b">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-medium">{category.name}</h3>
+                <div className="bg-gray-50 px-3 md:px-4 py-3 border-b">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0">
+                    <h3 className="text-base md:text-lg font-medium">{category.name}</h3>
                     <div className="text-sm text-gray-600">
                       {category.products.length} products
                     </div>
                   </div>
                 </div>
 
-                <div className="p-4 space-y-3">
+                <div className="p-2 md:p-4 space-y-2 md:space-y-3">
                   {category.products.map((product, productIndex) => (
                     <div key={`${product.product_name}-${product.color}-${product.size}`} 
-                         className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50">
-                      <div className="flex-1">
-                        <h4 className="font-medium">{product.product_name}</h4>
-                        <div className="flex gap-2 text-sm text-gray-600">
+                         className="flex flex-col md:flex-row items-start md:items-center justify-between p-3 md:p-4 border rounded-lg hover:bg-gray-50 gap-3 md:gap-0 touch-manipulation">
+                      <div className="flex-1 w-full md:w-auto">
+                        <h4 className="font-medium text-base md:text-sm">{product.product_name}</h4>
+                        <div className="flex flex-wrap gap-2 text-sm text-gray-600 mt-1">
                           {product.product_code && (
                             <span className="bg-gray-100 px-2 py-1 rounded text-xs">{product.product_code}</span>
                           )}
@@ -346,26 +346,26 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-6">
-                        <div className="text-center">
-                          <p className="text-xs text-gray-600">System Stock</p>
-                          <p className="text-lg font-semibold">{product.current_stock}</p>
+                      <div className="flex items-center justify-between md:justify-start w-full md:w-auto gap-4 md:gap-6">
+                        <div className="text-center flex-1 md:flex-none">
+                          <p className="text-xs text-gray-600">System</p>
+                          <p className="text-base md:text-lg font-semibold">{product.current_stock}</p>
                         </div>
 
-                        <div className="text-center">
-                          <p className="text-xs text-gray-600">Actual Stock</p>
+                        <div className="text-center flex-1 md:flex-none">
+                          <p className="text-xs text-gray-600">Actual</p>
                           <Input
                             type="number"
                             value={product.actual_stock}
                             onChange={(e) => updateActualStock(categoryIndex, productIndex, parseInt(e.target.value) || 0)}
-                            className="w-20 text-center text-lg font-semibold"
+                            className="w-16 md:w-20 text-center text-base md:text-lg font-semibold touch-manipulation"
                             min="0"
                           />
                         </div>
 
-                        <div className="text-center">
-                          <p className="text-xs text-gray-600">Variation</p>
-                          <p className={`text-lg font-semibold ${
+                        <div className="text-center flex-1 md:flex-none">
+                          <p className="text-xs text-gray-600">Change</p>
+                          <p className={`text-base md:text-lg font-semibold ${
                             product.variation > 0 ? 'text-green-600' : 
                             product.variation < 0 ? 'text-red-600' : 
                             'text-gray-600'
@@ -375,9 +375,11 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
                         </div>
 
                         {product.variation !== 0 && (
-                          <Badge variant={product.variation > 0 ? "default" : "destructive"}>
-                            {product.variation > 0 ? "Increase" : "Decrease"}
-                          </Badge>
+                          <div className="hidden md:block">
+                            <Badge variant={product.variation > 0 ? "default" : "destructive"}>
+                              {product.variation > 0 ? "Increase" : "Decrease"}
+                            </Badge>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -389,16 +391,16 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between p-6 border-t bg-gray-50">
-          <div className="text-sm text-gray-600">
-            Review all categories above and submit when ready
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 md:p-6 border-t bg-gray-50 gap-3 md:gap-0">
+          <div className="text-sm text-gray-600 order-2 md:order-1">
+            Review all categories and submit when ready
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 md:gap-4 order-1 md:order-2 w-full md:w-auto">
             <Button
               onClick={submitAllAdjustments}
               disabled={submitting || totalVariations === 0}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-blue-600 hover:bg-blue-700 flex-1 md:flex-none touch-manipulation h-12 md:h-auto"
             >
               {submitting ? (
                 <>
@@ -408,7 +410,9 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
               ) : (
                 <>
                   <Save className="h-4 w-4 mr-2" />
-                  Submit All Changes ({totalVariations} items)
+                  <span className="hidden sm:inline">Submit All Changes</span>
+                  <span className="sm:hidden">Submit</span>
+                  <span className="ml-1">({totalVariations})</span>
                 </>
               )}
             </Button>

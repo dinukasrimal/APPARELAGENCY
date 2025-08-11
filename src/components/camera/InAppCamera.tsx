@@ -134,12 +134,12 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-black z-[9999] flex flex-col">
+    <div className="fixed inset-0 bg-black z-[9999] flex flex-col touch-manipulation">
       {/* Header */}
-      <div className="flex justify-between items-center p-4 bg-black/80 text-white">
-        <h3 className="text-lg sm:text-xl font-semibold">Camera</h3>
-        <Button variant="ghost" size="sm" onClick={onCancel} className="text-white hover:bg-white/20">
-          <X className="h-5 w-5" />
+      <div className="flex justify-between items-center p-4 md:p-6 bg-black/80 text-white">
+        <h3 className="text-xl md:text-2xl font-semibold">Camera</h3>
+        <Button variant="ghost" size="sm" onClick={onCancel} className="text-white hover:bg-white/20 touch-manipulation p-3 md:p-2">
+          <X className="h-6 w-6 md:h-5 md:w-5" />
         </Button>
       </div>
 
@@ -164,9 +164,9 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
             />
             {/* Camera Overlay */}
             <div className="absolute inset-0 pointer-events-none">
-              <div className="absolute inset-4 border-2 border-white/50 border-dashed rounded-lg"></div>
+              <div className="absolute inset-4 md:inset-6 border-2 border-white/50 border-dashed rounded-lg"></div>
               <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-                <div className="w-8 h-8 sm:w-12 sm:h-12 border-2 border-white rounded-full opacity-30"></div>
+                <div className="w-10 h-10 md:w-16 md:h-16 border-2 border-white rounded-full opacity-30"></div>
               </div>
             </div>
           </>
@@ -176,48 +176,44 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
       </div>
 
       {/* Controls */}
-      <div className="p-4 sm:p-6 bg-black/80">
+      <div className="p-6 md:p-8 bg-black/80">
         {capturedPhoto ? (
           // Photo Review Controls
-          <div className="flex justify-center gap-4">
+          <div className="flex justify-center gap-6 md:gap-8">
             <Button
               onClick={retakePhoto}
               variant="outline"
-              size={isMobile ? "default" : "lg"}
-              className="flex-1 max-w-32 h-12 sm:h-auto"
+              className="flex-1 max-w-40 md:max-w-48 h-14 md:h-16 text-base md:text-lg touch-manipulation"
             >
-              <RotateCcw className="h-4 w-4 sm:h-5 sm:w-5 mr-2" />
+              <RotateCcw className="h-5 w-5 md:h-6 md:w-6 mr-2" />
               Retake
             </Button>
             <Button
               onClick={confirmPhoto}
-              size={isMobile ? "default" : "lg"}
-              className="flex-1 max-w-32 h-12 sm:h-auto bg-green-600 hover:bg-green-700"
+              className="flex-1 max-w-40 md:max-w-48 h-14 md:h-16 text-base md:text-lg bg-green-600 hover:bg-green-700 touch-manipulation"
             >
               Use Photo
             </Button>
           </div>
         ) : (
           // Camera Controls
-          <div className="flex justify-center items-center gap-6 sm:gap-8">
+          <div className="flex justify-center items-center gap-8 md:gap-12">
             <Button
               onClick={switchCamera}
               variant="outline"
-              size={isMobile ? "default" : "lg"}
-              className="w-10 h-10 sm:w-12 sm:h-12 rounded-full p-0"
+              className="w-12 h-12 md:w-16 md:h-16 rounded-full p-0 touch-manipulation"
             >
-              <RotateCcw className="h-4 w-4 sm:h-5 sm:w-5" />
+              <RotateCcw className="h-5 w-5 md:h-6 md:w-6" />
             </Button>
             
             <Button
               onClick={capturePhoto}
-              size={isMobile ? "default" : "lg"}
-              className="w-14 h-14 sm:w-16 sm:h-16 rounded-full p-0 bg-white hover:bg-gray-200"
+              className="w-16 h-16 md:w-20 md:h-20 rounded-full p-0 bg-white hover:bg-gray-200 touch-manipulation"
             >
-              <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white border-4 border-gray-800 rounded-full"></div>
+              <div className="w-12 h-12 md:w-16 md:h-16 bg-white border-4 border-gray-800 rounded-full"></div>
             </Button>
             
-            <div className="w-10 h-10 sm:w-12 sm:h-12"></div> {/* Spacer for symmetry */}
+            <div className="w-12 h-12 md:w-16 md:h-16"></div> {/* Spacer for symmetry */}
           </div>
         )}
       </div>
