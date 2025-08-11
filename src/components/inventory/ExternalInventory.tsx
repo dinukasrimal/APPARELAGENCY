@@ -370,11 +370,11 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex justify-between items-center">
+    <div className="p-2 space-y-3">
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3">
         <div className="flex-1">
-          <h2 className="text-2xl font-bold text-gray-900">External Inventory Management</h2>
-          <p className="text-gray-600">
+          <h2 className="text-lg font-bold text-gray-900">External Inventory Management</h2>
+          <p className="text-xs text-gray-600">
             Complete inventory system with external bot integration
           </p>
           
@@ -399,7 +399,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             </div>
           )}
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex flex-wrap gap-1 items-center">
           <Button 
             onClick={() => fetchData(true)}
             variant="outline"
@@ -474,7 +474,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
       {/* Summary Cards */}
       {metrics && (
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+        <div className="grid grid-cols-3 gap-2">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -575,8 +575,8 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
           )}
         </TabsList>
 
-        <TabsContent value="overview" className="space-y-4 md:space-y-6 mt-4 md:mt-6">
-          <div className="flex flex-col lg:flex-row gap-4 md:gap-6">
+        <TabsContent value="overview" className="space-y-2 mt-3">
+          <div className="flex flex-col xl:flex-row gap-2">
             {/* Subcategory Sidebar */}
             {showCategorySidebar && (
               <div className="w-full lg:w-64 bg-gray-50 rounded-lg p-3 md:p-4 space-y-2">
@@ -664,7 +664,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             )}
 
             {/* Main Content */}
-            <div className="flex-1 space-y-4 md:space-y-6">
+            <div className="flex-1 space-y-2">
               {!showCategorySidebar && (
                 <Button 
                   variant="outline" 
@@ -678,7 +678,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
               )}
 
               {/* Filters */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
                   <Input

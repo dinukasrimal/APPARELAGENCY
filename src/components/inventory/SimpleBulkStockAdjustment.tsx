@@ -283,62 +283,62 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
   const totalProducts = categories.reduce((sum, cat) => sum + cat.products.length, 0);
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4 touch-manipulation">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-7xl max-h-[95vh] overflow-hidden">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 md:p-6 border-b bg-gradient-to-r from-blue-50 to-purple-50 gap-3 sm:gap-0">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-1 touch-manipulation">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-full max-h-[98vh] overflow-hidden">
+        {/* Header - Compact */}
+        <div className="flex items-center justify-between p-2 border-b bg-gradient-to-r from-blue-50 to-purple-50">
           <div>
-            <h2 className="text-xl font-semibold">Stock Count - All Products</h2>
-            <p className="text-sm text-gray-600">
+            <h2 className="text-base font-semibold">Stock Count - All Products</h2>
+            <p className="text-xs text-gray-600">
               {totalProducts} products across {categories.length} categories
             </p>
           </div>
-          <div className="flex items-center gap-3 md:gap-4">
-            <Badge variant="secondary" className="text-sm px-3 py-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs px-2 py-1">
               {totalVariations} Changes
             </Badge>
-            <Button variant="ghost" onClick={onClose} className="p-2 touch-manipulation hover:bg-gray-100" size="sm">
-              <X className="h-5 w-5" />
+            <Button variant="ghost" onClick={onClose} className="p-1 touch-manipulation hover:bg-gray-100" size="sm">
+              <X className="h-4 w-4" />
             </Button>
           </div>
         </div>
 
-        {/* Batch Name */}
-        <div className="p-3 md:p-4 border-b bg-gray-50">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+        {/* Batch Name - Compact */}
+        <div className="p-2 border-b bg-gray-50">
+          <label className="block text-xs font-medium text-gray-700 mb-1">
             Batch Name:
           </label>
           <Input
             value={batchName}
             onChange={(e) => setBatchName(e.target.value)}
             placeholder="Enter batch name..."
-            className="w-full md:max-w-md text-base md:text-sm touch-manipulation"
+            className="w-full text-sm touch-manipulation h-8"
           />
         </div>
 
-        {/* All Products by Category */}
-        <div className="p-3 md:p-6 overflow-y-auto max-h-[65vh] md:max-h-[60vh]">
-          <div className="space-y-4 md:space-y-8">
+        {/* All Products by Category - Compact */}
+        <div className="p-2 overflow-y-auto max-h-[70vh]">
+          <div className="space-y-2">
             {categories.map((category, categoryIndex) => (
               <div key={category.name} className="border rounded-lg">
-                <div className="bg-gray-50 px-3 md:px-4 py-3 border-b">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0">
-                    <h3 className="text-base md:text-lg font-medium">{category.name}</h3>
-                    <div className="text-sm text-gray-600">
+                <div className="bg-gray-50 px-2 py-2 border-b">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium">{category.name}</h3>
+                    <div className="text-xs text-gray-600">
                       {category.products.length} products
                     </div>
                   </div>
                 </div>
 
-                <div className="p-2 md:p-4 space-y-2 md:space-y-3">
+                <div className="p-2 space-y-2">
                   {category.products.map((product, productIndex) => (
                     <div key={`${product.product_name}-${product.color}-${product.size}`} 
-                         className="flex flex-col md:flex-row items-start md:items-center justify-between p-3 md:p-4 border rounded-lg hover:bg-gray-50 gap-3 md:gap-0 touch-manipulation">
-                      <div className="flex-1 w-full md:w-auto">
-                        <h4 className="font-medium text-base md:text-sm">{product.product_name}</h4>
-                        <div className="flex flex-wrap gap-2 text-sm text-gray-600 mt-1">
+                         className="flex flex-col gap-2 p-2 border rounded-lg hover:bg-gray-50 touch-manipulation">
+                      <div className="flex-1">
+                        <h4 className="font-medium text-sm truncate">{product.product_name}</h4>
+                        <div className="flex flex-wrap gap-1 text-xs text-gray-600 mt-1">
                           {product.product_code && (
-                            <span className="bg-gray-100 px-2 py-1 rounded text-xs">{product.product_code}</span>
+                            <span className="bg-gray-100 px-1 py-0.5 rounded text-xs">{product.product_code}</span>
                           )}
                           <span>{product.color}</span>
                           <span>•</span>
@@ -346,26 +346,26 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between md:justify-start w-full md:w-auto gap-4 md:gap-6">
-                        <div className="text-center flex-1 md:flex-none">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-center flex-1">
                           <p className="text-xs text-gray-600">System</p>
-                          <p className="text-base md:text-lg font-semibold">{product.current_stock}</p>
+                          <p className="text-sm font-semibold">{product.current_stock}</p>
                         </div>
 
-                        <div className="text-center flex-1 md:flex-none">
+                        <div className="text-center flex-1">
                           <p className="text-xs text-gray-600">Actual</p>
                           <Input
                             type="number"
                             value={product.actual_stock}
                             onChange={(e) => updateActualStock(categoryIndex, productIndex, parseInt(e.target.value) || 0)}
-                            className="w-16 md:w-20 text-center text-base md:text-lg font-semibold touch-manipulation"
+                            className="w-14 text-center text-sm font-semibold touch-manipulation h-8"
                             min="0"
                           />
                         </div>
 
-                        <div className="text-center flex-1 md:flex-none">
+                        <div className="text-center flex-1">
                           <p className="text-xs text-gray-600">Change</p>
-                          <p className={`text-base md:text-lg font-semibold ${
+                          <p className={`text-sm font-semibold ${
                             product.variation > 0 ? 'text-green-600' : 
                             product.variation < 0 ? 'text-red-600' : 
                             'text-gray-600'
@@ -375,9 +375,9 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
                         </div>
 
                         {product.variation !== 0 && (
-                          <div className="hidden md:block">
-                            <Badge variant={product.variation > 0 ? "default" : "destructive"}>
-                              {product.variation > 0 ? "Increase" : "Decrease"}
+                          <div className="flex-shrink-0">
+                            <Badge variant={product.variation > 0 ? "default" : "destructive"} className="text-xs">
+                              {product.variation > 0 ? "+" : "-"}
                             </Badge>
                           </div>
                         )}
@@ -390,29 +390,27 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 md:p-6 border-t bg-gray-50 gap-3 md:gap-0">
-          <div className="text-sm text-gray-600 order-2 md:order-1">
-            Review all categories and submit when ready
+        {/* Footer - Compact */}
+        <div className="flex items-center justify-between p-2 border-t bg-gray-50">
+          <div className="text-xs text-gray-600">
+            Review and submit when ready
           </div>
 
-          <div className="flex items-center gap-3 md:gap-4 order-1 md:order-2 w-full md:w-auto">
+          <div className="flex items-center gap-2">
             <Button
               onClick={submitAllAdjustments}
               disabled={submitting || totalVariations === 0}
-              className="bg-blue-600 hover:bg-blue-700 flex-1 md:flex-none touch-manipulation h-12 md:h-auto"
+              className="bg-blue-600 hover:bg-blue-700 touch-manipulation h-8 text-xs px-3"
             >
               {submitting ? (
                 <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white mr-1"></div>
                   Submitting...
                 </>
               ) : (
                 <>
-                  <Save className="h-4 w-4 mr-2" />
-                  <span className="hidden sm:inline">Submit All Changes</span>
-                  <span className="sm:hidden">Submit</span>
-                  <span className="ml-1">({totalVariations})</span>
+                  <Save className="h-3 w-3 mr-1" />
+                  Submit ({totalVariations})
                 </>
               )}
             </Button>
