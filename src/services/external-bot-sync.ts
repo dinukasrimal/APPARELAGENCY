@@ -111,11 +111,12 @@ export class ExternalBotSyncService {
     try {
       console.log('Testing external database connection...');
       
-      const { data, error } = await this.externalSupabase
+      const { data, error, count } = await this.externalSupabase
         .from('invoices')
-        .select('count', { count: 'exact', head: true });
+        .select('*', { count: 'exact', head: true });
 
       if (error) {
+        console.error('External connection error:', error);
         return {
           success: false,
           message: 'Cannot connect to external database',
@@ -123,16 +124,89 @@ export class ExternalBotSyncService {
         };
       }
 
+      console.log('External connection successful, invoice count:', count);
       return {
         success: true,
-        message: `Successfully connected to external database`,
-        details: { invoiceCount: data }
+        message: `Successfully connected to external database with ${count} invoices`,
+        details: { invoiceCount: count }
       };
 
     } catch (error: any) {
+      console.error('External connection test failed:', error);
       return {
         success: false,
         message: 'Connection test failed',
+        error: error.message
+      };
+    }
+  }
+
+  async testManualSync(): Promise<SyncResult> {
+    try {
+      console.log('🧪 Testing manual sync process...');
+      
+      // First test external connection
+      const connectionTest = await this.testExternalConnection();
+      if (!connectionTest.success) {
+        return {
+          success: false,
+          message: 'External connection test failed',
+          error: connectionTest.error
+        };
+      }
+
+      // Test edge function connectivity
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseServiceKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseServiceKey) {
+        return {
+          success: false,
+          message: 'Service role key not configured',
+          error: 'Missing VITE_SUPABASE_SERVICE_ROLE_KEY'
+        };
+      }
+
+      console.log('🧪 Testing edge function connectivity...');
+      
+      // Try to call the function with a simple ping
+      try {
+        const response = await fetch(`${supabaseUrl}/functions/v1/sync-external-bot-invoices`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ test: true })
+        });
+
+        const responseText = await response.text();
+        console.log('🧪 Edge function response:', response.status, responseText);
+
+        return {
+          success: true,
+          message: 'Test completed',
+          details: {
+            externalConnection: connectionTest,
+            edgeFunctionStatus: response.status,
+            edgeFunctionResponse: responseText
+          }
+        };
+
+      } catch (fetchError: any) {
+        console.error('🧪 Edge function test failed:', fetchError);
+        return {
+          success: false,
+          message: 'Edge function connectivity test failed',
+          error: fetchError.message
+        };
+      }
+
+    } catch (error: any) {
+      console.error('🧪 Test process failed:', error);
+      return {
+        success: false,
+        message: 'Test process failed',
         error: error.message
       };
     }
@@ -330,6 +404,136 @@ export class ExternalBotSyncService {
     }
   }
 
+
+  async manualExternalBotSync(): Promise<SyncResult> {
+    try {
+      console.log('🔄 Starting manual external bot sync...');
+
+      // Get current Supabase URL and service key from environment
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'http://localhost:54321';
+      const supabaseServiceKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
+
+      console.log('🔧 Using Supabase URL:', supabaseUrl);
+      console.log('🔧 Service key configured:', !!supabaseServiceKey);
+
+      if (!supabaseServiceKey) {
+        return {
+          success: false,
+          message: 'Service role key not configured for manual sync',
+          error: 'Missing VITE_SUPABASE_SERVICE_ROLE_KEY environment variable'
+        };
+      }
+
+      // Call the sync edge function directly
+      console.log('📡 Calling edge function...');
+      const response = await fetch(`${supabaseUrl}/functions/v1/sync-external-bot-invoices`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${supabaseServiceKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+
+      console.log('📡 Response status:', response.status, response.statusText);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Manual sync HTTP error ${response.status}:`, errorText);
+        return {
+          success: false,
+          message: `Manual sync failed - HTTP ${response.status}: ${response.statusText}`,
+          error: errorText
+        };
+      }
+
+      const result = await response.json();
+
+      if (result.success) {
+        // Log the successful manual sync
+        const { error: logError } = await supabase
+          .from('external_bot_sync_log')
+          .insert({
+            sync_timestamp: new Date().toISOString(),
+            status: 'success',
+            synced_count: result.synced_count || 0,
+            message: 'Manual external bot sync completed successfully',
+            details: {
+              ...result,
+              manual_sync: true,
+              sync_trigger: 'user_manual'
+            }
+          });
+
+        if (logError) {
+          console.warn('Failed to log manual sync:', logError);
+        }
+
+        return {
+          success: true,
+          message: `Manual external bot sync completed successfully`,
+          syncedCount: result.synced_count || 0,
+          details: {
+            ...result,
+            manual_sync: true
+          }
+        };
+      } else {
+        // Log the failed manual sync
+        const { error: logError } = await supabase
+          .from('external_bot_sync_log')
+          .insert({
+            sync_timestamp: new Date().toISOString(),
+            status: 'error',
+            synced_count: 0,
+            message: 'Manual external bot sync failed',
+            details: {
+              error: result.error || 'Unknown error',
+              manual_sync: true,
+              sync_trigger: 'user_manual'
+            }
+          });
+
+        if (logError) {
+          console.warn('Failed to log manual sync error:', logError);
+        }
+
+        return {
+          success: false,
+          message: `Manual external bot sync failed`,
+          error: result.error || 'Unknown error'
+        };
+      }
+
+    } catch (error: any) {
+      console.error('Manual external bot sync error:', error);
+
+      // Log the error
+      const { error: logError } = await supabase
+        .from('external_bot_sync_log')
+        .insert({
+          sync_timestamp: new Date().toISOString(),
+          status: 'error',
+          synced_count: 0,
+          message: 'Manual external bot sync failed with error',
+          details: {
+            error: error.message,
+            manual_sync: true,
+            sync_trigger: 'user_manual'
+          }
+        });
+
+      if (logError) {
+        console.warn('Failed to log manual sync error:', logError);
+      }
+
+      return {
+        success: false,
+        message: 'Manual external bot sync failed',
+        error: error.message
+      };
+    }
+  }
 
   async getSyncStatus(): Promise<SyncResult> {
     try {

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe } from 'lucide-react';
+import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
@@ -40,13 +40,14 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [globalSyncing, setGlobalSyncing] = useState(false);
+  const [externalSyncing, setExternalSyncing] = useState(false);
   const [showBulkAdjustment, setShowBulkAdjustment] = useState(false);
   const [showApprovals, setShowApprovals] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   
   // Agency selection for superusers
   const [agencies, setAgencies] = useState<Agency[]>([]);
-  const [selectedAgencyId, setSelectedAgencyId] = useState<string>(user.agencyId);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string>(user.agencyId || '');
   const [selectedAgencyName, setSelectedAgencyName] = useState<string>('');
   
   const { toast } = useToast();
@@ -191,7 +192,24 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       }
       
       // Use selectedAgencyId for superusers, user.agencyId for regular users
-      const agencyIdToUse = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
+      const agencyIdToUse = user.role === 'superuser' ? selectedAgencyId : (user.agencyId || '');
+      
+      // If no agency ID is available, show empty state
+      if (!agencyIdToUse && user.role === 'superuser') {
+        setInventoryItems([]);
+        setTransactions([]);
+        setMetrics(null);
+        setCategories([]);
+        
+        if (forceRefresh) {
+          toast({
+            title: "No Agency Selected",
+            description: "Please select an agency to view inventory data",
+            variant: "default"
+          });
+        }
+        return;
+      }
       
       // Use different methods based on user role
       const stockSummaryPromise = user.role === 'superuser' 
@@ -341,6 +359,50 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     }
   };
 
+
+  // Manual external bot sync (superuser functionality)
+  const handleManualExternalSync = async () => {
+    try {
+      setExternalSyncing(true);
+      toast({
+        title: "Manual External Sync Started",
+        description: "Manually triggering external bot sync from Odoo system...",
+      });
+
+      const result = await externalBotSyncService.manualExternalBotSync();
+      
+      if (result.success) {
+        const syncedCount = result.syncedCount || 0;
+        const totalInTable = result.details?.total_in_table || 0;
+        
+        const description = `Manual external bot sync completed successfully! ${syncedCount} invoices synced from external system. Total records in table: ${totalInTable}`;
+        
+        toast({
+          title: "Manual External Sync Completed",
+          description: description,
+        });
+        
+        // Refresh data to show updated inventory
+        await fetchData(true);
+      } else {
+        toast({
+          title: "Manual External Sync Failed",
+          description: result.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error('Manual external sync failed:', error);
+      toast({
+        title: "Manual External Sync Error",
+        description: "Failed to complete manual external sync",
+        variant: "destructive"
+      });
+    } finally {
+      setExternalSyncing(false);
+    }
+  };
+
   // Handle agency selection change
   const handleAgencyChange = (agencyId: string) => {
     setSelectedAgencyId(agencyId);
@@ -415,7 +477,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
           
           <Button 
             onClick={handleSync}
-            disabled={syncing || globalSyncing}
+            disabled={syncing || globalSyncing || externalSyncing}
             className="bg-blue-600 hover:bg-blue-700"
           >
             {syncing ? (
@@ -427,18 +489,33 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
           </Button>
 
           {user.role === 'superuser' && (
-            <Button 
-              onClick={handleGlobalSync}
-              disabled={syncing || globalSyncing}
-              className="bg-purple-600 hover:bg-purple-700"
-            >
-              {globalSyncing ? (
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Globe className="h-4 w-4 mr-2" />
-              )}
-              Global Sync (All Users)
-            </Button>
+            <>
+              <Button 
+                onClick={handleGlobalSync}
+                disabled={syncing || globalSyncing || externalSyncing}
+                className="bg-purple-600 hover:bg-purple-700"
+              >
+                {globalSyncing ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Globe className="h-4 w-4 mr-2" />
+                )}
+                Global Sync (All Users)
+              </Button>
+
+              <Button 
+                onClick={handleManualExternalSync}
+                disabled={syncing || globalSyncing || externalSyncing}
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                {externalSyncing ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Database className="h-4 w-4 mr-2" />
+                )}
+                Manual External Sync
+              </Button>
+            </>
           )}
 
           <Button 

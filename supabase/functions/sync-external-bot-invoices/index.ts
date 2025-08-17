@@ -91,6 +91,8 @@ Deno.serve(async (req) => {
     const transformedInvoices = externalInvoices.map((invoice: any, index: number) => {
       // Generate a numeric ID from the string ID or use index-based fallback
       let numericId: number
+      const originalId = invoice.id?.toString() || ''
+      
       if (typeof invoice.id === 'number') {
         numericId = invoice.id
       } else if (typeof invoice.id === 'string') {
