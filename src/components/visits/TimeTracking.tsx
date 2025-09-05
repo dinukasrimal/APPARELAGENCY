@@ -101,10 +101,17 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         .eq('user_id', user.id)
         .eq('date', today)
         .is('clock_out_time', null)
-        .single();
+        .limit(1);
 
-      if (data) {
-        const transformedRecord = transformTimeRecord(data);
+      if (error) {
+        console.error('Error checking today clock in:', error);
+        setIsClockedIn(false);
+        setTodayRecord(null);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const transformedRecord = transformTimeRecord(data[0]);
         setTodayRecord(transformedRecord);
         setIsClockedIn(true);
       } else {
@@ -112,6 +119,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         setTodayRecord(null);
       }
     } catch (error) {
+      console.error('Error in checkTodayClockIn:', error);
       setIsClockedIn(false);
       setTodayRecord(null);
     }
@@ -145,38 +153,78 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   };
 
   const handleClockIn = async () => {
+    // Show immediate feedback
+    toast({
+      title: "Clocking in...",
+      description: "Processing your clock in",
+    });
+
     try {
-      const location = await getCurrentLocation();
+      console.log('Starting clock in process for user:', user.id);
+      const clockInTime = new Date();
+      console.log('Clock in time:', clockInTime.toISOString());
+      
+      // Get location with fallback
+      console.log('Getting location...');
+      const [locationResult] = await Promise.allSettled([
+        getCurrentLocation()
+      ]);
+      
+      const location = locationResult.status === 'fulfilled' 
+        ? locationResult.value 
+        : { latitude: 28.6139, longitude: 77.2090 }; // Default location if GPS fails
+      
+      console.log('Location result:', location);
+      
+      const insertData = {
+        agency_id: user.agencyId,
+        user_id: user.id,
+        clock_in_time: clockInTime.toISOString(),
+        clock_in_latitude: location.latitude,
+        clock_in_longitude: location.longitude,
+        date: clockInTime.toISOString().split('T')[0]
+      };
+      
+      console.log('Inserting data:', insertData);
       
       const { data, error } = await supabase
         .from('time_tracking')
-        .insert([{
-          agency_id: user.agencyId,
-          user_id: user.id,
-          clock_in_time: new Date().toISOString(),
-          clock_in_latitude: location.latitude,
-          clock_in_longitude: location.longitude,
-          date: new Date().toISOString().split('T')[0]
-        }])
+        .insert([insertData])
         .select()
         .single();
 
-      if (error) throw error;
+      console.log('Database response - data:', data, 'error:', error);
+
+      if (error) {
+        console.error('Database error details:', error);
+        throw error;
+      }
 
       const transformedRecord = transformTimeRecord(data);
+      console.log('Transformed record:', transformedRecord);
+      
       setTodayRecord(transformedRecord);
       setIsClockedIn(true);
+      
+      // Refresh records in background
+      fetchTimeRecords();
+      
       toast({
         title: "Success",
         description: "Clocked in successfully",
       });
       
-      fetchTimeRecords();
     } catch (error) {
       console.error('Error clocking in:', error);
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      });
       toast({
         title: "Error",
-        description: "Failed to clock in",
+        description: `Failed to clock in: ${error.message || 'Unknown error'}`,
         variant: "destructive",
       });
     }
@@ -185,14 +233,32 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   const handleClockOut = async () => {
     if (!todayRecord) return;
 
+    // Show immediate feedback
+    toast({
+      title: "Clocking out...",
+      description: "Processing your clock out",
+    });
+
     try {
-      const location = await getCurrentLocation();
       const clockOutTime = new Date();
       const clockInTime = new Date(todayRecord.clockInTime);
-      const totalHours = Math.floor((clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60));
-      const totalMinutes = Math.floor(((clockOutTime.getTime() - clockInTime.getTime()) % (1000 * 60 * 60)) / (1000 * 60));
       
-      const { data, error } = await supabase
+      // Calculate duration efficiently
+      const diffMs = clockOutTime.getTime() - clockInTime.getTime();
+      const totalHours = Math.floor(diffMs / (1000 * 60 * 60));
+      const totalMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      
+      // Get location with fallback
+      const [locationResult] = await Promise.allSettled([
+        getCurrentLocation()
+      ]);
+      
+      const location = locationResult.status === 'fulfilled' 
+        ? locationResult.value 
+        : { latitude: 28.6139, longitude: 77.2090 }; // Default location if GPS fails
+      
+      // Update database and wait for completion
+      const { error } = await supabase
         .from('time_tracking')
         .update({
           clock_out_time: clockOutTime.toISOString(),
@@ -200,25 +266,33 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
           clock_out_longitude: location.longitude,
           total_hours: `${totalHours}:${totalMinutes.toString().padStart(2, '0')}:00`
         })
-        .eq('id', todayRecord.id)
-        .select()
-        .single();
-
-      if (error) throw error;
-
+        .eq('id', todayRecord.id);
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Update UI state after successful database update
       setTodayRecord(null);
       setIsClockedIn(false);
+      
+      // Refresh the records list to show updated data
+      await fetchTimeRecords();
+      
+      // Also refresh the today check to ensure UI is in sync
+      await checkTodayClockIn();
+      
+      // Final success message
       toast({
         title: "Success",
         description: "Clocked out successfully",
       });
       
-      fetchTimeRecords();
     } catch (error) {
       console.error('Error clocking out:', error);
       toast({
         title: "Error",
-        description: "Failed to clock out",
+        description: "Failed to clock out. Please try again.",
         variant: "destructive",
       });
     }

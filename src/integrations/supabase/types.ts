@@ -829,6 +829,8 @@ export type Database = {
           agency_id: string
           created_at: string
           created_by: string
+          customer_id: string | null
+          customer_name: string | null
           id: string
           latitude: number
           longitude: number
@@ -842,6 +844,8 @@ export type Database = {
           agency_id: string
           created_at?: string
           created_by: string
+          customer_id?: string | null
+          customer_name?: string | null
           id?: string
           latitude: number
           longitude: number
@@ -855,6 +859,8 @@ export type Database = {
           agency_id?: string
           created_at?: string
           created_by?: string
+          customer_id?: string | null
+          customer_name?: string | null
           id?: string
           latitude?: number
           longitude?: number
