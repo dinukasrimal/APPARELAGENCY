@@ -110,7 +110,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
             * { box-sizing: border-box; }
             body { 
               margin: 0; 
-              padding: 20px; 
+              padding: 0; 
               font-family: Arial, sans-serif; 
               font-size: 12px;
               line-height: 1.4;
@@ -118,33 +118,53 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               background: #ffffff;
               display: flex;
               justify-content: center;
+              align-items: flex-start;
             }
             .invoice-container { 
               width: 210mm; 
               min-height: 297mm;
               margin: 0 auto; 
               background: white;
+              padding: 10mm 12mm;
             }
             .header { 
-              text-align: center; 
+              display: flex;
+              align-items: flex-start;
+              justify-content: space-between;
+              gap: 12px;
               border-bottom: 2px solid #333; 
-              padding-bottom: 20px; 
-              margin-bottom: 20px; 
+              padding-bottom: 6mm; 
+              margin-bottom: 6mm; 
+            }
+            .header-left {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+            }
+            .header-right {
+              text-align: right;
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+              font-size: 11px;
+              color: #555;
             }
             .company-logo {
-              height: 80px;
-              margin-bottom: 10px;
+              height: 48px;
               object-fit: contain;
             }
+            .company-details {
+              line-height: 1.3;
+            }
             .company-name { 
-              font-size: 24px; 
+              font-size: 22px; 
               font-weight: bold; 
-              margin-bottom: 10px; 
+              margin-bottom: 4px; 
             }
             .invoice-details { 
               display: flex; 
               justify-content: space-between; 
-              margin-bottom: 20px; 
+              margin-bottom: 15px; 
             }
             .invoice-details > div { 
               flex: 1; 
@@ -152,7 +172,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
             .items-table { 
               width: 100%; 
               border-collapse: collapse; 
-              margin-bottom: 20px; 
+              margin-bottom: 15px; 
             }
             .items-table th, .items-table td { 
               border: 1px solid #333; 
@@ -170,7 +190,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
             }
             .totals { 
               text-align: right; 
-              margin-bottom: 20px; 
+              margin-bottom: 15px; 
             }
             .totals-table { 
               margin-left: auto; 
@@ -205,11 +225,18 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         <body>
           <div class="invoice-container">
             <div class="header">
-              <img src="${companyLogo}" alt="DAG Clothing Logo" class="company-logo" />
-              <div class="company-name">DAG Clothing Pvt Ltd</div>
-              <div>Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</div>
-              <div>Phone: 0412259525 | Website: www.dag.lk</div>
-              <div>Email: order@dag-apparel.com</div>
+              <div class="header-left">
+                <img src="${companyLogo}" alt="DAG Clothing Logo" class="company-logo" />
+                <div class="company-details">
+                  <div class="company-name">DAG Clothing Pvt Ltd</div>
+                  <div>Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</div>
+                </div>
+              </div>
+              <div class="header-right">
+                <div>Phone: 0412259525</div>
+                <div>Email: order@dag-apparel.com</div>
+                <div>Website: www.dag.lk</div>
+              </div>
             </div>
             
             <div class="invoice-details">
@@ -364,7 +391,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
           box-shadow: none !important;
           border: none !important;
           margin: 0 auto !important;
-          padding: 20px !important;
+          padding: 10mm 12mm !important;
           background: white !important;
           page-break-inside: avoid;
         }
@@ -432,18 +459,28 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
       </div>
 
       {/* Printable Invoice */}
-      <div className="print-container mx-auto bg-white p-8 shadow-lg w-[210mm] max-w-full min-h-[297mm]" style={{ width: '210mm', minHeight: '297mm' }}>
+      <div
+        className="print-container mx-auto bg-white shadow-lg w-[210mm] max-w-full"
+        style={{ width: '210mm', minHeight: '297mm', padding: '10mm 12mm' }}
+      >
         {/* Company Header */}
-        <div className="text-center border-b pb-6 mb-6 flex flex-col items-center gap-4">
-          <img src={companyLogo} alt="DAG Clothing Logo" className="h-20 w-auto" />
-          <h1 className="text-3xl font-bold text-gray-800">DAG Clothing Pvt Ltd</h1>
-          <p className="text-gray-600 mt-2">Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</p>
-          <p className="text-gray-600">Phone: 0412259525 | Website: www.dag.lk</p>
-          <p className="text-gray-600">Email: order@dag-apparel.com</p>
+        <div className="border-b pb-3 mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src={companyLogo} alt="DAG Clothing Logo" className="h-12 w-auto" />
+            <div className="leading-tight">
+              <h1 className="text-2xl font-bold text-gray-800">DAG Clothing Pvt Ltd</h1>
+              <p className="text-gray-600 text-sm">Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</p>
+            </div>
+          </div>
+          <div className="text-gray-600 text-sm space-y-1 text-right leading-tight">
+            <p>Phone: 0412259525</p>
+            <p>Email: order@dag-apparel.com</p>
+            <p>Website: www.dag.lk</p>
+          </div>
         </div>
 
         {/* Invoice Header */}
-        <div className="grid grid-cols-2 gap-8 mb-8">
+        <div className="grid grid-cols-2 gap-6 mb-6">
           <div>
             <h2 className="text-2xl font-bold text-gray-800 mb-4">INVOICE</h2>
             <div className="space-y-2">
@@ -465,7 +502,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         </div>
 
         {/* Items Table - Ensure all product details are visible */}
-        <div className="mb-8">
+        <div className="mb-6">
           <table className="w-full border-collapse border border-gray-300">
             <thead>
               <tr className="bg-gray-100">
@@ -493,7 +530,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         </div>
 
         {/* Totals */}
-        <div className="flex justify-end mb-8">
+        <div className="flex justify-end mb-6">
           <div className="w-80">
             <div className="space-y-2">
               <div className="flex justify-between py-1">
