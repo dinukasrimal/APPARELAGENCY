@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { ArrowLeft, Printer, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Capacitor } from '@capacitor/core';
+import companyLogo from '../../../assets/icon.png';
 
 interface PrintableInvoiceProps {
   invoice: Invoice;
@@ -114,9 +115,13 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               font-size: 12px;
               line-height: 1.4;
               color: #333;
+              background: #ffffff;
+              display: flex;
+              justify-content: center;
             }
             .invoice-container { 
-              max-width: 800px; 
+              width: 210mm; 
+              min-height: 297mm;
               margin: 0 auto; 
               background: white;
             }
@@ -125,6 +130,11 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               border-bottom: 2px solid #333; 
               padding-bottom: 20px; 
               margin-bottom: 20px; 
+            }
+            .company-logo {
+              height: 80px;
+              margin-bottom: 10px;
+              object-fit: contain;
             }
             .company-name { 
               font-size: 24px; 
@@ -195,6 +205,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         <body>
           <div class="invoice-container">
             <div class="header">
+              <img src="${companyLogo}" alt="DAG Clothing Logo" class="company-logo" />
               <div class="company-name">DAG Clothing Pvt Ltd</div>
               <div>Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</div>
               <div>Phone: 0412259525 | Website: www.dag.lk</div>
@@ -347,20 +358,14 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         
         /* Position the printable container properly */
         .print-container { 
-          position: absolute !important;
-          top: 0 !important;
-          left: 0 !important;
-          width: 100% !important;
-          max-width: none !important; 
+          position: relative !important;
+          width: 210mm !important;
+          min-height: 297mm !important;
           box-shadow: none !important;
           border: none !important;
-          margin: 0 !important;
+          margin: 0 auto !important;
           padding: 20px !important;
           background: white !important;
-        }
-        
-        /* Ensure page breaks work properly */
-        .print-container {
           page-break-inside: avoid;
         }
         
@@ -427,9 +432,10 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
       </div>
 
       {/* Printable Invoice */}
-      <div className="print-container max-w-4xl mx-auto bg-white p-8 shadow-lg">
+      <div className="print-container mx-auto bg-white p-8 shadow-lg w-[210mm] max-w-full min-h-[297mm]" style={{ width: '210mm', minHeight: '297mm' }}>
         {/* Company Header */}
-        <div className="text-center border-b pb-6 mb-6">
+        <div className="text-center border-b pb-6 mb-6 flex flex-col items-center gap-4">
+          <img src={companyLogo} alt="DAG Clothing Logo" className="h-20 w-auto" />
           <h1 className="text-3xl font-bold text-gray-800">DAG Clothing Pvt Ltd</h1>
           <p className="text-gray-600 mt-2">Dag clothing Pvt Ltd Kandamuduna Thalalla Matara</p>
           <p className="text-gray-600">Phone: 0412259525 | Website: www.dag.lk</p>
