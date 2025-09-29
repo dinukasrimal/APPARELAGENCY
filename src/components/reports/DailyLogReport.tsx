@@ -381,7 +381,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       // Fetch non-productive visits
       let npQuery = supabase
         .from('non_productive_visits')
-        .select('id, reason, latitude, longitude, created_at, agency_id, user_id, store_front_photo')
+        .select('id, reason, latitude, longitude, created_at, agency_id, user_id, store_front_photo, customer_name, potential_customer')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDate)
         .lte('created_at', endDate);
@@ -398,7 +398,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         entries.push({
           id: visit.id,
           type: 'non_productive',
-          name: 'Non-productive Visit',
+          name: visit.customer_name || visit.potential_customer || 'Non-productive Visit',
           latitude: visit.latitude,
           longitude: visit.longitude,
           timestamp: new Date(visit.created_at),
@@ -633,7 +633,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       let npQuery = supabase
         .from('non_productive_visits')
-        .select('id, reason, latitude, longitude, created_at, agency_id, user_id, store_front_photo')
+        .select('id, reason, latitude, longitude, created_at, agency_id, user_id, store_front_photo, customer_name, potential_customer')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDateTime)
         .lte('created_at', endDateTime);
@@ -650,7 +650,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         entries.push({
           id: visit.id,
           type: 'non_productive',
-          name: 'Non-productive Visit',
+          name: visit.customer_name || visit.potential_customer || 'Non-productive Visit',
           latitude: visit.latitude,
           longitude: visit.longitude,
           timestamp: new Date(visit.created_at),

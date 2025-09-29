@@ -3,6 +3,7 @@ import { Invoice, SalesOrder } from '@/types/sales';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Printer, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Capacitor } from '@capacitor/core';
 
 interface PrintableInvoiceProps {
   invoice: Invoice;
@@ -19,6 +20,73 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
 
   const handleDownloadPDF = async () => {
     try {
+      // On native (Android/iOS): generate PDF, save to cache, share via system share sheet
+      if (Capacitor.getPlatform() !== 'web') {
+        const printableContent = document.querySelector('.print-container') as HTMLElement | null;
+        if (!printableContent) throw new Error('Printable content not found');
+
+        // Lazy-load PDF deps only when needed
+        const [jspdfModule, html2canvas] = await Promise.all([
+          import(/* @vite-ignore */ 'jspdf'),
+          import(/* @vite-ignore */ 'html2canvas').then(m => (m as any).default ? (m as any).default : (m as any))
+        ]);
+        const JsPDF: any = (jspdfModule as any).default || (jspdfModule as any).jsPDF;
+
+        // Render element to image and paginate to PDF (mobile-friendly and memory-safe)
+        const canvas = await (html2canvas as any)(printableContent, {
+          scale: 2,
+          useCORS: true,
+          allowTaint: true,
+          logging: false,
+          backgroundColor: '#ffffff'
+        });
+
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        const pdf = new JsPDF('p', 'mm', 'a4');
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const imgWidth = pageWidth;
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+        let heightLeft = imgHeight;
+        let position = 0;
+
+        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+        heightLeft -= pageHeight;
+
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+          heightLeft -= pageHeight;
+        }
+
+        const dataUri = pdf.output('datauristring') as string;
+        const base64 = dataUri.split(',')[1];
+        const filename = `invoice-${invoice.invoiceNumber || invoice.id}.pdf`;
+
+        // Dynamically import Capacitor plugins only on native to avoid Vite resolution in web
+        const { Filesystem } = await import(/* @vite-ignore */ '@capacitor/filesystem');
+        const { Share } = await import(/* @vite-ignore */ '@capacitor/share');
+
+        const writeResult = await Filesystem.writeFile({
+          path: filename,
+          data: base64,
+          directory: 'CACHE' as any,
+          encoding: 'base64' as any,
+        });
+
+        await Share.share({
+          title: `Invoice ${invoice.invoiceNumber}`,
+          text: `Invoice ${invoice.invoiceNumber} for ${invoice.customerName}`,
+          url: writeResult.uri,
+          dialogTitle: 'Share Invoice PDF',
+        } as any);
+
+        toast({ title: 'Shared', description: 'Invoice PDF ready to share.' });
+        return;
+      }
+
       // Create a new window for PDF generation
       const printWindow = window.open('', '_blank');
       if (!printWindow) {
@@ -228,6 +296,14 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
 
     } catch (error) {
       console.error('Error generating PDF:', error);
+      if (Capacitor.getPlatform() !== 'web') {
+        // Fallback to system print dialog on native
+        try {
+          window.print();
+          toast({ title: 'Fallback Print', description: 'Use Save/Share as PDF from system dialog.' });
+          return;
+        } catch {}
+      }
       toast({
         title: 'PDF Download Failed',
         description: error instanceof Error ? error.message : 'Failed to generate PDF',
@@ -342,7 +418,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         <div className="flex gap-2">
           <Button onClick={handleDownloadPDF} variant="outline" className="border-green-600 text-green-600 hover:bg-green-50">
             <Download className="h-4 w-4 mr-2" />
-            Download PDF
+            {Capacitor.getPlatform() !== 'web' ? 'Share/Save PDF' : 'Download PDF'}
           </Button>
           <Button onClick={handlePrint} className="bg-blue-600 hover:bg-blue-700">
             <Printer className="h-4 w-4 mr-2" />
