@@ -66,22 +66,21 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         const filename = `invoice-${invoice.invoiceNumber || invoice.id}.pdf`;
 
         // Dynamically import Capacitor plugins only on native to avoid Vite resolution in web
-        const { Filesystem } = await import(/* @vite-ignore */ '@capacitor/filesystem');
+        const { Filesystem, Directory } = await import(/* @vite-ignore */ '@capacitor/filesystem');
         const { Share } = await import(/* @vite-ignore */ '@capacitor/share');
 
         const writeResult = await Filesystem.writeFile({
           path: filename,
           data: base64,
-          directory: 'CACHE' as any,
-          encoding: 'base64' as any,
+          directory: Directory.Cache,
         });
 
         await Share.share({
           title: `Invoice ${invoice.invoiceNumber}`,
           text: `Invoice ${invoice.invoiceNumber} for ${invoice.customerName}`,
-          url: writeResult.uri,
+          files: [writeResult.uri],
           dialogTitle: 'Share Invoice PDF',
-        } as any);
+        });
 
         toast({ title: 'Shared', description: 'Invoice PDF ready to share.' });
         return;
