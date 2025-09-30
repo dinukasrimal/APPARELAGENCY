@@ -13,8 +13,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Database } from '@/integrations/supabase/types';
 
-const ROUTE_RECORD_INTERVAL_MS = 60_000; // 1 minute cadence
-const ROUTE_DISTANCE_THRESHOLD_METERS = 30; // record if moved ~30m
+const ROUTE_RECORD_INTERVAL_MS = 60_000; // capture roughly every minute
+const ROUTE_DISTANCE_THRESHOLD_METERS = 30; // record if moved ~30 meters
 
 type TimeTrackingRow = Database['public']['Tables']['time_tracking']['Row'];
 type RoutePointRow = Database['public']['Tables']['time_tracking_route_points']['Row'];

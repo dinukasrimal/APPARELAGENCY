@@ -322,31 +322,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       const { data: timeData } = await timeQuery;
 
-      const routePointsByTimeId = new Map<string, TimeRoutePath['points']>();
       const routesForDay: TimeRoutePath[] = [];
-
-      if (timeData && timeData.length > 0) {
-        const timeIds = timeData.map((time) => time.id);
-        const { data: routeData, error: routeError } = await supabase
-          .from('time_tracking_route_points')
-          .select('time_tracking_id, latitude, longitude, recorded_at')
-          .in('time_tracking_id', timeIds)
-          .order('recorded_at', { ascending: true });
-
-        if (routeError) {
-          console.error('Error fetching time tracking route data:', routeError);
-        } else {
-          (routeData || []).forEach((point) => {
-            const list = routePointsByTimeId.get(point.time_tracking_id) ?? [];
-            list.push({
-              latitude: point.latitude,
-              longitude: point.longitude,
-              recordedAt: new Date(point.recorded_at),
-            });
-            routePointsByTimeId.set(point.time_tracking_id, list);
-          });
-        }
-      }
 
       // Process time tracking data
       timeData?.forEach((time) => {
@@ -383,38 +359,42 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           });
         }
 
-        const routePoints: TimeRoutePath['points'] = [];
-        const clockInLat = time.clock_in_latitude;
-        const clockInLon = time.clock_in_longitude;
-        const clockOutLat = time.clock_out_latitude;
-        const clockOutLon = time.clock_out_longitude;
-
-        const appendPoint = (lat?: number | null, lon?: number | null, recordedAt?: Date) => {
-          if (lat === null || lat === undefined || lon === null || lon === undefined) return;
-          if (Number.isNaN(lat) || Number.isNaN(lon)) return;
-          if (routePoints.length > 0) {
-            const last = routePoints[routePoints.length - 1];
-            if (Math.abs(last.latitude - lat) < 1e-6 && Math.abs(last.longitude - lon) < 1e-6) {
+        const visitPoints: TimeRoutePath['points'] = [];
+        const addPoint = (latitude?: number | null, longitude?: number | null, timestamp?: Date) => {
+          if (latitude === null || latitude === undefined || longitude === null || longitude === undefined) {
+            return;
+          }
+          if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
+            return;
+          }
+          if (visitPoints.length > 0) {
+            const last = visitPoints[visitPoints.length - 1];
+            if (Math.abs(last.latitude - latitude) < 1e-6 && Math.abs(last.longitude - longitude) < 1e-6) {
               return;
             }
           }
-          routePoints.push({
-            latitude: lat,
-            longitude: lon,
-            recordedAt: recordedAt || new Date(),
+          visitPoints.push({
+            latitude,
+            longitude,
+            recordedAt: timestamp || new Date(),
           });
         };
 
-        appendPoint(clockInLat, clockInLon, new Date(time.clock_in_time));
+        addPoint(time.clock_in_latitude, time.clock_in_longitude, new Date(time.clock_in_time));
 
-        const trackedPoints = routePointsByTimeId.get(time.id) || [];
-        trackedPoints.forEach((point) => appendPoint(point.latitude, point.longitude, point.recordedAt));
+        const relatedEntries = entries
+          .filter((entry) => entry.userId === time.user_id)
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+        relatedEntries.forEach((entry) => {
+          addPoint(entry.latitude, entry.longitude, entry.timestamp);
+        });
 
         if (time.clock_out_time) {
-          appendPoint(clockOutLat, clockOutLon, new Date(time.clock_out_time));
+          addPoint(time.clock_out_latitude, time.clock_out_longitude, new Date(time.clock_out_time));
         }
 
-        if (routePoints.length >= 2) {
+        if (visitPoints.length >= 2) {
           const color = ROUTE_COLORS[routesForDay.length % ROUTE_COLORS.length];
           const labelUser = user?.name || 'Field Agent';
           const routeLabel = `${labelUser} • ${new Date(time.clock_in_time).toLocaleTimeString()}${time.clock_out_time ? ` - ${new Date(time.clock_out_time).toLocaleTimeString()}` : ''}`;
@@ -422,7 +402,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
             id: time.id,
             label: routeLabel,
             color,
-            points: routePoints,
+            points: visitPoints,
           });
         }
       });
@@ -650,31 +630,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       const { data: timeData } = await timeQuery;
 
-      const routePointsByTimeId = new Map<string, TimeRoutePath['points']>();
       const routesForRange: TimeRoutePath[] = [];
-
-      if (timeData && timeData.length > 0) {
-        const timeIds = timeData.map((time) => time.id);
-        const { data: routeData, error: routeError } = await supabase
-          .from('time_tracking_route_points')
-          .select('time_tracking_id, latitude, longitude, recorded_at')
-          .in('time_tracking_id', timeIds)
-          .order('recorded_at', { ascending: true });
-
-        if (routeError) {
-          console.error('Error fetching time tracking route data:', routeError);
-        } else {
-          (routeData || []).forEach((point) => {
-            const list = routePointsByTimeId.get(point.time_tracking_id) ?? [];
-            list.push({
-              latitude: point.latitude,
-              longitude: point.longitude,
-              recordedAt: new Date(point.recorded_at),
-            });
-            routePointsByTimeId.set(point.time_tracking_id, list);
-          });
-        }
-      }
 
       timeData?.forEach(time => {
         const user = users.find(u => u.id === time.user_id);
@@ -709,22 +665,27 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         }
 
         const routePoints: TimeRoutePath['points'] = [];
-        const appendPoint = (lat?: number | null, lon?: number | null, recordedAt?: Date) => {
-          if (lat === null || lat === undefined || lon === null || lon === undefined) return;
-          if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+        const appendPoint = (latitude?: number | null, longitude?: number | null, recordedAt?: Date) => {
+          if (latitude === null || latitude === undefined || longitude === null || longitude === undefined) return;
+          if (Number.isNaN(latitude) || Number.isNaN(longitude)) return;
           if (routePoints.length > 0) {
             const last = routePoints[routePoints.length - 1];
-            if (Math.abs(last.latitude - lat) < 1e-6 && Math.abs(last.longitude - lon) < 1e-6) {
+            if (Math.abs(last.latitude - latitude) < 1e-6 && Math.abs(last.longitude - longitude) < 1e-6) {
               return;
             }
           }
-          routePoints.push({ latitude: lat, longitude: lon, recordedAt: recordedAt || new Date() });
+          routePoints.push({ latitude, longitude, recordedAt: recordedAt || new Date() });
         };
 
         appendPoint(time.clock_in_latitude, time.clock_in_longitude, new Date(time.clock_in_time));
 
-        const trackedPoints = routePointsByTimeId.get(time.id) || [];
-        trackedPoints.forEach((point) => appendPoint(point.latitude, point.longitude, point.recordedAt));
+        const relatedEntries = entries
+          .filter((entry) => entry.userId === time.user_id)
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+        relatedEntries.forEach((entry) => {
+          appendPoint(entry.latitude, entry.longitude, entry.timestamp);
+        });
 
         if (time.clock_out_time) {
           appendPoint(time.clock_out_latitude, time.clock_out_longitude, new Date(time.clock_out_time));
