@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 
 interface LocationData {
   id: string;
-  type: 'customer' | 'non_productive' | 'sales_order' | 'invoice' | 'collection';
+  type: 'customer' | 'non_productive' | 'sales_order' | 'invoice' | 'collection' | 'clock_in' | 'clock_out';
   name: string;
   latitude: number;
   longitude: number;
@@ -13,15 +13,28 @@ interface LocationData {
   agencyName?: string;
 }
 
+interface RoutePath {
+  id: string;
+  points: Array<{
+    latitude: number;
+    longitude: number;
+    recordedAt?: Date;
+  }>;
+  color?: string;
+  label?: string;
+}
+
 interface LeafletMapProps {
   locations: LocationData[];
   height?: string;
+  routes?: RoutePath[];
 }
 
-const LeafletMap = ({ locations, height = '400px' }: LeafletMapProps) => {
+const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProps) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
+  const routeLayersRef = useRef<L.Polyline[]>([]);
 
   const getMarkerColor = (type: string) => {
     switch (type) {
@@ -30,6 +43,8 @@ const LeafletMap = ({ locations, height = '400px' }: LeafletMapProps) => {
       case 'sales_order': return '#000000';
       case 'invoice': return '#22C55E';
       case 'collection': return '#8B5CF6'; // Purple color for collections
+      case 'clock_in': return '#10B981';
+      case 'clock_out': return '#EF4444';
       default: return '#6B7280';
     }
   };
@@ -80,7 +95,12 @@ const LeafletMap = ({ locations, height = '400px' }: LeafletMapProps) => {
     });
     markersRef.current = [];
 
-    if (locations.length === 0) {
+    routeLayersRef.current.forEach((polyline) => {
+      mapInstanceRef.current?.removeLayer(polyline);
+    });
+    routeLayersRef.current = [];
+
+    if (locations.length === 0 && routes.length === 0) {
       // If no locations, just center on Sri Lanka
       mapInstanceRef.current.setView([7.8731, 80.7718], 8);
       return;
@@ -88,6 +108,7 @@ const LeafletMap = ({ locations, height = '400px' }: LeafletMapProps) => {
 
     // Add new markers
     const bounds = L.latLngBounds([]);
+    let hasBounds = false;
     
     locations.forEach((location) => {
       const marker = L.marker([location.latitude, location.longitude], {
@@ -108,17 +129,42 @@ const LeafletMap = ({ locations, height = '400px' }: LeafletMapProps) => {
       marker.addTo(mapInstanceRef.current!);
       
       bounds.extend([location.latitude, location.longitude]);
+      hasBounds = true;
       markersRef.current.push(marker);
     });
 
+    routes.forEach((route, index) => {
+      if (!route.points || route.points.length < 2) return;
+
+      const latLngs = route.points.map((point) => [point.latitude, point.longitude] as [number, number]);
+      latLngs.forEach((coords) => {
+        bounds.extend(coords);
+        hasBounds = true;
+      });
+
+      const polyline = L.polyline(latLngs, {
+        color: route.color || ['#2563EB', '#059669', '#D97706', '#7C3AED', '#EC4899'][index % 5],
+        weight: 4,
+        opacity: 0.6,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(mapInstanceRef.current!);
+
+      if (route.label) {
+        polyline.bindPopup(route.label);
+      }
+
+      routeLayersRef.current.push(polyline);
+    });
+
     // Fit map to markers
-    if (locations.length > 0) {
+    if (hasBounds && bounds.isValid()) {
       mapInstanceRef.current.fitBounds(bounds, { padding: [20, 20] });
-      if (locations.length === 1) {
+      if (locations.length === 1 && routes.length === 0) {
         mapInstanceRef.current.setZoom(15);
       }
     }
-  }, [locations]);
+  }, [locations, routes]);
 
   return (
     <div className="w-full">

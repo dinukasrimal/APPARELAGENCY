@@ -26,6 +26,17 @@ interface DailyLogEntry {
   storefrontPhoto?: string;
 }
 
+interface TimeRoutePath {
+  id: string;
+  label: string;
+  color: string;
+  points: Array<{
+    latitude: number;
+    longitude: number;
+    recordedAt: Date;
+  }>;
+}
+
 interface Agency {
   id: string;
   name: string;
@@ -44,6 +55,7 @@ interface DailyLogReportProps {
 }
 
 const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
+  const ROUTE_COLORS = ['#2563EB', '#059669', '#D97706', '#7C3AED', '#EC4899'];
   const [viewMode, setViewMode] = useState<'calendar' | 'dateRange'>('calendar');
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [selectedMonth, setSelectedMonth] = useState<Date>(new Date());
@@ -59,6 +71,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
   const [loading, setLoading] = useState(false);
   const [imageModalOpen, setImageModalOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ url: string; title: string } | null>(null);
+  const [timeRoutes, setTimeRoutes] = useState<TimeRoutePath[]>([]);
 
   useEffect(() => {
     if (user.role === 'superuser') {
@@ -281,6 +294,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
   const fetchDailyLogs = async (dateStr: string) => {
     setLoading(true);
+    setTimeRoutes([]);
     try {
       const entries: DailyLogEntry[] = [];
       
@@ -308,8 +322,34 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       const { data: timeData } = await timeQuery;
 
+      const routePointsByTimeId = new Map<string, TimeRoutePath['points']>();
+      const routesForDay: TimeRoutePath[] = [];
+
+      if (timeData && timeData.length > 0) {
+        const timeIds = timeData.map((time) => time.id);
+        const { data: routeData, error: routeError } = await supabase
+          .from('time_tracking_route_points')
+          .select('time_tracking_id, latitude, longitude, recorded_at')
+          .in('time_tracking_id', timeIds)
+          .order('recorded_at', { ascending: true });
+
+        if (routeError) {
+          console.error('Error fetching time tracking route data:', routeError);
+        } else {
+          (routeData || []).forEach((point) => {
+            const list = routePointsByTimeId.get(point.time_tracking_id) ?? [];
+            list.push({
+              latitude: point.latitude,
+              longitude: point.longitude,
+              recordedAt: new Date(point.recorded_at),
+            });
+            routePointsByTimeId.set(point.time_tracking_id, list);
+          });
+        }
+      }
+
       // Process time tracking data
-      timeData?.forEach(time => {
+      timeData?.forEach((time) => {
         const user = users.find(u => u.id === time.user_id);
         const agency = agencies.find(a => a.id === time.agency_id);
         
@@ -342,7 +382,52 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
             userName: user?.name || 'Unknown User'
           });
         }
+
+        const routePoints: TimeRoutePath['points'] = [];
+        const clockInLat = time.clock_in_latitude;
+        const clockInLon = time.clock_in_longitude;
+        const clockOutLat = time.clock_out_latitude;
+        const clockOutLon = time.clock_out_longitude;
+
+        const appendPoint = (lat?: number | null, lon?: number | null, recordedAt?: Date) => {
+          if (lat === null || lat === undefined || lon === null || lon === undefined) return;
+          if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+          if (routePoints.length > 0) {
+            const last = routePoints[routePoints.length - 1];
+            if (Math.abs(last.latitude - lat) < 1e-6 && Math.abs(last.longitude - lon) < 1e-6) {
+              return;
+            }
+          }
+          routePoints.push({
+            latitude: lat,
+            longitude: lon,
+            recordedAt: recordedAt || new Date(),
+          });
+        };
+
+        appendPoint(clockInLat, clockInLon, new Date(time.clock_in_time));
+
+        const trackedPoints = routePointsByTimeId.get(time.id) || [];
+        trackedPoints.forEach((point) => appendPoint(point.latitude, point.longitude, point.recordedAt));
+
+        if (time.clock_out_time) {
+          appendPoint(clockOutLat, clockOutLon, new Date(time.clock_out_time));
+        }
+
+        if (routePoints.length >= 2) {
+          const color = ROUTE_COLORS[routesForDay.length % ROUTE_COLORS.length];
+          const labelUser = user?.name || 'Field Agent';
+          const routeLabel = `${labelUser} • ${new Date(time.clock_in_time).toLocaleTimeString()}${time.clock_out_time ? ` - ${new Date(time.clock_out_time).toLocaleTimeString()}` : ''}`;
+          routesForDay.push({
+            id: time.id,
+            label: routeLabel,
+            color,
+            points: routePoints,
+          });
+        }
       });
+
+      setTimeRoutes(routesForDay);
 
       // Fetch customers visited
       let customerQuery = supabase
@@ -527,6 +612,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
   const fetchDateRangeLogs = async () => {
     setLoading(true);
+    setTimeRoutes([]);
     try {
       const entries: DailyLogEntry[] = [];
       
@@ -564,10 +650,36 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       const { data: timeData } = await timeQuery;
 
+      const routePointsByTimeId = new Map<string, TimeRoutePath['points']>();
+      const routesForRange: TimeRoutePath[] = [];
+
+      if (timeData && timeData.length > 0) {
+        const timeIds = timeData.map((time) => time.id);
+        const { data: routeData, error: routeError } = await supabase
+          .from('time_tracking_route_points')
+          .select('time_tracking_id, latitude, longitude, recorded_at')
+          .in('time_tracking_id', timeIds)
+          .order('recorded_at', { ascending: true });
+
+        if (routeError) {
+          console.error('Error fetching time tracking route data:', routeError);
+        } else {
+          (routeData || []).forEach((point) => {
+            const list = routePointsByTimeId.get(point.time_tracking_id) ?? [];
+            list.push({
+              latitude: point.latitude,
+              longitude: point.longitude,
+              recordedAt: new Date(point.recorded_at),
+            });
+            routePointsByTimeId.set(point.time_tracking_id, list);
+          });
+        }
+      }
+
       timeData?.forEach(time => {
         const user = users.find(u => u.id === time.user_id);
         const agency = agencies.find(a => a.id === time.agency_id);
-        
+
         if (time.clock_in_latitude && time.clock_in_longitude) {
           entries.push({
             id: `${time.id}-in`,
@@ -593,6 +705,40 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
             agencyName: agency?.name || 'Unknown Agency',
             userId: time.user_id,
             userName: user?.name || 'Unknown User'
+          });
+        }
+
+        const routePoints: TimeRoutePath['points'] = [];
+        const appendPoint = (lat?: number | null, lon?: number | null, recordedAt?: Date) => {
+          if (lat === null || lat === undefined || lon === null || lon === undefined) return;
+          if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+          if (routePoints.length > 0) {
+            const last = routePoints[routePoints.length - 1];
+            if (Math.abs(last.latitude - lat) < 1e-6 && Math.abs(last.longitude - lon) < 1e-6) {
+              return;
+            }
+          }
+          routePoints.push({ latitude: lat, longitude: lon, recordedAt: recordedAt || new Date() });
+        };
+
+        appendPoint(time.clock_in_latitude, time.clock_in_longitude, new Date(time.clock_in_time));
+
+        const trackedPoints = routePointsByTimeId.get(time.id) || [];
+        trackedPoints.forEach((point) => appendPoint(point.latitude, point.longitude, point.recordedAt));
+
+        if (time.clock_out_time) {
+          appendPoint(time.clock_out_latitude, time.clock_out_longitude, new Date(time.clock_out_time));
+        }
+
+        if (routePoints.length >= 2) {
+          const color = ROUTE_COLORS[routesForRange.length % ROUTE_COLORS.length];
+          const labelUser = user?.name || 'Field Agent';
+          const routeLabel = `${labelUser} • ${new Date(time.date).toLocaleDateString()} ${new Date(time.clock_in_time).toLocaleTimeString()}${time.clock_out_time ? ` - ${new Date(time.clock_out_time).toLocaleTimeString()}` : ''}`;
+          routesForRange.push({
+            id: `${time.id}-${time.date}`,
+            label: routeLabel,
+            color,
+            points: routePoints,
           });
         }
       });
@@ -768,6 +914,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       });
       
       setLogEntries(entries);
+      setTimeRoutes(routesForRange);
     } catch (error) {
       console.error('Error fetching date range logs:', error);
     } finally {
@@ -1108,21 +1255,26 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                 <div className="w-4 h-4 rounded-full bg-green-500"></div>
                 <span className="text-sm">Invoice</span>
               </div>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-1 rounded-full bg-blue-600"></div>
+                <span className="text-sm">Tracked Route</span>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
-            <LeafletMap 
-              locations={logEntries.map(entry => ({
-                id: entry.id,
-                type: entry.type as any,
+              <LeafletMap 
+                locations={logEntries.map(entry => ({
+                  id: entry.id,
+                  type: entry.type,
                 name: `${entry.orderNumber}. ${entry.name}`,
                 latitude: entry.latitude,
                 longitude: entry.longitude,
                 timestamp: entry.timestamp,
                 details: entry.details,
                 agencyName: entry.agencyName
-              }))} 
-              height="600px" 
+              }))}
+              routes={timeRoutes}
+              height="600px"
             />
           </CardContent>
         </Card>

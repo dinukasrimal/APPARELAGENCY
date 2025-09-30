@@ -1783,6 +1783,47 @@ export type Database = {
         }
         Relationships: []
       }
+      time_tracking_route_points: {
+        Row: {
+          accuracy: number | null
+          created_at: string
+          id: string
+          latitude: number
+          longitude: number
+          recorded_at: string
+          speed: number | null
+          time_tracking_id: string
+        }
+        Insert: {
+          accuracy?: number | null
+          created_at?: string
+          id?: string
+          latitude: number
+          longitude: number
+          recorded_at?: string
+          speed?: number | null
+          time_tracking_id: string
+        }
+        Update: {
+          accuracy?: number | null
+          created_at?: string
+          id?: string
+          latitude?: number
+          longitude?: number
+          recorded_at?: string
+          speed?: number | null
+          time_tracking_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "time_tracking_route_points_time_tracking_id_fkey"
+            columns: ["time_tracking_id"]
+            isOneToOne: false
+            referencedRelation: "time_tracking"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       sortedproducts: {

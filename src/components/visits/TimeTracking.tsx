@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { Geolocation } from '@capacitor/geolocation';
 import { User } from '@/types/auth';
-import { TimeTracking as TimeTrackingType } from '@/types/visits';
+import { TimeTracking as TimeTrackingType, TimeTrackingRoutePoint } from '@/types/visits';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +11,42 @@ import { Badge } from '@/components/ui/badge';
 import { Clock, MapPin, Calendar, Play, Square } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { Database } from '@/integrations/supabase/types';
+
+const ROUTE_RECORD_INTERVAL_MS = 60_000; // 1 minute cadence
+const ROUTE_DISTANCE_THRESHOLD_METERS = 30; // record if moved ~30m
+
+type TimeTrackingRow = Database['public']['Tables']['time_tracking']['Row'];
+type RoutePointRow = Database['public']['Tables']['time_tracking_route_points']['Row'];
+
+type LocationSample = {
+  latitude: number;
+  longitude: number;
+  accuracy?: number | null;
+  speed?: number | null;
+  timestamp: number;
+};
+
+const toRadians = (value: number) => (value * Math.PI) / 180;
+
+const calculateDistanceMeters = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) => {
+  const earthRadiusMeters = 6371000; // average earth radius in meters
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) *
+      Math.cos(toRadians(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMeters * c;
+};
 
 interface TimeTrackingProps {
   user: User;
@@ -22,11 +60,42 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentDuration, setCurrentDuration] = useState<string>('');
   const { toast } = useToast();
+  const locationWatchIdRef = useRef<string | number | null>(null);
+  const locationWatchSourceRef = useRef<'native' | 'web' | null>(null);
+  const lastRoutePersistRef = useRef<number>(0);
+  const lastRecordedPointRef = useRef<{ latitude: number; longitude: number } | null>(null);
+
+  const stopLocationWatch = () => {
+    const watchId = locationWatchIdRef.current;
+    if (!watchId) {
+      locationWatchSourceRef.current = null;
+      return;
+    }
+
+    if (locationWatchSourceRef.current === 'web' && typeof navigator !== 'undefined' && navigator.geolocation && typeof navigator.geolocation.clearWatch === 'function') {
+      navigator.geolocation.clearWatch(watchId as number);
+    }
+
+    if (locationWatchSourceRef.current === 'native') {
+      Geolocation.clearWatch({ id: String(watchId) }).catch((error) => {
+        console.error('Error clearing native geolocation watch:', error);
+      });
+    }
+
+    locationWatchIdRef.current = null;
+    locationWatchSourceRef.current = null;
+  };
 
   useEffect(() => {
     fetchTimeRecords();
     checkTodayClockIn();
   }, [selectedDate]);
+
+  useEffect(() => {
+    return () => {
+      stopLocationWatch();
+    };
+  }, []);
 
   // Update current duration every minute when clocked in
   useEffect(() => {
@@ -51,7 +120,209 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     };
   }, [isClockedIn, todayRecord]);
 
-  const transformTimeRecord = (record: any): TimeTrackingType => ({
+  useEffect(() => {
+    stopLocationWatch();
+
+    if (!isClockedIn || !todayRecord) {
+      lastRecordedPointRef.current = null;
+      lastRoutePersistRef.current = 0;
+      return;
+    }
+
+    if (todayRecord.routePoints && todayRecord.routePoints.length > 0) {
+      const lastPoint = todayRecord.routePoints[todayRecord.routePoints.length - 1];
+      lastRecordedPointRef.current = {
+        latitude: lastPoint.latitude,
+        longitude: lastPoint.longitude,
+      };
+      lastRoutePersistRef.current = lastPoint.recordedAt.getTime();
+    } else if (todayRecord.clockInLatitude && todayRecord.clockInLongitude) {
+      lastRecordedPointRef.current = {
+        latitude: todayRecord.clockInLatitude,
+        longitude: todayRecord.clockInLongitude,
+      };
+      lastRoutePersistRef.current = todayRecord.clockInTime.getTime();
+    } else {
+      lastRecordedPointRef.current = null;
+      lastRoutePersistRef.current = 0;
+    }
+
+    const activeRecordId = todayRecord.id;
+
+    const handlePositionUpdate = async (sample: LocationSample) => {
+      const { latitude, longitude, accuracy, speed, timestamp } = sample;
+
+      const lastPoint = lastRecordedPointRef.current;
+      const now = Date.now();
+
+      const distanceMoved = lastPoint
+        ? calculateDistanceMeters(lastPoint.latitude, lastPoint.longitude, latitude, longitude)
+        : Number.POSITIVE_INFINITY;
+      const intervalElapsed = now - lastRoutePersistRef.current >= ROUTE_RECORD_INTERVAL_MS;
+
+      if (distanceMoved < ROUTE_DISTANCE_THRESHOLD_METERS && !intervalElapsed) {
+        return;
+      }
+
+      lastRecordedPointRef.current = { latitude, longitude };
+      lastRoutePersistRef.current = now;
+
+      const { data, error } = await supabase
+        .from('time_tracking_route_points')
+        .insert([
+          {
+            time_tracking_id: activeRecordId,
+            latitude,
+            longitude,
+            accuracy,
+            speed,
+            recorded_at: new Date(timestamp).toISOString(),
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error saving route point:', error);
+        return;
+      }
+
+      const point: TimeTrackingRoutePoint = {
+        id: data.id,
+        timeTrackingId: data.time_tracking_id,
+        latitude: data.latitude,
+        longitude: data.longitude,
+        accuracy: data.accuracy,
+        speed: data.speed,
+        recordedAt: new Date(data.recorded_at),
+      };
+
+      setTodayRecord((prev) => {
+        if (!prev || prev.id !== activeRecordId) return prev;
+        return {
+          ...prev,
+          routePoints: [...(prev.routePoints ?? []), point],
+        };
+      });
+
+      setTimeRecords((prev) =>
+        prev.map((record) =>
+          record.id === activeRecordId
+            ? {
+                ...record,
+                routePoints: [...(record.routePoints ?? []), point],
+              }
+            : record
+        )
+      );
+    };
+
+    const startWebWatch = () => {
+      if (typeof navigator === 'undefined' || !navigator.geolocation || typeof navigator.geolocation.watchPosition !== 'function') {
+        console.warn('Web geolocation watch is not available in this environment.');
+        return;
+      }
+
+      try {
+        const id = navigator.geolocation.watchPosition(
+          (position) => {
+            handlePositionUpdate({
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy ?? null,
+              speed: position.coords.speed ?? null,
+              timestamp: position.timestamp || Date.now(),
+            });
+          },
+          (error) => {
+            console.error('Web geolocation watch error:', error);
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 15000,
+            timeout: 20000,
+          }
+        );
+
+        locationWatchIdRef.current = id;
+        locationWatchSourceRef.current = 'web';
+      } catch (error) {
+        console.error('Unable to start web geolocation watch:', error);
+      }
+    };
+
+    const startNativeWatch = async () => {
+      try {
+        if (!Capacitor.isPluginAvailable('Geolocation')) {
+          console.warn('Capacitor Geolocation plugin not available on this platform.');
+          startWebWatch();
+          return;
+        }
+
+        let permissions;
+        try {
+          permissions = await Geolocation.checkPermissions();
+        } catch (permissionError) {
+          console.error('Unable to check geolocation permissions:', permissionError);
+          permissions = undefined;
+        }
+
+        if (!permissions || permissions.location === 'denied' || permissions.location === 'prompt') {
+          try {
+            const request = await Geolocation.requestPermissions();
+            if (request.location === 'denied') {
+              console.warn('Location permission denied on native platform. Route tracking disabled.');
+              return;
+            }
+          } catch (requestError) {
+            console.error('Unable to request geolocation permissions:', requestError);
+            return;
+          }
+        }
+
+        const id = await Geolocation.watchPosition(
+          {
+            enableHighAccuracy: true,
+            timeout: 20000,
+          },
+          (position, error) => {
+            if (error) {
+              console.error('Native geolocation watch error:', error);
+              return;
+            }
+            if (!position) return;
+
+            handlePositionUpdate({
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy ?? null,
+              speed: position.coords.speed ?? null,
+              timestamp: position.timestamp ?? Date.now(),
+            });
+          }
+        );
+
+        if (id) {
+          locationWatchIdRef.current = id;
+          locationWatchSourceRef.current = 'native';
+        }
+      } catch (error) {
+        console.error('Unable to start native geolocation watch:', error);
+      }
+    };
+
+    if (Capacitor.getPlatform() !== 'web') {
+      startNativeWatch();
+    } else {
+      startWebWatch();
+    }
+
+    return () => {
+      stopLocationWatch();
+    };
+  }, [isClockedIn, todayRecord?.id]);
+
+  const transformTimeRecord = (record: TimeTrackingRow): TimeTrackingType => ({
     id: record.id,
     agencyId: record.agency_id,
     userId: record.user_id,
@@ -63,14 +334,57 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     clockOutLongitude: record.clock_out_longitude,
     totalHours: record.total_hours,
     date: record.date,
-    createdAt: new Date(record.created_at)
+    createdAt: new Date(record.created_at),
+    routePoints: [],
   });
+
+  const attachRoutesToRecords = async (
+    records: TimeTrackingType[]
+  ): Promise<TimeTrackingType[]> => {
+    if (records.length === 0) return records;
+
+    const recordIds = records.map((record) => record.id);
+
+    const { data, error } = await supabase
+      .from('time_tracking_route_points')
+      .select<RoutePointRow>('id, time_tracking_id, latitude, longitude, recorded_at, accuracy, speed')
+      .in('time_tracking_id', recordIds)
+      .order('recorded_at', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching time tracking route points:', error);
+      return records;
+    }
+
+    const grouped = new Map<string, TimeTrackingRoutePoint[]>();
+
+    (data || []).forEach((point: RoutePointRow) => {
+      const routePoint: TimeTrackingRoutePoint = {
+        id: point.id,
+        timeTrackingId: point.time_tracking_id,
+        latitude: point.latitude,
+        longitude: point.longitude,
+        recordedAt: new Date(point.recorded_at),
+        accuracy: point.accuracy,
+        speed: point.speed,
+      };
+
+      const list = grouped.get(point.time_tracking_id) ?? [];
+      list.push(routePoint);
+      grouped.set(point.time_tracking_id, list);
+    });
+
+    return records.map((record) => ({
+      ...record,
+      routePoints: grouped.get(record.id) ?? [],
+    }));
+  };
 
   const fetchTimeRecords = async () => {
     try {
       const { data, error } = await supabase
         .from('time_tracking')
-        .select('*')
+        .select<TimeTrackingRow>('*')
         .eq('user_id', user.id)
         .eq('date', selectedDate)
         .order('clock_in_time', { ascending: false });
@@ -79,7 +393,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       
       // Transform database data to match our TypeScript interface
       const transformedRecords = (data || []).map(transformTimeRecord);
-      setTimeRecords(transformedRecords);
+      const enrichedRecords = await attachRoutesToRecords(transformedRecords);
+      setTimeRecords(enrichedRecords);
     } catch (error) {
       console.error('Error fetching time records:', error);
       toast({
@@ -97,7 +412,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     try {
       const { data, error } = await supabase
         .from('time_tracking')
-        .select('*')
+        .select<TimeTrackingRow>('*')
         .eq('user_id', user.id)
         .eq('date', today)
         .is('clock_out_time', null)
@@ -112,7 +427,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
 
       if (data && data.length > 0) {
         const transformedRecord = transformTimeRecord(data[0]);
-        setTodayRecord(transformedRecord);
+        const [enrichedRecord] = await attachRoutesToRecords([transformedRecord]);
+        setTodayRecord(enrichedRecord || transformedRecord);
         setIsClockedIn(true);
       } else {
         setIsClockedIn(false);
@@ -125,31 +441,60 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     }
   };
 
-  const getCurrentLocation = (): Promise<{ latitude: number; longitude: number }> => {
-    return new Promise((resolve, reject) => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            resolve({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            });
-          },
-          (error) => {
-            console.error('GPS Error:', error);
-            resolve({
-              latitude: 28.6139 + Math.random() * 0.01,
-              longitude: 77.2090 + Math.random() * 0.01
-            });
-          }
-        );
-      } else {
-        resolve({
-          latitude: 28.6139 + Math.random() * 0.01,
-          longitude: 77.2090 + Math.random() * 0.01
+  const getCurrentLocation = async (): Promise<LocationSample> => {
+    const fallback = (): LocationSample => ({
+      latitude: 28.6139 + Math.random() * 0.01,
+      longitude: 77.2090 + Math.random() * 0.01,
+      accuracy: null,
+      speed: null,
+      timestamp: Date.now(),
+    });
+
+    try {
+      if (Capacitor.getPlatform() !== 'web' && Capacitor.isPluginAvailable('Geolocation')) {
+        const position = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 20000,
+        });
+
+        return {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy ?? null,
+          speed: position.coords.speed ?? null,
+          timestamp: position.timestamp ?? Date.now(),
+        };
+      }
+
+      if (typeof navigator !== 'undefined' && navigator.geolocation) {
+        return await new Promise<LocationSample>((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              resolve({
+                latitude: position.coords.latitude,
+                longitude: position.coords.longitude,
+                accuracy: position.coords.accuracy ?? null,
+                speed: position.coords.speed ?? null,
+                timestamp: position.timestamp || Date.now(),
+              });
+            },
+            (error) => {
+              console.error('GPS Error:', error);
+              resolve(fallback());
+            },
+            {
+              enableHighAccuracy: true,
+              maximumAge: 15000,
+              timeout: 20000,
+            }
+          );
         });
       }
-    });
+    } catch (error) {
+      console.error('Error retrieving current location:', error);
+    }
+
+    return fallback();
   };
 
   const handleClockIn = async () => {
@@ -166,13 +511,19 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       
       // Get location with fallback
       console.log('Getting location...');
-      const [locationResult] = await Promise.allSettled([
-        getCurrentLocation()
-      ]);
-      
-      const location = locationResult.status === 'fulfilled' 
-        ? locationResult.value 
-        : { latitude: 28.6139, longitude: 77.2090 }; // Default location if GPS fails
+      let location: LocationSample;
+      try {
+        location = await getCurrentLocation();
+      } catch (locationError) {
+        console.error('Failed to acquire location during clock-in:', locationError);
+        location = {
+          latitude: 28.6139 + Math.random() * 0.01,
+          longitude: 77.2090 + Math.random() * 0.01,
+          accuracy: null,
+          speed: null,
+          timestamp: Date.now(),
+        };
+      }
       
       console.log('Location result:', location);
       
@@ -202,7 +553,49 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
 
       const transformedRecord = transformTimeRecord(data);
       console.log('Transformed record:', transformedRecord);
-      
+
+      const { data: routeData, error: routeError } = await supabase
+        .from('time_tracking_route_points')
+        .insert([
+          {
+            time_tracking_id: data.id,
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy,
+            speed: location.speed,
+            recorded_at: new Date(location.timestamp).toISOString(),
+          },
+        ])
+        .select()
+        .single();
+
+      if (routeError) {
+        console.error('Error storing initial route point:', routeError);
+      } else if (routeData) {
+        const initialRoutePoint: TimeTrackingRoutePoint = {
+          id: routeData.id,
+          timeTrackingId: routeData.time_tracking_id,
+          latitude: routeData.latitude,
+          longitude: routeData.longitude,
+          accuracy: routeData.accuracy,
+          speed: routeData.speed,
+          recordedAt: new Date(routeData.recorded_at),
+        };
+        transformedRecord.routePoints = [initialRoutePoint];
+        lastRecordedPointRef.current = {
+          latitude: routeData.latitude,
+          longitude: routeData.longitude,
+        };
+        lastRoutePersistRef.current = new Date(routeData.recorded_at).getTime();
+      } else {
+        transformedRecord.routePoints = [];
+        lastRecordedPointRef.current = {
+          latitude: location.latitude,
+          longitude: location.longitude,
+        };
+        lastRoutePersistRef.current = location.timestamp;
+      }
+
       setTodayRecord(transformedRecord);
       setIsClockedIn(true);
       
@@ -249,13 +642,19 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       const totalMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
       
       // Get location with fallback
-      const [locationResult] = await Promise.allSettled([
-        getCurrentLocation()
-      ]);
-      
-      const location = locationResult.status === 'fulfilled' 
-        ? locationResult.value 
-        : { latitude: 28.6139, longitude: 77.2090 }; // Default location if GPS fails
+      let location: LocationSample;
+      try {
+        location = await getCurrentLocation();
+      } catch (locationError) {
+        console.error('Failed to acquire location during clock-out:', locationError);
+        location = {
+          latitude: 28.6139 + Math.random() * 0.01,
+          longitude: 77.2090 + Math.random() * 0.01,
+          accuracy: null,
+          speed: null,
+          timestamp: Date.now(),
+        };
+      }
       
       // Update database and wait for completion
       const { error } = await supabase
@@ -271,6 +670,50 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       if (error) {
         throw error;
       }
+
+      const { data: routeData, error: routeError } = await supabase
+        .from('time_tracking_route_points')
+        .insert([
+          {
+            time_tracking_id: todayRecord.id,
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy,
+            speed: location.speed,
+            recorded_at: clockOutTime.toISOString(),
+          },
+        ])
+        .select()
+        .single();
+
+      if (routeError) {
+        console.error('Error storing final route point:', routeError);
+      } else if (routeData) {
+        const finalRoutePoint: TimeTrackingRoutePoint = {
+          id: routeData.id,
+          timeTrackingId: routeData.time_tracking_id,
+          latitude: routeData.latitude,
+          longitude: routeData.longitude,
+          accuracy: routeData.accuracy,
+          speed: routeData.speed,
+          recordedAt: new Date(routeData.recorded_at),
+        };
+
+        setTimeRecords((prev) =>
+          prev.map((record) =>
+            record.id === todayRecord.id
+              ? {
+                  ...record,
+                  routePoints: [...(record.routePoints ?? []), finalRoutePoint],
+                }
+              : record
+          )
+        );
+      }
+
+      stopLocationWatch();
+      lastRecordedPointRef.current = null;
+      lastRoutePersistRef.current = 0;
       
       // Update UI state after successful database update
       setTodayRecord(null);
@@ -528,6 +971,19 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                             </div>
                             <p className="text-sm text-slate-600 font-mono">
                               {record.clockOutLatitude.toFixed(6)}, {record.clockOutLongitude?.toFixed(6)}
+                            </p>
+                          </div>
+                        )}
+                        {record.routePoints && record.routePoints.length > 0 && (
+                          <div className="bg-blue-50 rounded-xl p-4 border border-blue-100 flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <div className="bg-blue-100 rounded-full w-6 h-6 flex items-center justify-center">
+                                <MapPin className="h-3 w-3 text-blue-600" />
+                              </div>
+                              <span className="text-sm font-medium text-blue-700">Route Points Captured</span>
+                            </div>
+                            <p className="text-sm text-blue-700 font-semibold">
+                              {record.routePoints.length} GPS updates tracked during this shift
                             </p>
                           </div>
                         )}

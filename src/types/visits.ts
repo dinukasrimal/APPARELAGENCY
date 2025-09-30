@@ -24,6 +24,17 @@ export interface TimeTracking {
   totalHours?: string;
   date: string;
   createdAt: Date;
+  routePoints?: TimeTrackingRoutePoint[];
+}
+
+export interface TimeTrackingRoutePoint {
+  id: string;
+  timeTrackingId: string;
+  latitude: number;
+  longitude: number;
+  recordedAt: Date;
+  accuracy?: number | null;
+  speed?: number | null;
 }
 
 export const NON_PRODUCTIVE_REASONS = [
