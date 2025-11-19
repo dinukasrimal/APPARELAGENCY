@@ -16,7 +16,8 @@
     "test:fuzzy": "node scripts/test-fuzzy-matching.js",
     "test:integration": "node scripts/test-complete-integration.js",
     "test:final": "node scripts/test-final-integration.js",
-    "debug:nexus": "node scripts/debug-nexus-user.js"
+    "debug:nexus": "node scripts/debug-nexus-user.js",
+    "backfill:newsyncodoo": "node scripts/backfill-newsyncodoo-categories.js"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^7.0.0",

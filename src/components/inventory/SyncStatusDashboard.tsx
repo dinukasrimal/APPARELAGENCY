@@ -132,6 +132,15 @@ const SyncStatusDashboard = ({ onRefresh, onGlobalSync }: SyncStatusDashboardPro
     return nextSync;
   };
 
+  const getNextOdooSyncTime = () => {
+    if (!syncStatus) return null;
+
+    const morningTime = new Date(syncStatus.nextScheduledSync.odooLast25.morning);
+    const eveningTime = new Date(syncStatus.nextScheduledSync.odooLast25.evening);
+
+    return morningTime < eveningTime ? morningTime : eveningTime;
+  };
+
   const formatTimeUntilNext = (nextSyncTime: Date | null) => {
     if (!nextSyncTime) return '';
     
@@ -200,7 +209,7 @@ const SyncStatusDashboard = ({ onRefresh, onGlobalSync }: SyncStatusDashboardPro
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* External Bot Sync Status */}
         <Card>
           <CardHeader className="pb-3">
@@ -274,10 +283,47 @@ const SyncStatusDashboard = ({ onRefresh, onGlobalSync }: SyncStatusDashboardPro
             </div>
           </CardContent>
         </Card>
+
+        {/* Odoo Last 25 Sync Status */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center justify-between text-sm">
+              <span className="flex items-center gap-2">
+                {getStatusIcon(syncStatus.lastOdooSync.status)}
+                Odoo Last 25
+              </span>
+              <Badge variant={getStatusBadgeVariant(syncStatus.lastOdooSync.status)}>
+                {syncStatus.lastOdooSync.status}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="space-y-2">
+              <div>
+                <p className="text-xs text-gray-500">Last Sync</p>
+                <p className="text-sm font-medium">
+                  {formatDateTime(syncStatus.lastOdooSync.timestamp)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Status</p>
+                <p className="text-sm">{syncStatus.lastOdooSync.message}</p>
+              </div>
+              {syncStatus.lastOdooSync.syncedCount > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500">Records Synced</p>
+                  <p className="text-sm font-medium">
+                    {syncStatus.lastOdooSync.syncedCount.toLocaleString()}
+                  </p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Next Scheduled Syncs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* External Bot Schedule */}
         <Card>
           <CardHeader className="pb-3">
@@ -335,6 +381,37 @@ const SyncStatusDashboard = ({ onRefresh, onGlobalSync }: SyncStatusDashboardPro
             <div className="mt-3 pt-3 border-t">
               <p className="text-xs text-gray-500">
                 Next global sync {formatTimeUntilNext(getNextGlobalSyncTime())}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Odoo Last 25 Schedule */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Calendar className="h-4 w-4" />
+              Odoo Last 25 Schedule
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs text-gray-500">Morning (07:30 AM GMT+5:30 / 02:00 UTC)</p>
+                <p className="text-sm font-medium">
+                  {formatDateTime(syncStatus.nextScheduledSync.odooLast25.morning)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Evening (09:30 PM GMT+5:30 / 16:00 UTC)</p>
+                <p className="text-sm font-medium">
+                  {formatDateTime(syncStatus.nextScheduledSync.odooLast25.evening)}
+                </p>
+              </div>
+            </div>
+            <div className="mt-3 pt-3 border-t">
+              <p className="text-xs text-gray-500">
+                Next Odoo sync {formatTimeUntilNext(getNextOdooSyncTime())}
               </p>
             </div>
           </CardContent>

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database } from 'lucide-react';
+import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database, CloudLightning } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
@@ -41,6 +41,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   const [syncing, setSyncing] = useState(false);
   const [globalSyncing, setGlobalSyncing] = useState(false);
   const [externalSyncing, setExternalSyncing] = useState(false);
+  const [odooSyncing, setOdooSyncing] = useState(false);
   const [showBulkAdjustment, setShowBulkAdjustment] = useState(false);
   const [showApprovals, setShowApprovals] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -403,6 +404,43 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     }
   };
 
+  // Manual Odoo sync (superuser functionality)
+  const handleManualOdooSync = async () => {
+    try {
+      setOdooSyncing(true);
+      toast({
+        title: 'Odoo Sync Started',
+        description: 'Fetching last 25 invoices from Odoo and updating inventory...',
+      });
+
+      const result = await externalBotSyncService.newsyncOdoo();
+
+      if (result.success) {
+        toast({
+          title: 'Odoo Sync Completed',
+          description: result.message,
+        });
+
+        await fetchData(true);
+      } else {
+        toast({
+          title: 'Odoo Sync Failed',
+          description: result.message,
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('Odoo sync failed:', error);
+      toast({
+        title: 'Odoo Sync Error',
+        description: 'Failed to complete Odoo sync',
+        variant: 'destructive',
+      });
+    } finally {
+      setOdooSyncing(false);
+    }
+  };
+
   // Handle agency selection change
   const handleAgencyChange = (agencyId: string) => {
     setSelectedAgencyId(agencyId);
@@ -477,7 +515,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
           
           <Button 
             onClick={handleSync}
-            disabled={syncing || globalSyncing || externalSyncing}
+            disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
             className="bg-blue-600 hover:bg-blue-700"
           >
             {syncing ? (
@@ -490,31 +528,46 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
           {user.role === 'superuser' && (
             <>
-              <Button 
-                onClick={handleGlobalSync}
-                disabled={syncing || globalSyncing || externalSyncing}
-                className="bg-purple-600 hover:bg-purple-700"
-              >
-                {globalSyncing ? (
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
+          <Button 
+            onClick={handleGlobalSync}
+            disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
+            className="bg-purple-600 hover:bg-purple-700"
+          >
+            {globalSyncing ? (
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
                   <Globe className="h-4 w-4 mr-2" />
                 )}
                 Global Sync (All Users)
               </Button>
 
-              <Button 
-                onClick={handleManualExternalSync}
-                disabled={syncing || globalSyncing || externalSyncing}
-                className="bg-orange-600 hover:bg-orange-700"
-              >
-                {externalSyncing ? (
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Database className="h-4 w-4 mr-2" />
-                )}
-                Manual External Sync
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button 
+                  onClick={handleManualExternalSync}
+                  disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
+                  className="bg-orange-600 hover:bg-orange-700"
+                >
+                  {externalSyncing ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Database className="h-4 w-4 mr-2" />
+                  )}
+                  Manual External Sync
+                </Button>
+
+                <Button
+                  onClick={handleManualOdooSync}
+                  disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
+                  className="bg-amber-600 hover:bg-amber-700"
+                >
+                  {odooSyncing ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <CloudLightning className="h-4 w-4 mr-2" />
+                  )}
+                  Sync Odoo (Last 25)
+                </Button>
+              </div>
             </>
           )}
 

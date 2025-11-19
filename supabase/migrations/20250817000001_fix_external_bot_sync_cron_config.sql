@@ -61,7 +61,7 @@ BEGIN
         ],
         'application/json',
         '{}'
-    )::extensions.http_request);
+    )::http_request);
     
     -- Parse JSON response
     BEGIN

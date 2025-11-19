@@ -86,48 +86,92 @@ Deno.serve(async (req) => {
       console.warn('⚠️ Warning clearing existing data:', deleteError.message)
     }
 
+    const BIGINT_MAX = BigInt('9223372036854775807')
+
+    const normalizeNumericId = (value: any): number | string | null => {
+      if (value === null || value === undefined) return null
+      
+      if (Array.isArray(value)) {
+        return normalizeNumericId(value[0])
+      }
+      
+      if (typeof value === 'number') {
+        if (!Number.isFinite(value)) return null
+        const truncated = Math.trunc(value)
+        if (Math.abs(truncated) > Number(BIGINT_MAX)) {
+          return null
+        }
+        if (Number.isSafeInteger(truncated)) {
+          return truncated
+        }
+        return truncated.toString()
+      }
+      
+      if (typeof value === 'string') {
+        if (value.trim() === '') return null
+        const cleaned = value.trim()
+        
+        if (/^\d+$/.test(cleaned)) {
+          const asBigInt = BigInt(cleaned)
+          if (asBigInt > BIGINT_MAX) return null
+          if (asBigInt <= BigInt(Number.MAX_SAFE_INTEGER) && asBigInt >= BigInt(Number.MIN_SAFE_INTEGER)) {
+            return Number(asBigInt)
+          }
+          return asBigInt.toString()
+        }
+        
+        const numeric = Number(cleaned)
+        if (!Number.isNaN(numeric) && Number.isFinite(numeric)) {
+          return normalizeNumericId(numeric)
+        }
+        
+        const digitsOnly = cleaned.replace(/\D/g, '')
+        if (digitsOnly) {
+          return normalizeNumericId(digitsOnly)
+        }
+        
+        return null
+      }
+      
+      return null
+    }
+
     // Transform and prepare data for insertion
     console.log('🔄 Transforming invoice data...')
+    const fallbackBase = Date.now()
     const transformedInvoices = externalInvoices.map((invoice: any, index: number) => {
-      // Generate a numeric ID from the string ID or use index-based fallback
-      let numericId: number
-      const originalId = invoice.id?.toString() || ''
-      
-      if (typeof invoice.id === 'number') {
-        numericId = invoice.id
-      } else if (typeof invoice.id === 'string') {
-        // Extract numbers from string ID like "INV/2025/00614" -> 2025614
-        const numbers = invoice.id.replace(/\D/g, '')
-        numericId = numbers ? parseInt(numbers) : Date.now() + index
-      } else {
-        numericId = Date.now() + index
+      // Generate an ID compatible with BIGINT without overflowing JS numbers
+      let normalizedId = normalizeNumericId(invoice.id)
+      if (normalizedId === null) {
+        normalizedId = fallbackBase + index
       }
       
       return {
-        id: numericId,
-        name: invoice.name || invoice.id?.toString() || `INV-${numericId}`,
-      partner_name: invoice.partner_name || 'Unknown Customer',
-      date_order: invoice.date_order || null,
-      amount_total: invoice.amount_total || 0,
-      state: invoice.state || 'unknown',
-      order_lines: invoice.order_lines || null,
-      company_id: invoice.company_id || null,
-      user_id: invoice.user_id || null,
-      team_id: invoice.team_id || null,
-      currency_id: invoice.currency_id || 'LKR',
-      payment_state: invoice.payment_state || null,
-      date_invoice: invoice.date_invoice || null,
-      invoice_origin: invoice.invoice_origin || null,
-      reference: invoice.reference || null,
-      move_type: invoice.move_type || null,
-      journal_id: invoice.journal_id || null,
-      fiscal_position_id: invoice.fiscal_position_id || null,
-      invoice_payment_term_id: invoice.invoice_payment_term_id || null,
-      auto_post: invoice.auto_post || false,
-      to_check: invoice.to_check || false,
-      sync_timestamp: new Date().toISOString(),
-      agency_match: null // Can be populated later with matching logic
-    }
+        id: normalizedId,
+        original_external_id: invoice.id?.toString() || null,
+        name: invoice.name || invoice.id?.toString() || `INV-${normalizedId}`,
+        partner_name: invoice.partner_name || 'Unknown Customer',
+        date_order: invoice.date_order || null,
+        amount_total: invoice.amount_total || 0,
+        state: invoice.state || 'unknown',
+        order_lines: invoice.order_lines || null,
+        company_id: normalizeNumericId(invoice.company_id),
+        user_id: normalizeNumericId(invoice.user_id),
+        team_id: normalizeNumericId(invoice.team_id),
+        currency_id: invoice.currency_id || 'LKR',
+        payment_state: invoice.payment_state || null,
+        date_invoice: invoice.date_invoice || null,
+        invoice_origin: invoice.invoice_origin || null,
+        reference: invoice.reference || null,
+        move_type: invoice.move_type || null,
+        journal_id: normalizeNumericId(invoice.journal_id),
+        fiscal_position_id: normalizeNumericId(invoice.fiscal_position_id),
+        invoice_payment_term_id: normalizeNumericId(invoice.invoice_payment_term_id),
+        auto_post: invoice.auto_post || false,
+        to_check: invoice.to_check || false,
+        sync_timestamp: new Date().toISOString(),
+        agency_match: null // Can be populated later with matching logic
+      }
     })
 
     // Insert data in batches to avoid timeouts

@@ -40,6 +40,12 @@ export interface SyncStatus {
     message: string;
     syncedCount: number;
   };
+  lastOdooSync: {
+    timestamp: string | null;
+    status: 'success' | 'error' | 'never';
+    message: string;
+    syncedCount: number;
+  };
   lastGlobalBotSync: {
     timestamp: string | null;
     status: 'success' | 'error' | 'never' | 'pending';
@@ -50,6 +56,10 @@ export interface SyncStatus {
     externalBot: {
       morning: string; // 6 AM UTC
       evening: string; // 6 PM UTC
+    };
+    odooLast25: {
+      morning: string; // 7:30 AM GMT+5:30 (02:00 UTC)
+      evening: string; // 9:30 PM GMT+5:30 (16:00 UTC)
     };
     globalBot: {
       morning: string; // 8 AM UTC  
@@ -535,6 +545,67 @@ export class ExternalBotSyncService {
     }
   }
 
+  async newsyncOdoo(): Promise<SyncResult> {
+    try {
+      console.log('🆕 Starting manual Odoo inventory sync (newsyncodoo)...');
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'http://localhost:54321';
+      const supabaseServiceKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseServiceKey) {
+        return {
+          success: false,
+          message: 'Service role key not configured for newsyncodoo',
+          error: 'Missing VITE_SUPABASE_SERVICE_ROLE_KEY environment variable'
+        };
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/newsyncodoo`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${supabaseServiceKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          manualTrigger: true,
+          sync_trigger: 'manual_ui',
+          metadata: {
+            source: 'external_inventory_manual_sync',
+            timestamp: new Date().toISOString()
+          }
+        })
+      });
+
+      console.log('🆕 newsyncodoo response status:', response.status, response.statusText);
+
+      const payload = await response.json();
+
+      if (!response.ok || !payload.success) {
+        const message = payload?.error || payload?.message || `newsyncodoo failed - HTTP ${response.status}`;
+
+        return {
+          success: false,
+          message,
+          error: message
+        };
+      }
+
+      return {
+        success: true,
+        message: payload.message || 'newsyncodoo completed successfully',
+        syncedCount: payload.insertedTransactions || payload.synced_count || 0,
+        details: payload
+      };
+    } catch (error: any) {
+      console.error('newsyncodoo manual sync error:', error);
+
+      return {
+        success: false,
+        message: 'newsyncodoo manual sync failed',
+        error: error.message
+      };
+    }
+  }
+
   async getSyncStatus(): Promise<SyncResult> {
     try {
       const { count, error } = await supabase
@@ -593,6 +664,16 @@ export class ExternalBotSyncService {
         .limit(1)
         .single();
 
+      const { data: lastOdooSyncRows } = await supabase
+        .from('external_bot_sync_log')
+        .select('*')
+        .filter('details->>sync_type', 'eq', 'newsyncodoo')
+        .in('status', ['success', 'error', 'cron_error'])
+        .order('sync_timestamp', { ascending: false })
+        .limit(1);
+
+      const lastOdooSync = Array.isArray(lastOdooSyncRows) ? lastOdooSyncRows[0] : null;
+
       // Get pending global sync requests count
       const { count: pendingGlobalRequests } = await supabase
         .from('global_bot_sync_log')
@@ -628,6 +709,20 @@ export class ExternalBotSyncService {
         nextGlobalEvening.setUTCDate(nextGlobalEvening.getUTCDate() + 1);
       }
 
+      // Odoo last-25 sync times (07:30 & 21:30 GMT+5:30 => 02:00 & 16:00 UTC)
+      const nextOdooMorning = new Date(now);
+      const nextOdooEvening = new Date(now);
+      nextOdooMorning.setUTCHours(2, 0, 0, 0);
+      nextOdooEvening.setUTCHours(16, 0, 0, 0);
+
+      if (now.getUTCHours() > 2 || (now.getUTCHours() === 2 && now.getUTCMinutes() >= 0)) {
+        nextOdooMorning.setUTCDate(nextOdooMorning.getUTCDate() + 1);
+      }
+
+      if (now.getUTCHours() > 16 || (now.getUTCHours() === 16 && now.getUTCMinutes() >= 0)) {
+        nextOdooEvening.setUTCDate(nextOdooEvening.getUTCDate() + 1);
+      }
+
       // Determine global bot sync status
       let globalSyncStatus: 'success' | 'error' | 'never' | 'pending' = 'never';
       let globalSyncMessage = 'No global bot sync found';
@@ -647,6 +742,12 @@ export class ExternalBotSyncService {
           message: lastExternalSync?.message || 'No external bot sync found',
           syncedCount: lastExternalSync?.synced_count || 0
         },
+        lastOdooSync: {
+          timestamp: lastOdooSync?.sync_timestamp || null,
+          status: lastOdooSync ? (lastOdooSync.status === 'success' ? 'success' : 'error') : 'never',
+          message: lastOdooSync?.message || 'No Odoo sync found',
+          syncedCount: lastOdooSync?.synced_count || 0
+        },
         lastGlobalBotSync: {
           timestamp: lastGlobalSync?.sync_timestamp || null,
           status: globalSyncStatus,
@@ -657,6 +758,10 @@ export class ExternalBotSyncService {
           externalBot: {
             morning: nextExternalMorning.toISOString(),
             evening: nextExternalEvening.toISOString()
+          },
+          odooLast25: {
+            morning: nextOdooMorning.toISOString(),
+            evening: nextOdooEvening.toISOString()
           },
           globalBot: {
             morning: nextGlobalMorning.toISOString(),
@@ -677,11 +782,15 @@ export class ExternalBotSyncService {
       const nextExternalEvening = new Date(now);
       const nextGlobalMorning = new Date(now);
       const nextGlobalEvening = new Date(now);
+      const nextOdooMorning = new Date(now);
+      const nextOdooEvening = new Date(now);
       
       nextExternalMorning.setUTCHours(6, 0, 0, 0);
       nextExternalEvening.setUTCHours(18, 0, 0, 0);
       nextGlobalMorning.setUTCHours(8, 0, 0, 0);
       nextGlobalEvening.setUTCHours(20, 0, 0, 0);
+      nextOdooMorning.setUTCHours(2, 0, 0, 0);
+      nextOdooEvening.setUTCHours(16, 0, 0, 0);
       
       if (now.getUTCHours() >= 6) {
         nextExternalMorning.setUTCDate(nextExternalMorning.getUTCDate() + 1);
@@ -695,9 +804,21 @@ export class ExternalBotSyncService {
       if (now.getUTCHours() >= 20) {
         nextGlobalEvening.setUTCDate(nextGlobalEvening.getUTCDate() + 1);
       }
+      if (now.getUTCHours() >= 2) {
+        nextOdooMorning.setUTCDate(nextOdooMorning.getUTCDate() + 1);
+      }
+      if (now.getUTCHours() >= 16) {
+        nextOdooEvening.setUTCDate(nextOdooEvening.getUTCDate() + 1);
+      }
 
       return {
         lastExternalBotSync: {
+          timestamp: null,
+          status: 'error',
+          message: 'Error checking sync status',
+          syncedCount: 0
+        },
+        lastOdooSync: {
           timestamp: null,
           status: 'error',
           message: 'Error checking sync status',
@@ -713,6 +834,10 @@ export class ExternalBotSyncService {
           externalBot: {
             morning: nextExternalMorning.toISOString(),
             evening: nextExternalEvening.toISOString()
+          },
+          odooLast25: {
+            morning: nextOdooMorning.toISOString(),
+            evening: nextOdooEvening.toISOString()
           },
           globalBot: {
             morning: nextGlobalMorning.toISOString(),
