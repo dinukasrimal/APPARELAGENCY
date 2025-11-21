@@ -560,42 +560,42 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
           )}
         </div>
         <div className="flex flex-wrap gap-1 items-center">
-          <Button 
-            onClick={() => fetchData(true)}
-            variant="outline"
-            disabled={loading}
-          >
-            {loading ? (
-              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4 mr-2" />
-            )}
-            Force Refresh
-          </Button>
-          
-          <Button 
-            onClick={handleSync}
-            disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
-            className="bg-blue-600 hover:bg-blue-700"
-          >
-            {syncing ? (
-              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <ExternalLink className="h-4 w-4 mr-2" />
-            )}
-            Sync My Transactions
-          </Button>
-
-          {user.role === 'superuser' && (
+          {user.role === 'superuser' ? (
             <>
-          <Button 
-            onClick={handleGlobalSync}
-            disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
-            className="bg-purple-600 hover:bg-purple-700"
-          >
-            {globalSyncing ? (
-              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
+              <Button 
+                onClick={() => fetchData(true)}
+                variant="outline"
+                disabled={loading}
+              >
+                {loading ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Force Refresh
+              </Button>
+              
+              <Button 
+                onClick={handleSync}
+                disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {syncing ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                )}
+                Sync My Transactions
+              </Button>
+
+              <Button 
+                onClick={handleGlobalSync}
+                disabled={syncing || globalSyncing || externalSyncing || odooSyncing}
+                className="bg-purple-600 hover:bg-purple-700"
+              >
+                {globalSyncing ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
                   <Globe className="h-4 w-4 mr-2" />
                 )}
                 Global Sync (All Users)
@@ -628,37 +628,55 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                   Sync Odoo (Last 25)
                 </Button>
               </div>
+
+              <Button 
+                onClick={() => setShowBulkAdjustment(true)}
+                variant="outline"
+                className="bg-orange-50 hover:bg-orange-100 text-orange-700"
+              >
+                <Settings className="h-4 w-4 mr-2" />
+                Stock Count
+              </Button>
+
+              <Button 
+                onClick={() => setShowApprovals(true)}
+                variant="outline"
+                className="bg-green-50 hover:bg-green-100 text-green-700"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Approvals
+              </Button>
+
+              <Button 
+                onClick={() => setShowHistory(true)}
+                variant="outline"
+                className="bg-purple-50 hover:bg-purple-100 text-purple-700"
+              >
+                <BarChart3 className="h-4 w-4 mr-2" />
+                History
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button 
+                onClick={() => setShowBulkAdjustment(true)}
+                variant="outline"
+                className="bg-orange-50 hover:bg-orange-100 text-orange-700"
+              >
+                <Settings className="h-4 w-4 mr-2" />
+                Stock Count
+              </Button>
+
+              <Button 
+                onClick={() => setShowHistory(true)}
+                variant="outline"
+                className="bg-purple-50 hover:bg-purple-100 text-purple-700"
+              >
+                <BarChart3 className="h-4 w-4 mr-2" />
+                History
+              </Button>
             </>
           )}
-
-          <Button 
-            onClick={() => setShowBulkAdjustment(true)}
-            variant="outline"
-            className="bg-orange-50 hover:bg-orange-100 text-orange-700"
-          >
-            <Settings className="h-4 w-4 mr-2" />
-            Stock Count
-          </Button>
-
-          {user.role === 'superuser' && (
-            <Button 
-              onClick={() => setShowApprovals(true)}
-              variant="outline"
-              className="bg-green-50 hover:bg-green-100 text-green-700"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Approvals
-            </Button>
-          )}
-
-          <Button 
-            onClick={() => setShowHistory(true)}
-            variant="outline"
-            className="bg-purple-50 hover:bg-purple-100 text-purple-700"
-          >
-            <BarChart3 className="h-4 w-4 mr-2" />
-            History
-          </Button>
         </div>
       </div>
 
