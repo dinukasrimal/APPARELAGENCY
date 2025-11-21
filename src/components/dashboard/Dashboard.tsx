@@ -5,13 +5,14 @@ import { LogOut } from 'lucide-react';
 import Sidebar from './Sidebar';
 import DashboardStats from './DashboardStats';
 import DashboardMapLeaflet from './DashboardMapLeaflet';
+import ExternalInventory from '@/components/inventory/ExternalInventory';
+import ModuleErrorBoundary from '@/components/common/ModuleErrorBoundary';
 
 // Lazy load heavy components to improve initial load time
 const CustomerManagement = lazy(() => import('@/components/customers/DuplicatePreventionCustomerManagement'));
 const ProductSidebarView = lazy(() => import('@/components/products/ProductSidebarView'));
 const SalesOrders = lazy(() => import('@/components/sales/SalesOrders'));
 const PurchaseOrders = lazy(() => import('@/components/purchase/PurchaseOrders'));
-const ExternalInventory = lazy(() => import('@/components/inventory/ExternalInventory'));
 const NonProductiveVisits = lazy(() => import('@/components/visits/NonProductiveVisits'));
 const TimeTracking = lazy(() => import('@/components/visits/TimeTracking'));
 const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/QuarterlyTargetsManagement'));
@@ -76,9 +77,9 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
         );
       case 'inventory':
         return (
-          <Suspense fallback={<ModuleLoader />}>
+          <ModuleErrorBoundary moduleName="Inventory">
             <ExternalInventory user={user} />
-          </Suspense>
+          </ModuleErrorBoundary>
         );
       case 'non-productive-visits':
         return (

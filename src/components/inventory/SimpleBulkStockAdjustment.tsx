@@ -157,7 +157,9 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
   const submitAllAdjustments = async () => {
     try {
       setSubmitting(true);
-      const batchId = crypto.randomUUID();
+      const batchId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
       // Collect all adjustments from all categories
       const allAdjustments: any[] = [];

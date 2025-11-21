@@ -97,5 +97,14 @@
 
   body {
     @apply bg-background text-foreground;
+    max-width: 100%;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  html, #root {
+    max-width: 100%;
+    min-height: 100%;
+    overflow-x: hidden;
   }
 }

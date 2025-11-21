@@ -178,7 +178,9 @@ const ExternalBulkStockAdjustmentForm = ({ user, onClose, onSubmitted }: Externa
 
     try {
       setSubmitting(true);
-      const batchId = crypto.randomUUID();
+      const batchId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
       // Prepare adjustment records
       const adjustmentRecords = adjustmentItems.map(item => ({
