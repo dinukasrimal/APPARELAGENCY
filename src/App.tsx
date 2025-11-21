@@ -30,3 +30,13 @@ const App = () => (
 );
 
 export default App;
+function App() {
+  return (
+    <>
+      <div style={{ position: "fixed", top: 10, right: 10, zIndex: 9999 }}>
+        APPAREL AGENCY v9999
+      </div>
+      {/* your existing app JSX below */}
+    </>
+  );
+}
