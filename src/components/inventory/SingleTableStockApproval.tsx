@@ -87,7 +87,7 @@ const SingleTableStockApproval = ({
         .order('created_at', { ascending: false });
 
       // Filter by agency if not superuser viewing all agencies
-      if (selectedAgencyId !== 'all') {
+      if (selectedAgencyId && selectedAgencyId !== 'all') {
         query = query.eq('agency_id', selectedAgencyId);
       }
 

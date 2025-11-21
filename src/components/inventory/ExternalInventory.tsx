@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database, CloudLightning } from 'lucide-react';
+import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database, CloudLightning, ClipboardList, History, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
@@ -45,6 +45,9 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   const [showBulkAdjustment, setShowBulkAdjustment] = useState(false);
   const [showApprovals, setShowApprovals] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showAdjustmentStatus, setShowAdjustmentStatus] = useState(false);
+  const [myAdjustments, setMyAdjustments] = useState<any[]>([]);
+  const [loadingMyAdjustments, setLoadingMyAdjustments] = useState(false);
   
   // Agency selection for superusers
   const [agencies, setAgencies] = useState<Agency[]>([]);
@@ -256,6 +259,57 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     }
   };
 
+  const fetchMyAdjustments = async () => {
+    try {
+      setLoadingMyAdjustments(true);
+      const { data, error } = await supabase
+        .from('external_inventory_management')
+        .select('id, product_name, product_code, color, size, quantity, approval_status, created_at, notes')
+        .eq('requested_by', user.id)
+        .in('approval_status', ['pending', 'approved'])
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setMyAdjustments(data || []);
+    } catch (error) {
+      console.error('Error fetching my adjustments:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load your adjustments',
+        variant: 'destructive'
+      });
+    } finally {
+      setLoadingMyAdjustments(false);
+    }
+  };
+
+  const deleteMyAdjustment = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('external_inventory_management')
+        .update({
+          approval_status: 'rejected',
+          notes: 'Cancelled by requester'
+        })
+        .eq('id', id)
+        .eq('requested_by', user.id)
+        .eq('approval_status', 'pending');
+      if (error) throw error;
+      toast({
+        title: 'Deleted',
+        description: 'Adjustment request deleted'
+      });
+      setMyAdjustments(prev => prev.filter(adj => adj.id !== id));
+    } catch (error) {
+      console.error('Error deleting adjustment:', error);
+      toast({
+        title: 'Error',
+        description: 'Could not delete adjustment',
+        variant: 'destructive'
+      });
+    }
+  };
+
   // Sync all local database transactions
   const handleSync = async () => {
     try {
@@ -459,6 +513,12 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   useEffect(() => {
     fetchData();
   }, [selectedAgencyId]);
+
+  useEffect(() => {
+    if (activeTab === 'my-adjustments') {
+      fetchMyAdjustments();
+    }
+  }, [activeTab]);
 
   if (loading) {
     return (
@@ -688,7 +748,7 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className={`grid w-full ${user.role === 'superuser' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        <TabsList className={`grid w-full ${user.role === 'superuser' ? 'grid-cols-4' : 'grid-cols-3'}`}>
           <TabsTrigger value="overview" className="flex items-center gap-2">
             <Package className="h-4 w-4" />
             Stock Overview
@@ -697,6 +757,16 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             <RefreshCw className="h-4 w-4" />
             Transaction History
           </TabsTrigger>
+          <TabsTrigger value="my-adjustments" className="flex items-center gap-2">
+            <ClipboardList className="h-4 w-4" />
+            My Adjustments
+          </TabsTrigger>
+          {user.role === 'superuser' && (
+            <TabsTrigger value="adjustments" className="flex items-center gap-2">
+              <ClipboardList className="h-4 w-4" />
+              Stock Adjustments
+            </TabsTrigger>
+          )}
           {user.role === 'superuser' && (
             <TabsTrigger value="sync-status" className="flex items-center gap-2">
               <BarChart3 className="h-4 w-4" />
@@ -1072,6 +1142,116 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
             </div>
           </div>
         </TabsContent>
+
+        <TabsContent value="my-adjustments" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <ClipboardList className="h-4 w-4" />
+                  My Adjustment Requests
+                </span>
+                <Button variant="outline" size="sm" onClick={fetchMyAdjustments} disabled={loadingMyAdjustments}>
+                  {loadingMyAdjustments ? 'Refreshing…' : 'Refresh'}
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {loadingMyAdjustments ? (
+                <div className="text-sm text-gray-500">Loading your adjustments…</div>
+              ) : myAdjustments.length === 0 ? (
+                <div className="text-sm text-gray-500">No adjustment requests yet.</div>
+              ) : (
+                <div className="space-y-3">
+                  {myAdjustments.map((adj) => (
+                    <div key={adj.id} className="flex items-center justify-between border rounded-lg p-3">
+                      <div className="space-y-1">
+                        <div className="font-medium">{adj.product_name}</div>
+                        <div className="text-xs text-gray-500">
+                          Qty: {adj.quantity} • {adj.color} / {adj.size}
+                        </div>
+                        <div className="text-xs">
+                          Status:{' '}
+                          <Badge variant={adj.approval_status === 'approved' ? 'default' : adj.approval_status === 'pending' ? 'secondary' : 'destructive'}>
+                            {adj.approval_status}
+                          </Badge>
+                        </div>
+                        {adj.notes && <div className="text-xs text-gray-600">Notes: {adj.notes}</div>}
+                        <div className="text-xs text-gray-400">
+                          {new Date(adj.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {adj.approval_status === 'pending' && (
+                          <Button variant="ghost" size="icon" onClick={() => deleteMyAdjustment(adj.id)}>
+                            <Trash2 className="h-4 w-4 text-red-600" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {user.role === 'superuser' && (
+          <TabsContent value="adjustments" className="space-y-4 mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <ClipboardList className="h-4 w-4" />
+                    Pending Adjustments
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-gray-600">
+                    Review and approve stock count adjustments before they hit inventory.
+                  </p>
+                  <Button onClick={() => setShowApprovals(true)} className="w-full">
+                    Open Approvals
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <History className="h-4 w-4" />
+                    Adjustment History
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-gray-600">
+                    View processed adjustments to confirm what was applied to stock.
+                  </p>
+                  <Button variant="outline" onClick={() => setShowHistory(true)} className="w-full">
+                    View History
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Plus className="h-4 w-4" />
+                    Submit Stock Count
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-gray-600">
+                    Capture stock count adjustments to send for approval.
+                  </p>
+                  <Button variant="secondary" onClick={() => setShowBulkAdjustment(true)} className="w-full">
+                    New Stock Count
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        )}
 
         <TabsContent value="transactions" className="space-y-6 mt-6">
           <Card>
