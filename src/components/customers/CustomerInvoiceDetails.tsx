@@ -23,6 +23,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [customerInvoiceSummary, setCustomerInvoiceSummary] = useState<CustomerInvoiceSummary | null>(null);
+  const [customerReturns, setCustomerReturns] = useState<Array<{ id: string; invoice_id: string | null; total: number; status: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [showCollectionForm, setShowCollectionForm] = useState(false);
   const [viewingCollection, setViewingCollection] = useState<Collection | null>(null);
@@ -122,8 +123,22 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
       setInvoices(transformedInvoices);
       setCollections(transformedCollections);
       
+      // Fetch returns for this customer (approved/processed)
+      const { data: returnsData, error: returnsError } = await supabase
+        .from('returns')
+        .select('id, invoice_id, total, status')
+        .eq('customer_id', customer.id)
+        .in('status', ['approved', 'processed']);
+
+      if (returnsError) {
+        console.warn('Returns fetch issue:', returnsError);
+        setCustomerReturns([]);
+      } else {
+        setCustomerReturns(returnsData || []);
+      }
+      
       // Calculate summary
-      await calculateCustomerSummary(transformedInvoices, transformedCollections);
+      await calculateCustomerSummary(transformedInvoices, transformedCollections, returnsData || []);
     } catch (error) {
       console.error('Error fetching customer data:', error);
       toast({
@@ -136,7 +151,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
     }
   };
 
-  const calculateCustomerSummary = async (customerInvoices: Invoice[], customerCollections: Collection[]) => {
+  const calculateCustomerSummary = async (customerInvoices: Invoice[], customerCollections: Collection[], customerReturnsList: Array<{ id: string; invoice_id: string | null; total: number; status: string }>) => {
     // Calculate payments with proper date validation (same logic as Collections.tsx)
     const today = new Date();
     today.setHours(23, 59, 59, 999); // Set to end of day for comparison
@@ -171,16 +186,17 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
 
     // Calculate totals
     const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
+    const totalReturns = customerReturnsList.reduce((sum, ret) => sum + (ret.total || 0), 0);
     const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments;
     
     // Outstanding calculation:
-    // Outstanding = Total Invoiced - Realized Payments + Returned Cheques
+    // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
     // Future cheques don't count as payments until their date arrives
-    const outstandingAmount = totalInvoiced - totalRealizedPayments + returnedChequesAmount;
+    const outstandingAmount = totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount;
     
-    // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) + Returned Cheques
+    // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) - Returns + Returned Cheques
     const totalAllPayments = totalRealizedPayments + totalUnrealizedChequePayments;
-    const outstandingWithUnrealized = totalInvoiced - totalAllPayments + returnedChequesAmount;
+    const outstandingWithUnrealized = totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount;
 
     // Create invoice summaries with proper collection calculations
     const invoiceSummaries: InvoiceSummary[] = await Promise.all(
@@ -196,7 +212,10 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         }
 
         const collectedAmount = (allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0);
-        const invoiceOutstandingAmount = invoice.total - collectedAmount;
+        const invoiceReturns = customerReturnsList
+          .filter((ret) => ret.invoice_id === invoice.id)
+          .reduce((sum, ret) => sum + (ret.total || 0), 0);
+        const invoiceOutstandingAmount = invoice.total - collectedAmount - invoiceReturns;
         
         return {
           id: invoice.id,
@@ -223,7 +242,8 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
       outstandingWithoutCheques: outstandingAmount, // Same as outstanding amount now  
       returnedChequesAmount,
       returnedChequesCount,
-      invoices: invoiceSummaries
+      invoices: invoiceSummaries,
+      totalReturns
     });
   };
 
@@ -415,7 +435,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
               <div className="text-center p-4 bg-blue-50 rounded-lg">
                 <div className="text-xl font-bold text-blue-600">
                   LKR {customerInvoiceSummary.totalInvoiced.toLocaleString()}
@@ -439,6 +459,12 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
                   LKR {customerInvoiceSummary.outstandingAmount.toLocaleString()}
                 </div>
                 <div className="text-sm text-gray-600">Outstanding Amount</div>
+              </div>
+              <div className="text-center p-4 bg-emerald-50 rounded-lg">
+                <div className="text-xl font-bold text-emerald-600">
+                  LKR {(customerInvoiceSummary.totalReturns || 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600">Approved Returns</div>
               </div>
               <div className="text-center p-4 bg-orange-50 rounded-lg">
                 <div className="text-xl font-bold text-orange-600">
@@ -494,12 +520,25 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-right">
-                      <div className="text-lg font-bold">
-                        LKR {invoice.total.toLocaleString()}
-                      </div>
-                      <div className="text-sm text-red-600">
-                        Outstanding: LKR {invoice.total.toLocaleString()}
-                      </div>
+                      {(() => {
+                        const summary = customerInvoiceSummary?.invoices.find((inv) => inv.id === invoice.id);
+                        const collected = summary?.collectedAmount || 0;
+                        const outstanding = summary?.outstandingAmount ?? invoice.total;
+                        const returnsValue = invoice.total - collected - outstanding;
+                        return (
+                          <>
+                            <div className="text-xs text-gray-500">
+                              Returns: LKR {returnsValue.toLocaleString()}
+                            </div>
+                            <div className="text-lg font-bold">
+                              LKR {invoice.total.toLocaleString()}
+                            </div>
+                            <div className="text-sm text-red-600">
+                              Outstanding: LKR {outstanding.toLocaleString()}
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
                     <Button
                       variant="outline"

@@ -53,6 +53,7 @@ export interface CustomerInvoiceSummary {
   outstandingWithoutCheques: number;
   returnedChequesAmount: number;
   returnedChequesCount: number;
+  totalReturns?: number;
   invoices: InvoiceSummary[];
 }
 

@@ -214,6 +214,18 @@ const Collections = ({ user }: CollectionsProps) => {
       const customerInvoices = invoices.filter(inv => inv.customerId === customerId);
       const customerCollections = collections.filter(col => col.customerId === customerId);
 
+      // Fetch approved/processed returns for this customer
+      const { data: returnsData, error: returnsError } = await supabase
+        .from('returns')
+        .select('id, invoice_id, total, status')
+        .eq('customer_id', customerId)
+        .in('status', ['approved', 'processed']);
+
+      if (returnsError) {
+        console.warn('Returns fetch issue:', returnsError);
+      }
+      const customerReturns = returnsData || [];
+
       // Calculate payments with proper date validation
       const today = new Date();
       today.setHours(23, 59, 59, 999); // Set to end of day for comparison
@@ -248,16 +260,17 @@ const Collections = ({ user }: CollectionsProps) => {
 
       // Calculate totals
       const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
+      const totalReturns = customerReturns.reduce((sum, ret) => sum + (ret.total || 0), 0);
       const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments;
       
       // Outstanding calculation:
-      // Outstanding = Total Invoiced - Realized Payments + Returned Cheques
+      // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
       // Future cheques don't count as payments until their date arrives
-      const outstandingAmount = totalInvoiced - totalRealizedPayments + returnedChequesAmount;
+      const outstandingAmount = totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount;
       
-      // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) + Returned Cheques
+      // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) - Returns + Returned Cheques
       const totalAllPayments = totalRealizedPayments + totalUnrealizedChequePayments;
-      const outstandingWithUnrealized = totalInvoiced - totalAllPayments + returnedChequesAmount;
+      const outstandingWithUnrealized = totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount;
 
       // Create invoice summaries with proper collection calculations
       const invoiceSummaries: InvoiceSummary[] = await Promise.all(
@@ -273,7 +286,10 @@ const Collections = ({ user }: CollectionsProps) => {
           }
 
           const collectedAmount = (allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0);
-          const outstandingAmount = invoice.total - collectedAmount;
+          const invoiceReturns = customerReturns
+            .filter((ret) => ret.invoice_id === invoice.id)
+            .reduce((sum, ret) => sum + (ret.total || 0), 0);
+          const outstandingAmount = invoice.total - collectedAmount - invoiceReturns;
           
           return {
             id: invoice.id,
@@ -302,7 +318,8 @@ const Collections = ({ user }: CollectionsProps) => {
           outstandingWithoutCheques: outstandingAmount, // Same as outstanding amount now  
           returnedChequesAmount,
           returnedChequesCount,
-          invoices: invoiceSummaries
+          invoices: invoiceSummaries,
+          totalReturns
         });
       }
     } catch (error) {
@@ -615,7 +632,7 @@ const Collections = ({ user }: CollectionsProps) => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4 mb-6">
               <div className="text-center p-4 bg-blue-50 rounded-lg">
                 <div className="text-xl font-bold text-blue-600">
                   LKR {customerInvoiceSummary.totalInvoiced.toLocaleString()}
@@ -651,6 +668,12 @@ const Collections = ({ user }: CollectionsProps) => {
                   {customerInvoiceSummary.returnedChequesCount} ({customerInvoiceSummary.returnedChequesAmount > 0 ? `LKR ${customerInvoiceSummary.returnedChequesAmount.toLocaleString()}` : 'LKR 0'})
                 </div>
                 <div className="text-sm text-gray-600">Returned Cheques</div>
+              </div>
+              <div className="text-center p-4 bg-emerald-50 rounded-lg">
+                <div className="text-xl font-bold text-emerald-600">
+                  LKR {(customerInvoiceSummary.totalReturns || 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600">Approved Returns</div>
               </div>
             </div>
 
