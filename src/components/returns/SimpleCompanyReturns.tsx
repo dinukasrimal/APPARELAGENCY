@@ -7,8 +7,9 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, RotateCcw, Eye, ArrowLeft, Trash2 } from 'lucide-react';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Plus, RotateCcw, Eye, ArrowLeft, Trash2, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -51,6 +52,7 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
   const [returnItems, setReturnItems] = useState([
     { product_id: '', product_name: '', quantity_returned: 1, unit_price: 0, reason: '' }
   ]);
+  const [openProductPopoverIndex, setOpenProductPopoverIndex] = useState<number | null>(null);
   const [returnReason, setReturnReason] = useState('');
 
   useEffect(() => {
@@ -92,6 +94,8 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
           status,
           reason
         `)
+        .is('customer_id', null)
+        .is('invoice_id', null)
         .order('created_at', { ascending: false });
 
       // If not superuser, filter by agency
@@ -171,6 +175,7 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
         unit_price: product.billing_price,
       };
       setReturnItems(updatedItems);
+      setOpenProductPopoverIndex(null);
     }
   };
 
@@ -238,7 +243,8 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
           reason: returnReason,
           total: total,
           subtotal: total,
-          status: 'pending',
+          // Auto-approve company returns to bypass manual approval
+          status: 'approved',
           latitude: null,
           longitude: null,
           created_by: user.id
@@ -267,6 +273,72 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
         .insert(returnItemsData);
 
       if (itemsError) throw itemsError;
+
+      // Immediately push stock out for company returns
+      try {
+        const nowIso = new Date().toISOString();
+        const userName = user.name || 'Unknown User';
+        // Map product_id -> description for canonical naming (includes codes)
+        const productDescriptions: Record<string, string> = {};
+        const productIds = Array.from(
+          new Set(returnItemsData.map((item) => item.product_id).filter(Boolean))
+        );
+        if (productIds.length > 0) {
+          const { data: productsData, error: productsError } = await supabase
+            .from('products')
+            .select('id, description')
+            .in('id', productIds);
+          if (productsError) {
+            console.error('Failed to fetch product descriptions for company return', productsError);
+          } else {
+            productsData?.forEach((p) => {
+              if (p.id) {
+                productDescriptions[p.id] = p.description || '';
+              }
+            });
+          }
+        }
+
+        const inventoryTransactions = returnItemsData.map(item => {
+          const baseName =
+            (item.product_id && productDescriptions[item.product_id]) ||
+            item.product_name ||
+            'Unknown Product';
+          const productCodeMatch = baseName.match(/^\s*\[([^\]]+)\]/);
+          const fallbackCode = item.product_id ? item.product_id.slice(0, 8) : null;
+          const productCode = productCodeMatch ? productCodeMatch[1] : fallbackCode;
+          const productNameWithCode = productCode
+            ? `[${productCode}] ${baseName.replace(/^\s*\[[^\]]+\]\s*/, '')}`
+            : baseName;
+          return {
+          agency_id: user.agencyId,
+          transaction_type: 'company_return',
+          quantity: -Math.abs(item.quantity_returned), // stock out
+          reference_name: `Company Return ${returnData.id}`,
+          user_name: userName,
+          notes: item.reason || returnReason,
+          matched_product_id: item.product_id || null,
+          approval_status: 'approved',
+          transaction_date: nowIso,
+          external_source: 'company_return',
+          product_name: productNameWithCode,
+          product_code: productCode,
+          color: item.color || 'Default',
+          size: item.size || 'Default',
+          transaction_id: returnData.id
+          };
+        });
+
+        const { error: inventoryError } = await supabase
+          .from('external_inventory_management')
+          .insert(inventoryTransactions);
+
+        if (inventoryError) {
+          console.error('Company return inventory insert failed', inventoryError);
+        }
+      } catch (inventoryErr) {
+        console.error('Company return inventory error', inventoryErr);
+      }
 
       toast({
         title: "Success",
@@ -351,18 +423,36 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
                   <div className="grid grid-cols-3 gap-4">
                     <div>
                       <Label>Product</Label>
-                      <Select onValueChange={(value) => handleProductSelect(index, value)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select product" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {products.map((product) => (
-                            <SelectItem key={product.id} value={product.id}>
-                              {product.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <Popover
+                        open={openProductPopoverIndex === index}
+                        onOpenChange={(open) => setOpenProductPopoverIndex(open ? index : null)}
+                      >
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" role="combobox" className="w-full justify-between">
+                            {returnItems[index].product_name || 'Select product'}
+                            <Search className="h-4 w-4 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="p-0 w-[320px]">
+                          <Command>
+                            <CommandInput placeholder="Search products..." />
+                            <CommandList>
+                              <CommandEmpty>No products found.</CommandEmpty>
+                              <CommandGroup>
+                                {products.map((product) => (
+                                  <CommandItem
+                                    key={product.id}
+                                    value={product.name}
+                                    onSelect={() => handleProductSelect(index, product.id)}
+                                  >
+                                    {product.name}
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
                     </div>
 
                     <div>

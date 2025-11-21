@@ -9,19 +9,24 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Search, Eye, Plus, RotateCcw } from 'lucide-react';
 import CreateReturnForm from './CreateReturnForm';
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
+import { ArrowLeft, MapPin } from 'lucide-react';
 
 interface ReturnsManagementProps {
   user: User;
   returns: Return[];
   invoices: Invoice[];
   customers: Customer[];
+  onRefresh?: () => void;
 }
 
-const ReturnsManagement = ({ user, returns, invoices, customers }: ReturnsManagementProps) => {
+const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: ReturnsManagementProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [selectedReturn, setSelectedReturn] = useState<Return | null>(null);
+  const { toast } = useToast();
 
   // Filter returns based on user role and filters
   const filteredReturns = returns.filter(returnItem => {
@@ -42,14 +47,141 @@ const ReturnsManagement = ({ user, returns, invoices, customers }: ReturnsManage
       rejected: { label: 'Rejected', variant: 'destructive' as const }
     };
     
-    const config = statusConfig[status];
+    const config = statusConfig[status] || statusConfig.pending;
     return <Badge variant={config.variant}>{config.label}</Badge>;
   };
 
-  const handleCreateReturn = (returnData: any) => {
-    // Handle return creation
-    console.log('Creating return:', returnData);
-    setShowCreateForm(false);
+  const handleCreateReturn = async (returnData: any) => {
+    try {
+      // Create return header
+      const { data: createdReturn, error: returnError } = await supabase
+        .from('returns')
+        .insert({
+          invoice_id: returnData.invoiceId,
+          customer_id: returnData.customerId,
+          customer_name: returnData.customerName,
+          agency_id: returnData.agencyId,
+          subtotal: returnData.subtotal,
+          total: returnData.total,
+          reason: returnData.reason,
+          // Auto-approve customer returns (no manual approval step required)
+          status: returnData.status ?? 'approved',
+          latitude: returnData.gpsCoordinates?.latitude ?? null,
+          longitude: returnData.gpsCoordinates?.longitude ?? null,
+          created_by: user.id
+        })
+        .select()
+        .single();
+
+      if (returnError) throw returnError;
+
+      // Create return items
+      const itemsPayload = (returnData.items || []).map((item: any) => ({
+        return_id: createdReturn.id,
+        invoice_item_id: item.invoiceItemId,
+        product_id: item.productId,
+        product_name: item.productName,
+        color: item.color,
+        size: item.size,
+        quantity_returned: item.quantityReturned,
+        original_quantity: item.originalQuantity,
+        unit_price: item.unitPrice,
+        total: item.total,
+        reason: item.reason || returnData.reason || ''
+      }));
+
+      if (itemsPayload.length > 0) {
+        const { error: itemsError } = await supabase
+          .from('return_items')
+          .insert(itemsPayload);
+        if (itemsError) throw itemsError;
+      }
+
+      // Prepare product description map to get canonical names (with codes) from products.description
+      const productDescriptions: Record<string, string> = {};
+      const productIds = Array.from(
+        new Set(itemsPayload.map((item) => item.product_id).filter(Boolean))
+      );
+
+      if (productIds.length > 0) {
+        const { data: productsData, error: productsError } = await supabase
+          .from('products')
+          .select('id, description')
+          .in('id', productIds);
+        if (productsError) {
+          console.error('Failed to fetch product descriptions', productsError);
+        } else {
+          productsData?.forEach((p) => {
+            if (p.id) {
+              productDescriptions[p.id] = p.description || '';
+            }
+          });
+        }
+      }
+
+      // Add inventory transactions to put stock back (non-blocking)
+      try {
+        const userName = user.name || 'Unknown User';
+        const nowIso = new Date().toISOString();
+        const transactions = itemsPayload.map(item => {
+          const baseName =
+            (item.product_id && productDescriptions[item.product_id]) ||
+            item.product_name ||
+            'Unknown Product';
+          const productCodeMatch = baseName.match(/^\s*\[([^\]]+)\]/);
+          const fallbackCode = item.product_id ? item.product_id.slice(0, 8) : null;
+          const productCode = productCodeMatch ? productCodeMatch[1] : fallbackCode;
+          const productNameWithCode = productCode
+            ? `[${productCode}] ${baseName.replace(/^\s*\[[^\]]+\]\s*/, '')}`
+            : baseName;
+          return {
+            agency_id: returnData.agencyId,
+            product_name: productNameWithCode,
+            product_code: productCode,
+            // Inventory table requires non-null color/size; default to "Default" if missing
+            color: item.color || 'Default',
+            size: item.size || 'Default',
+            transaction_type: 'customer_return',
+            quantity: item.quantity_returned, // positive to increase stock
+            reference_name: `Return ${createdReturn.id}`,
+            user_name: userName,
+            notes: item.reason || returnData.reason || '',
+            matched_product_id: item.product_id || null,
+            approval_status: 'approved',
+            transaction_date: nowIso,
+            external_source: 'return',
+            transaction_id: createdReturn.id
+          };
+        });
+
+        const { error: invError } = await supabase
+          .from('external_inventory_management')
+          .insert(transactions);
+
+        if (invError) {
+          console.error('Failed to create inventory transactions for return:', invError);
+        }
+      } catch (invErr) {
+        console.error('Inventory update (return) failed:', invErr);
+      }
+
+      toast({
+        title: 'Return created',
+        description: `Return ${createdReturn.id} saved successfully.`,
+      });
+
+      setShowCreateForm(false);
+      if (onRefresh) {
+        onRefresh();
+      }
+    } catch (error) {
+      console.error('Failed to create return:', error);
+      toast({
+        title: 'Error',
+        description: 'Could not save the return. Please try again.',
+        variant: 'destructive'
+      });
+    }
   };
 
   if (showCreateForm) {
@@ -61,6 +193,66 @@ const ReturnsManagement = ({ user, returns, invoices, customers }: ReturnsManage
         onSubmit={handleCreateReturn}
         onCancel={() => setShowCreateForm(false)}
       />
+    );
+  }
+
+  if (selectedReturn) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => setSelectedReturn(null)}>
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Back to Returns
+          </Button>
+          <h3 className="text-lg font-semibold">Return {selectedReturn.id}</h3>
+          {getStatusBadge(selectedReturn.status)}
+        </div>
+
+        <Card>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="font-medium text-gray-700">Invoice</p>
+                <p className="text-gray-800">{selectedReturn.invoiceId}</p>
+                <p className="text-gray-600">Customer: {selectedReturn.customerName}</p>
+              </div>
+              <div className="text-right md:text-left">
+                <p className="font-medium text-gray-700">Total Returned</p>
+                <p className="text-lg font-bold text-red-600">LKR {selectedReturn.total.toLocaleString()}</p>
+                <p className="text-gray-600">Subtotal: LKR {selectedReturn.subtotal.toLocaleString()}</p>
+              </div>
+            </div>
+            <div className="text-sm text-gray-700">
+              <p className="font-medium">Reason</p>
+              <p className="text-gray-800">{selectedReturn.reason}</p>
+            </div>
+            <div className="text-xs text-gray-600 flex items-center gap-2">
+              <MapPin className="h-3 w-3" />
+              GPS: {selectedReturn.gpsCoordinates.latitude.toFixed(6)}, {selectedReturn.gpsCoordinates.longitude.toFixed(6)}
+            </div>
+
+            <div className="space-y-2">
+              <p className="font-medium text-gray-700">Items</p>
+              <div className="space-y-2">
+                {selectedReturn.items.map(item => (
+                  <div key={item.id} className="border rounded p-2 text-sm flex justify-between">
+                    <div>
+                      <p className="font-medium">{item.productName}</p>
+                      <p className="text-gray-600">{item.color}, {item.size}</p>
+                      <p className="text-gray-600">Returned: {item.quantityReturned} / {item.originalQuantity}</p>
+                      {item.reason && <p className="text-gray-600">Reason: {item.reason}</p>}
+                    </div>
+                    <div className="text-right">
+                      <p className="font-medium">LKR {item.total.toLocaleString()}</p>
+                      <p className="text-xs text-gray-500">@ {item.unitPrice}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 

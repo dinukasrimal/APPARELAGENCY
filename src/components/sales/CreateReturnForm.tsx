@@ -131,7 +131,8 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
         subtotal: totalReturnAmount,
         total: totalReturnAmount,
         reason,
-        status: 'pending' as const,
+        // Auto-approve customer returns (no manual approval step)
+        status: 'approved' as const,
         gpsCoordinates: {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude
@@ -152,7 +153,8 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
         subtotal: totalReturnAmount,
         total: totalReturnAmount,
         reason,
-        status: 'pending' as const,
+        // Auto-approve customer returns (no manual approval step)
+        status: 'approved' as const,
         gpsCoordinates: {
           latitude: 7.8731 + Math.random() * 0.01,
           longitude: 80.7718 + Math.random() * 0.01

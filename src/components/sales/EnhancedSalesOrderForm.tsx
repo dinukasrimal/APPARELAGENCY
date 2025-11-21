@@ -413,29 +413,46 @@ const EnhancedSalesOrderForm = ({
 
   // ... keep existing code (captureGPS function)
   const captureGPS = async (): Promise<{ latitude: number; longitude: number }> => {
+    const fallbackCoords = {
+      latitude: 7.8731 + Math.random() * 0.01,
+      longitude: 80.7718 + Math.random() * 0.01
+    };
+
+    // If geolocation is unavailable, immediately return fallback so we don't block saving
+    if (!navigator.geolocation) {
+      return fallbackCoords;
+    }
+
     try {
-      if (navigator.geolocation) {
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+      const position = await Promise.race<GeolocationPosition | 'timeout'>([
+        new Promise<GeolocationPosition>((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(
             resolve,
             reject,
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
           );
-        });
+        }),
+        new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 9000))
+      ]);
 
-        return {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
-        };
-      } else {
-        throw new Error('Geolocation not supported');
+      if (position === 'timeout') {
+        toast({
+          title: 'GPS timeout',
+          description: 'Using approximate location to continue saving.',
+        });
+        return fallbackCoords;
       }
-    } catch (error) {
-      // Fallback for demo
+
       return {
-        latitude: 7.8731 + Math.random() * 0.01,
-        longitude: 80.7718 + Math.random() * 0.01
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude
       };
+    } catch (error) {
+      toast({
+        title: 'GPS unavailable',
+        description: 'Using approximate location to continue saving.',
+      });
+      return fallbackCoords;
     }
   };
 

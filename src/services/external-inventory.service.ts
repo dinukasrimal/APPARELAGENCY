@@ -334,7 +334,7 @@ export class ExternalInventoryService {
       return [];
     }
 
-    console.log(`🔍 Debug: Looking for inventory where reference_name matches "${userProfileName}" for agency ${agencyId}`);
+    console.log(`🔍 Debug: Loading inventory for agency ${agencyId} (all approved transactions, no reference_name filter)`);
 
     let query = supabase
       .from('external_inventory_management')
@@ -353,7 +353,6 @@ export class ExternalInventoryService {
         reference_name
       `)
       .eq('agency_id', agencyId)
-      .eq('reference_name', userProfileName) // Filter by user's profile name
       .eq('approval_status', 'approved'); // Only approved transactions affect stock
 
     // Apply filters

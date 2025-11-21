@@ -56,6 +56,8 @@ const CompanyReturns = ({ user }: CompanyReturnsProps) => {
           agency_id,
           agencies!inner(name)
         `)
+        .is('customer_id', null)
+        .is('invoice_id', null)
         .order('created_at', { ascending: false });
 
       if (returnsError) throw returnsError;

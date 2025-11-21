@@ -216,7 +216,31 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       
       additionalQueries.push(deliveriesQuery.order('created_at', { ascending: false }).limit(100));
       
-      const [invoicesResult, invoiceItemsResult, agenciesResult, customersResult, productsResult, deliveriesResult] = await Promise.all(additionalQueries);
+      // Returns and return items
+      let returnsQuery = supabase
+        .from('returns')
+        .select(`
+          id, invoice_id, customer_id, customer_name, agency_id,
+          subtotal, total, reason, status,
+          latitude, longitude, created_at, created_by,
+          processed_at, processed_by
+        `);
+
+      if (user.role === 'agent') {
+        returnsQuery = returnsQuery.eq('created_by', user.id);
+      } else if (user.role === 'agency') {
+        returnsQuery = returnsQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        returnsQuery = returnsQuery.eq('agency_id', selectedAgencyId);
+      }
+      additionalQueries.push(returnsQuery.order('created_at', { ascending: false }).limit(100));
+
+      const returnItemsQuery = supabase
+        .from('return_items')
+        .select('id, return_id, invoice_item_id, product_id, product_name, color, size, quantity_returned, original_quantity, unit_price, total, reason');
+      additionalQueries.push(returnItemsQuery);
+
+      const [invoicesResult, invoiceItemsResult, agenciesResult, customersResult, productsResult, deliveriesResult, returnsResult, returnItemsResult] = await Promise.all(additionalQueries);
       
       if (invoicesResult.error) throw invoicesResult.error;
       if (invoiceItemsResult.error) throw invoiceItemsResult.error;
@@ -224,6 +248,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       if (customersResult.error) throw customersResult.error;
       if (productsResult.error) throw productsResult.error;
       if (deliveriesResult.error) throw deliveriesResult.error;
+      if (returnsResult.error) throw returnsResult.error;
+      if (returnItemsResult.error) throw returnItemsResult.error;
       
       const invoicesData = invoicesResult.data;
       const invoiceItemsData = invoiceItemsResult.data;
@@ -231,6 +257,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       const customersData = customersResult.data;
       const productsData = productsResult.data;
       const deliveriesData = deliveriesResult.data;
+      const returnsData = returnsResult.data;
+      const returnItemsData = returnItemsResult.data;
 
       // Transform invoices with items
       const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => {
@@ -323,6 +351,50 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       }));
 
       setDeliveries(transformedDeliveries);
+
+      // Transform returns with items (customer returns only)
+      const customerReturns = (returnsData || []).filter(ret => ret.customer_id && ret.invoice_id);
+      const transformedReturns: Return[] = customerReturns.map(ret => {
+        const items = (returnItemsData || []).filter((item: any) => item.return_id === ret.id);
+
+        // Derive status: if DB status missing but processed_at exists, treat as processed
+        const derivedStatus = (ret.status as Return['status']) || (ret.processed_at ? 'processed' : 'pending');
+
+        return {
+          id: ret.id,
+          invoiceId: ret.invoice_id,
+          customerId: ret.customer_id,
+          customerName: ret.customer_name,
+          agencyId: ret.agency_id,
+          items: items.map((item: any) => ({
+            id: item.id,
+            invoiceItemId: item.invoice_item_id,
+            productId: item.product_id,
+            productName: item.product_name,
+            color: item.color,
+            size: item.size,
+            quantityReturned: item.quantity_returned,
+            originalQuantity: item.original_quantity,
+            unitPrice: Number(item.unit_price),
+            total: Number(item.total),
+            reason: item.reason || ''
+          })),
+          subtotal: Number(ret.subtotal),
+          total: Number(ret.total),
+          reason: ret.reason,
+          status: derivedStatus,
+          gpsCoordinates: {
+            latitude: ret.latitude || 0,
+            longitude: ret.longitude || 0
+          },
+          createdAt: new Date(ret.created_at || Date.now()),
+          createdBy: ret.created_by || '',
+          processedAt: ret.processed_at ? new Date(ret.processed_at) : undefined,
+          processedBy: ret.processed_by || undefined
+        };
+      });
+
+      setReturns(transformedReturns);
 
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -882,6 +954,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             returns={returns} 
             invoices={invoices}
             customers={customers}
+            onRefresh={fetchData}
           />
         </TabsContent>
       </Tabs>
