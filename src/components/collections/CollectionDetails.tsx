@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, User, DollarSign, MapPin, Calendar, FileText, CreditCard, Building } from 'lucide-react';
+import { ArrowLeft, DollarSign, MapPin, Calendar, FileText, CreditCard, Building, Printer, Share2 } from 'lucide-react';
 import { Collection } from '@/types/collections';
+import { useToast } from '@/hooks/use-toast';
+import { Capacitor } from '@capacitor/core';
 
 interface CollectionDetailsProps {
   collection: Collection;
@@ -14,6 +16,9 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
   collection,
   onBack
 }) => {
+  const printableRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
+
   const formatDate = (date: Date) => {
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
   };
@@ -29,6 +34,127 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
     return <Badge variant={config.variant}>{config.label}</Badge>;
   };
 
+  const receiptCheques = useMemo(() => collection.chequeDetails || [], [collection.chequeDetails]);
+
+  const buildPdfFromReceipt = async () => {
+    const printableContent = printableRef.current;
+    if (!printableContent) {
+      throw new Error('Receipt layout not ready. Please try again.');
+    }
+
+    const [jspdfModule, html2canvas] = await Promise.all([
+      import(/* @vite-ignore */ 'jspdf'),
+      import(/* @vite-ignore */ 'html2canvas').then((m) => (m as any).default ? (m as any).default : (m as any))
+    ]);
+    const JsPDF: any = (jspdfModule as any).default || (jspdfModule as any).jsPDF;
+
+    const canvas = await (html2canvas as any)(printableContent, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      windowWidth: printableContent.scrollWidth,
+      windowHeight: printableContent.scrollHeight
+    });
+
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const pdf = new JsPDF('p', 'mm', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+    let heightLeft = imgHeight;
+    let position = 0;
+
+    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+    heightLeft -= pageHeight;
+
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+      heightLeft -= pageHeight;
+    }
+
+    return pdf;
+  };
+
+  const handleShareReceipt = async () => {
+    try {
+      const pdf = await buildPdfFromReceipt();
+      const filename = `collection-${collection.id}.pdf`;
+      const dataUri = pdf.output('datauristring') as string;
+      const base64 = dataUri.split(',')[1];
+
+      if (Capacitor.getPlatform() !== 'web') {
+        const { Filesystem, Directory } = await import(/* @vite-ignore */ '@capacitor/filesystem');
+        const { Share } = await import(/* @vite-ignore */ '@capacitor/share');
+
+        const writeResult = await Filesystem.writeFile({
+          path: filename,
+          data: base64,
+          directory: Directory.Cache,
+        });
+
+        await Share.share({
+          title: `Collection ${collection.id}`,
+          text: `Receipt for ${collection.customerName} - LKR ${collection.totalAmount.toLocaleString()}`,
+          files: [writeResult.uri],
+          dialogTitle: 'Share Collection Receipt',
+        });
+        toast({ title: 'Shared', description: 'Receipt is ready to share (e.g., WhatsApp).' });
+        return;
+      }
+
+      const link = document.createElement('a');
+      link.href = dataUri;
+      link.download = filename;
+      link.click();
+      toast({ title: 'Downloaded', description: 'Receipt PDF downloaded.' });
+    } catch (error) {
+      console.error('Failed to share receipt', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to generate receipt PDF',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handlePrintReceipt = async () => {
+    try {
+      const pdf = await buildPdfFromReceipt();
+      const filename = `collection-${collection.id}.pdf`;
+
+      if (Capacitor.getPlatform() === 'web') {
+        pdf.save(filename);
+        toast({ title: 'Downloaded', description: 'Receipt PDF downloaded.' });
+        return;
+      }
+
+      const dataUri = pdf.output('datauristring') as string;
+      const base64 = dataUri.split(',')[1];
+      const { Filesystem, Directory } = await import(/* @vite-ignore */ '@capacitor/filesystem');
+
+      await Filesystem.writeFile({
+        path: filename,
+        data: base64,
+        directory: Directory.Documents,
+      });
+
+      toast({ title: 'Saved', description: 'Receipt PDF saved. You can print/share from your files.' });
+    } catch (error) {
+      console.error('Failed to print receipt', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to create printable receipt',
+        variant: 'destructive',
+      });
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -40,6 +166,16 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Collection Details</h2>
           <p className="text-gray-600">Collection #{collection.id}</p>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handlePrintReceipt}>
+            <Printer className="h-4 w-4 mr-1" />
+            Print / Save PDF
+          </Button>
+          <Button size="sm" onClick={handleShareReceipt}>
+            <Share2 className="h-4 w-4 mr-1" />
+            Share Receipt
+          </Button>
         </div>
       </div>
 
@@ -270,6 +406,116 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Hidden printable receipt */}
+      <div
+        ref={printableRef}
+        className="print-container"
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          top: 0,
+          width: '210mm',
+          background: '#ffffff',
+          color: '#111827',
+          padding: '16px',
+          fontFamily: 'Arial, sans-serif',
+          fontSize: '12px',
+          lineHeight: '1.4'
+        }}
+      >
+        <div style={{ borderBottom: '2px solid #111827', paddingBottom: '8px', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px' }}>
+            <div>
+              <div style={{ fontSize: '18px', fontWeight: 700 }}>Collection Receipt</div>
+              <div style={{ fontSize: '12px', color: '#4b5563' }}>Collection ID: {collection.id}</div>
+            </div>
+              <div style={{ textAlign: 'right', fontSize: '12px', color: '#4b5563' }}>
+              <div>{formatDate(collection.createdAt)}</div>
+              <div>Agency: {collection.agencyName || collection.agencyId}</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '12px', color: '#6b7280' }}>Customer</div>
+              <div style={{ fontWeight: 600 }}>{collection.customerName}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '12px', color: '#6b7280' }}>Collected By</div>
+              <div style={{ fontWeight: 600 }}>{collection.createdBy}</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <div>
+              <div style={{ fontSize: '12px', color: '#6b7280' }}>Payment Method</div>
+              <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>{collection.paymentMethod}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '12px', color: '#6b7280' }}>Total Amount</div>
+              <div style={{ fontWeight: 700, fontSize: '14px' }}>LKR {collection.totalAmount.toLocaleString()}</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            {collection.cashAmount > 0 && (
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Cash</div>
+                <div style={{ fontWeight: 600 }}>LKR {collection.cashAmount.toLocaleString()}</div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Cash Date: {collection.cashDate.toLocaleDateString()}</div>
+              </div>
+            )}
+            {collection.chequeAmount > 0 && (
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Cheques</div>
+                <div style={{ fontWeight: 600 }}>LKR {collection.chequeAmount.toLocaleString()}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {receiptCheques.length > 0 && (
+          <div style={{ marginBottom: '12px' }}>
+            <div style={{ fontWeight: 600, marginBottom: '6px' }}>Cheque Details</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '6px', border: '1px solid #e5e7eb' }}>Cheque #</th>
+                  <th style={{ textAlign: 'left', padding: '6px', border: '1px solid #e5e7eb' }}>Bank</th>
+                  <th style={{ textAlign: 'left', padding: '6px', border: '1px solid #e5e7eb' }}>Date</th>
+                  <th style={{ textAlign: 'right', padding: '6px', border: '1px solid #e5e7eb' }}>Amount</th>
+                  <th style={{ textAlign: 'left', padding: '6px', border: '1px solid #e5e7eb' }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {receiptCheques.map((cheque) => (
+                  <tr key={cheque.id}>
+                    <td style={{ padding: '6px', border: '1px solid #e5e7eb' }}>{cheque.chequeNumber}</td>
+                    <td style={{ padding: '6px', border: '1px solid #e5e7eb' }}>{cheque.bankName}</td>
+                    <td style={{ padding: '6px', border: '1px solid #e5e7eb' }}>{cheque.chequeDate.toLocaleDateString()}</td>
+                    <td style={{ padding: '6px', border: '1px solid #e5e7eb', textAlign: 'right' }}>
+                      LKR {cheque.amount.toLocaleString()}
+                    </td>
+                    <td style={{ padding: '6px', border: '1px solid #e5e7eb', textTransform: 'capitalize' }}>
+                      {cheque.status.replace('_', ' ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '8px', marginTop: '8px', fontSize: '11px', color: '#4b5563' }}>
+          <div>GPS: {collection.gpsCoordinates.latitude.toFixed(6)}, {collection.gpsCoordinates.longitude.toFixed(6)}</div>
+          {collection.notes && <div style={{ marginTop: '4px' }}>Notes: {collection.notes}</div>}
+          <div style={{ marginTop: '6px', color: '#6b7280' }}>Thank you for your payment.</div>
+        </div>
       </div>
     </div>
   );

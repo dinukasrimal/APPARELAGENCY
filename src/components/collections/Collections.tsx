@@ -13,6 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { CollectionForm } from './CollectionForm';
 import { CollectionDetails } from './CollectionDetails';
 import AgencySelector from '@/components/common/AgencySelector';
+import { useAgencies } from '@/hooks/useAgency';
 
 interface CollectionsProps {
   user: User;
@@ -32,10 +33,13 @@ const Collections = ({ user }: CollectionsProps) => {
     user.role === 'superuser' ? null : user.agencyId
   );
   const { toast } = useToast();
+  const { agencies } = useAgencies();
 
   useEffect(() => {
     fetchData();
-  }, [selectedAgencyId]);
+    // Recompute when agency list is available to hydrate names
+    // (collections already cached in component state).
+  }, [selectedAgencyId, agencies]);
 
   useEffect(() => {
     if (selectedCustomer) {
@@ -157,6 +161,7 @@ const Collections = ({ user }: CollectionsProps) => {
             customerId: collection.customer_id,
             customerName: collection.customer_name,
             agencyId: collection.agency_id,
+            agencyName: agencies.find(a => a.id === collection.agency_id)?.name,
             totalAmount: collection.total_amount,
             paymentMethod: collection.payment_method,
             cashAmount: collection.cash_amount,
@@ -415,6 +420,7 @@ const Collections = ({ user }: CollectionsProps) => {
         customerId: savedCollection.customer_id,
         customerName: savedCollection.customer_name,
         agencyId: savedCollection.agency_id,
+        agencyName: agencies.find(a => a.id === savedCollection.agency_id)?.name,
         totalAmount: savedCollection.total_amount,
         paymentMethod: savedCollection.payment_method,
         cashAmount: savedCollection.cash_amount,

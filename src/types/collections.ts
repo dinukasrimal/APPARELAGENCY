@@ -3,6 +3,7 @@ export interface Collection {
   customerId: string;
   customerName: string;
   agencyId: string;
+  agencyName?: string;
   totalAmount: number;
   paymentMethod: string;
   cashAmount: number;

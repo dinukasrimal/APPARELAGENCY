@@ -14,6 +14,7 @@ import SignatureCapture from './SignatureCapture';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { externalInventoryService } from '@/services/external-inventory.service';
+import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 
 interface DirectInvoiceFormProps {
   user: User;
@@ -47,6 +48,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [gpsCapturing, setGpsCapturing] = useState(false);
   const { toast } = useToast();
+  const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
 
   const categories = [...new Set(products.map(p => p.category))];
   const subCategories = selectedCategory 
@@ -178,10 +180,13 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
 
   const calculateTotals = () => {
     const subtotal = invoiceSummary.reduce((sum, item) => sum + item.total, 0);
-    const discountAmount = (subtotal * discountPercentage) / 100;
+    const percentageDiscountAmount = (subtotal * discountPercentage) / 100;
+    const fixedDiscountAmount = Math.min(discountAmountInput, subtotal);
+    const discountAmount = discountType === 'percentage' ? percentageDiscountAmount : fixedDiscountAmount;
     const total = subtotal - discountAmount;
+    const effectiveDiscountPercentage = subtotal === 0 ? 0 : (discountAmount / subtotal) * 100;
 
-    return { subtotal, discountAmount, total };
+    return { subtotal, discountAmount, total, effectiveDiscountPercentage };
   };
 
   const handleSignatureCapture = (signatureData: string) => {
@@ -219,7 +224,18 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       }
 
       const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
-      const { subtotal, discountAmount, total } = calculateTotals();
+      const { subtotal, discountAmount, total, effectiveDiscountPercentage } = calculateTotals();
+
+      const discountValidation = validateDiscount(effectiveDiscountPercentage);
+      if (discountValidation.requiresApproval) {
+        toast({
+          title: "Discount exceeds limit",
+          description: discountValidation.message || 'This discount requires superuser approval. Please reduce the discount or contact a superuser.',
+          variant: "destructive"
+        });
+        setIsSubmitting(false);
+        return;
+      }
 
       // Create direct invoice (no sales_order_id)
       const { data: invoiceData, error: invoiceError } = await supabase
@@ -320,7 +336,8 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
     }
   };
 
-  const { subtotal, discountAmount, total } = calculateTotals();
+  const { subtotal, discountAmount, total, effectiveDiscountPercentage } = calculateTotals();
+  const discountValidation = validateDiscount(effectiveDiscountPercentage);
 
   if (showSignatureCapture) {
     return (
@@ -592,6 +609,13 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
                         }}
                         placeholder={discountType === 'percentage' ? '0' : '0'}
                       />
+                      {!discountLoading && user.role !== 'superuser' && (
+                        <p className="text-xs text-gray-600 mt-1">
+                          {agencyDiscountLimit !== null
+                            ? `Your discount limit: ${agencyDiscountLimit}%`
+                            : 'Using default 20% approval threshold'}
+                        </p>
+                      )}
                     </div>
                     <div className="space-y-2">
                       <div className="flex justify-between">
@@ -602,6 +626,11 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
                         <div className="flex justify-between text-green-600">
                           <span>Discount ({discountType === 'percentage' ? `${discountPercentage}%` : `LKR ${discountAmountInput}`}):</span>
                           <span>-LKR {discountAmount.toLocaleString()}</span>
+                        </div>
+                      )}
+                      {discountValidation.requiresApproval && (
+                        <div className="text-xs text-orange-600">
+                          {discountValidation.message || 'This discount exceeds the allowed limit and requires superuser approval.'}
                         </div>
                       )}
                       <div className="flex justify-between font-bold border-t pt-2">

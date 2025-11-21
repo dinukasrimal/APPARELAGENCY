@@ -256,20 +256,69 @@ const EnhancedSalesOrderForm = ({
 
     try {
       setInventoryLoading(true);
-      const { data, error } = await supabase
-        .from('inventory_items')
-        .select('product_id, color, size, current_stock')
-        .eq('agency_id', user.agencyId);
+      // First try direct matched_product_id -> product.id mapping from raw transactions
+      const { data: matchedRows, error: matchedError } = await supabase
+        .from('external_inventory_management')
+        .select('matched_product_id, color, size, quantity')
+        .eq('agency_id', user.agencyId)
+        .eq('approval_status', 'approved')
+        .not('matched_product_id', 'is', null);
 
-      if (error) {
-        throw error;
+      if (matchedError) {
+        throw matchedError;
       }
 
-      const nextMap: Record<string, number> = {};
-      (data || []).forEach(item => {
-        if (!item.product_id) return;
-        const key = getVariantKey(item.product_id, item.color || 'default', item.size || 'default');
-        nextMap[key] = item.current_stock ?? 0;
+      const unofficialTotals: Record<string, number> = {};
+      (matchedRows || []).forEach(row => {
+        if (!row.matched_product_id) return;
+        const key = getVariantKey(row.matched_product_id, row.color || 'default', row.size || 'default');
+        unofficialTotals[key] = (unofficialTotals[key] || 0) + (row.quantity ?? 0);
+      });
+
+      // Also pull stock summary by name as a fallback when matched_product_id is missing
+      const { data: summaryRows, error: summaryError } = await supabase
+        .from('external_inventory_stock_summary')
+        .select('product_name, color, size, current_stock')
+        .eq('agency_id', user.agencyId);
+
+      if (summaryError) {
+        throw summaryError;
+      }
+
+      const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
+      const productsByName = new Map<string, string>();
+      products.forEach((p) => {
+        if (p.name) productsByName.set(normalize(p.name), p.id);
+        if (p.description) productsByName.set(normalize(p.description), p.id);
+      });
+
+      const nextMap: Record<string, number> = { ...unofficialTotals };
+      (summaryRows || []).forEach(item => {
+        const productId =
+          productsByName.get(normalize(item.product_name)) ||
+          products.find(p =>
+            normalize(item.product_name).includes(normalize(p.name)) ||
+            normalize(item.product_name).includes(normalize(p.description))
+          )?.id;
+
+        if (!productId) {
+          return;
+        }
+
+        const colorValue = item.color || 'default';
+        const sizeValue = item.size || 'default';
+        const key = getVariantKey(productId, colorValue, sizeValue);
+        const colorFallbackKey = getVariantKey(productId, colorValue, 'default');
+        const sizeFallbackKey = getVariantKey(productId, 'default', sizeValue);
+        const defaultKey = getVariantKey(productId, 'default', 'default');
+
+        const stockValue = item.current_stock ?? 0;
+
+        // Prefer matched_product_id totals; otherwise, hydrate all fallback keys with the same value.
+        if (nextMap[key] === undefined) nextMap[key] = stockValue;
+        if (nextMap[colorFallbackKey] === undefined) nextMap[colorFallbackKey] = stockValue;
+        if (nextMap[sizeFallbackKey] === undefined) nextMap[sizeFallbackKey] = stockValue;
+        if (nextMap[defaultKey] === undefined) nextMap[defaultKey] = stockValue;
       });
 
       setInventoryMap(nextMap);
@@ -283,15 +332,22 @@ const EnhancedSalesOrderForm = ({
     } finally {
       setInventoryLoading(false);
     }
-  }, [getVariantKey, toast, user.agencyId]);
+  }, [getVariantKey, products, toast, user.agencyId]);
 
   useEffect(() => {
     loadInventory();
   }, [loadInventory]);
 
   const getAvailableStock = (productId: string, color: string, size: string) => {
-    const key = getVariantKey(productId, color, size);
-    return inventoryMap[key];
+    const primaryKey = getVariantKey(productId, color, size);
+    const colorFallbackKey = getVariantKey(productId, color, 'default');
+    const sizeFallbackKey = getVariantKey(productId, 'default', size);
+    const defaultKey = getVariantKey(productId, 'default', 'default');
+
+    return inventoryMap[primaryKey] ??
+      inventoryMap[colorFallbackKey] ??
+      inventoryMap[sizeFallbackKey] ??
+      inventoryMap[defaultKey];
   };
 
   const updateQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
