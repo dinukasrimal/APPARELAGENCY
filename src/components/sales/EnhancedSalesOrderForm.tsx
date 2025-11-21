@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -64,6 +64,8 @@ const EnhancedSalesOrderForm = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [agencyPriceType, setAgencyPriceType] = useState<PriceType>('billing_price');
+  const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
+  const [inventoryLoading, setInventoryLoading] = useState(false);
   const { toast } = useToast();
   const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
 
@@ -241,6 +243,56 @@ const EnhancedSalesOrderForm = ({
       setProductGridItems([]);
     }
   }, [selectedCategory, selectedSubCategory, selectedColor, products]);
+
+  const getVariantKey = useCallback((productId: string, color: string, size: string) => {
+    return [productId, color?.trim().toLowerCase() || 'default', size?.trim().toLowerCase() || 'default'].join('::');
+  }, []);
+
+  const loadInventory = useCallback(async () => {
+    if (!user.agencyId) {
+      setInventoryMap({});
+      return;
+    }
+
+    try {
+      setInventoryLoading(true);
+      const { data, error } = await supabase
+        .from('inventory_items')
+        .select('product_id, color, size, current_stock')
+        .eq('agency_id', user.agencyId);
+
+      if (error) {
+        throw error;
+      }
+
+      const nextMap: Record<string, number> = {};
+      (data || []).forEach(item => {
+        if (!item.product_id) return;
+        const key = getVariantKey(item.product_id, item.color || 'default', item.size || 'default');
+        nextMap[key] = item.current_stock ?? 0;
+      });
+
+      setInventoryMap(nextMap);
+    } catch (error) {
+      console.error('Failed to load inventory stock for sales order form:', error);
+      toast({
+        title: 'Inventory Data Unavailable',
+        description: 'Could not fetch current stock. You can still create the order.',
+        variant: 'destructive'
+      });
+    } finally {
+      setInventoryLoading(false);
+    }
+  }, [getVariantKey, toast, user.agencyId]);
+
+  useEffect(() => {
+    loadInventory();
+  }, [loadInventory]);
+
+  const getAvailableStock = (productId: string, color: string, size: string) => {
+    const key = getVariantKey(productId, color, size);
+    return inventoryMap[key];
+  };
 
   const updateQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
     setProductGridItems(prev => prev.map((item, pIdx) => 
@@ -656,18 +708,40 @@ const EnhancedSalesOrderForm = ({
                       <div key={gridItem.product.id} className="border rounded-lg p-4">
                         <h5 className="font-medium mb-3">{gridItem.product.name}</h5>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          {gridItem.sizes.map((sizeItem, sizeIndex) => (
-                            <div key={sizeItem.size} className="space-y-1">
-                              <Label className="text-sm">{sizeItem.size}</Label>
-                              <Input
-                                type="number"
-                                min="0"
-                                value={sizeItem.quantity}
-                                onChange={(e) => updateQuantity(productIndex, sizeIndex, parseInt(e.target.value) || 0)}
-                                placeholder="Qty"
-                              />
-                            </div>
-                          ))}
+                          {gridItem.sizes.map((sizeItem, sizeIndex) => {
+                            const availableStock = getAvailableStock(gridItem.product.id, gridItem.color, sizeItem.size);
+                            const stockClass = inventoryLoading
+                              ? 'text-gray-400'
+                              : availableStock === undefined
+                                ? 'text-gray-400'
+                                : availableStock <= 0
+                                  ? 'text-red-600'
+                                  : availableStock <= 5
+                                    ? 'text-orange-500'
+                                    : 'text-green-600';
+                            const stockLabel = inventoryLoading
+                              ? 'Stock: —'
+                              : `Stock: ${Math.max(0, availableStock ?? 0)}`;
+
+                            return (
+                              <div key={sizeItem.size} className="space-y-1">
+                                <Label className="text-sm">{sizeItem.size}</Label>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    value={sizeItem.quantity}
+                                    onChange={(e) => updateQuantity(productIndex, sizeIndex, parseInt(e.target.value) || 0)}
+                                    placeholder="Qty"
+                                    className="w-24"
+                                  />
+                                  <span className={`text-xs font-medium min-w-[70px] text-right ${stockClass}`}>
+                                    {stockLabel}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     ))}
