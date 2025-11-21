@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -47,7 +47,10 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [gpsCapturing, setGpsCapturing] = useState(false);
+  const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
+  const [inventoryLoading, setInventoryLoading] = useState(false);
   const { toast } = useToast();
+  
   const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
 
   const categories = [...new Set(products.map(p => p.category))];
@@ -60,6 +63,100 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         .flatMap(p => p.colors))]
     : [];
 
+  const getVariantKey = useCallback((productId: string, color: string, size: string) => {
+    return [productId, color?.trim().toLowerCase() || 'default', size?.trim().toLowerCase() || 'default'].join('::');
+  }, []);
+
+  const getAvailableStock = (productId: string, color: string, size: string) => {
+    const primaryKey = getVariantKey(productId, color, size);
+    const colorFallbackKey = getVariantKey(productId, color, 'default');
+    const sizeFallbackKey = getVariantKey(productId, 'default', size);
+    const defaultKey = getVariantKey(productId, 'default', 'default');
+
+    return inventoryMap[primaryKey] ??
+      inventoryMap[colorFallbackKey] ??
+      inventoryMap[sizeFallbackKey] ??
+      inventoryMap[defaultKey];
+  };
+
+  const loadInventory = useCallback(async () => {
+    if (!user.agencyId) {
+      setInventoryMap({});
+      return;
+    }
+
+    try {
+      setInventoryLoading(true);
+
+      const { data: matchedRows, error: matchedError } = await supabase
+        .from('external_inventory_management')
+        .select('matched_product_id, color, size, quantity')
+        .eq('agency_id', user.agencyId)
+        .eq('approval_status', 'approved')
+        .not('matched_product_id', 'is', null);
+
+      if (matchedError) throw matchedError;
+
+      const totalsById: Record<string, number> = {};
+      (matchedRows || []).forEach(row => {
+        if (!row.matched_product_id) return;
+        const key = getVariantKey(row.matched_product_id, row.color || 'default', row.size || 'default');
+        totalsById[key] = (totalsById[key] || 0) + (row.quantity ?? 0);
+      });
+
+      const { data: summaryRows, error: summaryError } = await supabase
+        .from('external_inventory_stock_summary')
+        .select('product_name, color, size, current_stock')
+        .eq('agency_id', user.agencyId);
+
+      if (summaryError) throw summaryError;
+
+      const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
+      const productsByName = new Map<string, string>();
+      products.forEach((p) => {
+        if (p.name) productsByName.set(normalize(p.name), p.id);
+        if (p.description) productsByName.set(normalize(p.description), p.id);
+      });
+
+      const nextMap: Record<string, number> = { ...totalsById };
+      (summaryRows || []).forEach(item => {
+        const productId =
+          productsByName.get(normalize(item.product_name)) ||
+          products.find(p =>
+            normalize(item.product_name).includes(normalize(p.name)) ||
+            normalize(item.product_name).includes(normalize(p.description))
+          )?.id;
+
+        if (!productId) return;
+
+        const colorValue = item.color || 'default';
+        const sizeValue = item.size || 'default';
+        const key = getVariantKey(productId, colorValue, sizeValue);
+        const colorFallbackKey = getVariantKey(productId, colorValue, 'default');
+        const sizeFallbackKey = getVariantKey(productId, 'default', sizeValue);
+        const defaultKey = getVariantKey(productId, 'default', 'default');
+
+        const stockValue = item.current_stock ?? 0;
+
+        if (nextMap[key] === undefined) nextMap[key] = stockValue;
+        if (nextMap[colorFallbackKey] === undefined) nextMap[colorFallbackKey] = stockValue;
+        if (nextMap[sizeFallbackKey] === undefined) nextMap[sizeFallbackKey] = stockValue;
+        if (nextMap[defaultKey] === undefined) nextMap[defaultKey] = stockValue;
+      });
+
+      setInventoryMap(nextMap);
+    } catch (error) {
+      console.error('Failed to load inventory stock for direct invoice form:', error);
+      toast({
+        title: 'Inventory Data Unavailable',
+        description: 'Could not fetch current stock for direct invoice.',
+        variant: 'destructive'
+      });
+    } finally {
+      setInventoryLoading(false);
+    }
+  }, [getVariantKey, products, toast, user.agencyId]);
+
   useEffect(() => {
     if (selectedCategory && selectedSubCategory && selectedColor) {
       const filteredProducts = products.filter(p => 
@@ -68,7 +165,51 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         p.colors.includes(selectedColor)
       );
 
-      setProductGridItems(filteredProducts.map(product => ({
+      // Sort variants so sizes appear S, M, L, XL... or 28, 30, 32, etc.
+      const sortedProducts = (() => {
+        const extractSizeFromName = (name: string): string | null => {
+          const sizePatterns = [
+            /\b(S|M|L|XL|2XL|3XL|4XL)\b/i,
+            /\b(2XL|3XL|4XL)\b/i,
+            /\b(20|22|24|26|28|30|32|34|36|38|40|42)\b/,
+            /\b(50|55|60|65|70|75|80|85|90|95|100)\b/,
+            /\b(-50|-55|-60|-65|-70|-75|-80|-85|-90|-95|-100)\b/
+          ];
+          for (const pattern of sizePatterns) {
+            const match = name.match(pattern);
+            if (match) return match[0].toUpperCase();
+          }
+          return null;
+        };
+
+        const getSizeOrder = (size: string | null) => {
+          if (!size) return 999;
+          const clothingSizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+          const clothingIndex = clothingSizes.indexOf(size.toUpperCase());
+          if (clothingIndex !== -1) return clothingIndex;
+          const numericSmall = ['20', '22', '24', '26', '28', '30', '32', '34', '36', '38', '40', '42'];
+          const numericSmallIndex = numericSmall.indexOf(size);
+          if (numericSmallIndex !== -1) return numericSmallIndex + 100;
+          const numericLarge = ['50', '55', '60', '65', '70', '75', '80', '85', '90', '95', '100'];
+          const numericLargeIndex = numericLarge.indexOf(size);
+          if (numericLargeIndex !== -1) return numericLargeIndex + 200;
+          const negativeSizes = ['-50', '-55', '-60', '-65', '-70', '-75', '-80', '-85', '-90', '-95', '-100'];
+          const negativeIndex = negativeSizes.indexOf(size);
+          if (negativeIndex !== -1) return negativeIndex + 300;
+          return 999;
+        };
+
+        return [...filteredProducts].sort((a, b) => {
+          const sizeA = extractSizeFromName(a.name);
+          const sizeB = extractSizeFromName(b.name);
+          const orderA = getSizeOrder(sizeA);
+          const orderB = getSizeOrder(sizeB);
+          if (orderA !== orderB) return orderA - orderB;
+          return a.name.localeCompare(b.name);
+        });
+      })();
+
+      setProductGridItems(sortedProducts.map(product => ({
         product,
         color: selectedColor,
         sizes: product.sizes.map(size => ({ size, quantity: 0 }))
@@ -77,6 +218,10 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       setProductGridItems([]);
     }
   }, [selectedCategory, selectedSubCategory, selectedColor, products]);
+
+  useEffect(() => {
+    loadInventory();
+  }, [loadInventory]);
 
   const updateQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
     setProductGridItems(prev => prev.map((item, pIdx) => 
@@ -507,18 +652,40 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
                       <div key={gridItem.product.id} className="border rounded-lg p-4">
                         <h5 className="font-medium mb-3">{gridItem.product.name}</h5>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          {gridItem.sizes.map((sizeItem, sizeIndex) => (
-                            <div key={sizeItem.size} className="space-y-1">
-                              <Label className="text-sm">{sizeItem.size}</Label>
-                              <Input
-                                type="number"
-                                min="0"
-                                value={sizeItem.quantity}
-                                onChange={(e) => updateQuantity(productIndex, sizeIndex, parseInt(e.target.value) || 0)}
-                                placeholder="Qty"
-                              />
-                            </div>
-                          ))}
+                          {gridItem.sizes.map((sizeItem, sizeIndex) => {
+                            const availableStock = getAvailableStock(gridItem.product.id, gridItem.color, sizeItem.size);
+                            const stockClass = inventoryLoading
+                              ? 'text-gray-400'
+                              : availableStock === undefined
+                                ? 'text-gray-400'
+                                : availableStock <= 0
+                                  ? 'text-red-600'
+                                  : availableStock <= 5
+                                    ? 'text-orange-500'
+                                    : 'text-green-600';
+                            const stockLabel = inventoryLoading
+                              ? 'Stock: —'
+                              : `Stock: ${Math.max(0, availableStock ?? 0)}`;
+
+                            return (
+                              <div key={sizeItem.size} className="space-y-1">
+                                <Label className="text-sm">{sizeItem.size}</Label>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    value={sizeItem.quantity}
+                                    onChange={(e) => updateQuantity(productIndex, sizeIndex, parseInt(e.target.value) || 0)}
+                                    placeholder="Qty"
+                                    className="w-24"
+                                  />
+                                  <span className={`text-xs font-medium min-w-[70px] text-right ${stockClass}`}>
+                                    {stockLabel}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     ))}
