@@ -18,18 +18,35 @@ interface CreateInvoiceFormProps {
 }
 
 const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoiceFormProps) => {
-  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(
-    salesOrder.items.map(item => ({
-      id: item.id,
-      productId: item.productId,
-      productName: item.productName,
-      color: item.color,
-      size: item.size,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      total: item.total
-    }))
-  );
+  // When an order is partially invoiced, only allow invoicing the remaining
+  // quantity of each line item so that the total invoiced quantity cannot exceed
+  // the original sales order quantity.
+  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(() => {
+    const remainingFraction =
+      salesOrder.total > 0
+        ? Math.max(
+            0,
+            Math.min(1, (salesOrder.total - salesOrder.totalInvoiced) / salesOrder.total)
+          )
+        : 1;
+
+    return salesOrder.items
+      .map(item => {
+        const remainingQty = Math.round(item.quantity * remainingFraction);
+        if (remainingQty <= 0) return null;
+        return {
+          id: item.id,
+          productId: item.productId,
+          productName: item.productName,
+          color: item.color,
+          size: item.size,
+          quantity: remainingQty,
+          unitPrice: item.unitPrice,
+          total: item.unitPrice * remainingQty
+        } as InvoiceItem;
+      })
+      .filter((item): item is InvoiceItem => item !== null);
+  });
   const [gpsCoordinates, setGpsCoordinates] = useState({ latitude: 0, longitude: 0 });
   const [signature, setSignature] = useState<string>('');
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
@@ -70,12 +87,21 @@ const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoi
 
   const updateQuantity = (itemId: string, quantity: number) => {
     if (quantity < 0) return;
-    
-    setInvoiceItems(invoiceItems.map(item => 
-      item.id === itemId 
-        ? { ...item, quantity, total: item.unitPrice * quantity }
-        : item
-    ).filter(item => item.quantity > 0));
+
+    // Do not allow increasing quantity beyond the original sales order line quantity
+    const originalItem = salesOrder.items.find(item => item.id === itemId);
+    if (!originalItem) return;
+    const clampedQuantity = Math.min(quantity, originalItem.quantity);
+
+    setInvoiceItems(
+      invoiceItems
+        .map(item =>
+          item.id === itemId
+            ? { ...item, quantity: clampedQuantity, total: item.unitPrice * clampedQuantity }
+            : item
+        )
+        .filter(item => item.quantity > 0)
+    );
   };
 
   const handleSignatureCapture = (signatureData: string) => {
