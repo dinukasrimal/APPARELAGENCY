@@ -15,6 +15,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { externalInventoryService } from '@/services/external-inventory.service';
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
+import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
+import CustomerSearch from '@/components/customers/CustomerSearch';
 
 interface DirectInvoiceFormProps {
   user: User;
@@ -30,6 +32,7 @@ interface InvoiceSummaryItem extends InvoiceItem {
 
 const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: DirectInvoiceFormProps) => {
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedSubCategory, setSelectedSubCategory] = useState('');
   const [selectedColor, setSelectedColor] = useState('');
@@ -50,8 +53,21 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const { toast } = useToast();
+  const [agencyPriceType, setAgencyPriceType] = useState<PriceType>('billing_price');
   
   const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
+
+  // Load agency pricing preference so direct invoices follow the same
+  // billing vs selling price rules as sales orders/POS.
+  useEffect(() => {
+    const loadAgencyPricing = async () => {
+      if (user.agencyId) {
+        const priceType = await getAgencyPriceType(user.agencyId);
+        setAgencyPriceType(priceType);
+      }
+    };
+    loadAgencyPricing();
+  }, [user.agencyId]);
 
   const categories = [...new Set(products.map(p => p.category))];
   const subCategories = selectedCategory 
@@ -242,6 +258,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
     productGridItems.forEach(gridItem => {
       gridItem.sizes.forEach(sizeItem => {
         if (sizeItem.quantity > 0) {
+          const unitPrice = getProductPriceForAgency(gridItem.product, agencyPriceType);
           itemsToAdd.push({
             tempId: `${gridItem.product.id}-${gridItem.color}-${sizeItem.size}-${Date.now()}`,
             id: '',
@@ -250,8 +267,8 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
             color: gridItem.color,
             size: sizeItem.size,
             quantity: sizeItem.quantity,
-            unitPrice: gridItem.product.sellingPrice,
-            total: gridItem.product.sellingPrice * sizeItem.quantity
+            unitPrice,
+            total: unitPrice * sizeItem.quantity
           });
         }
       });
@@ -517,18 +534,23 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
             <CardContent className="space-y-4">
               <div>
                 <Label>Customer</Label>
-                <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select customer" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {customers.map((customer) => (
-                      <SelectItem key={customer.id} value={customer.id}>
-                        {customer.name} - {customer.phone}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <CustomerSearch
+                  customers={customers}
+                  selectedCustomer={selectedCustomer}
+                  onCustomerSelect={(customer) => {
+                    setSelectedCustomer(customer);
+                    setSelectedCustomerId(customer.id);
+                  }}
+                  onCustomerChange={() => {
+                    setSelectedCustomer(null);
+                    setSelectedCustomerId('');
+                    setInvoiceSummary([]);
+                    toast({
+                      title: "Customer Changed",
+                      description: "Invoice items have been cleared due to customer change"
+                    });
+                  }}
+                />
               </div>
               
               {gpsCoordinates.latitude !== 0 ? (
