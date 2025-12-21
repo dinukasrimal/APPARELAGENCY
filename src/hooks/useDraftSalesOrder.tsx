@@ -12,13 +12,17 @@ interface DraftSalesOrder {
 }
 
 export const useDraftSalesOrder = () => {
-  const [draft, setDraft] = useState<DraftSalesOrder>({
+  const createEmptyDraft = (): DraftSalesOrder => ({
     customerId: null,
     customerName: '',
     items: [],
     discountPercentage: 0,
     isDraft: true,
     lastModified: new Date()
+  });
+
+  const [draft, setDraft] = useState<DraftSalesOrder>({
+    ...createEmptyDraft()
   });
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -29,11 +33,35 @@ export const useDraftSalesOrder = () => {
     if (savedDraft) {
       try {
         const parsedDraft = JSON.parse(savedDraft);
-        setDraft({
+
+        // Ignore and clear very old drafts (older than 24 hours)
+        const now = new Date();
+        const parsedLastModified = parsedDraft.lastModified
+          ? new Date(parsedDraft.lastModified)
+          : null;
+
+        if (parsedLastModified && now.getTime() - parsedLastModified.getTime() > 24 * 60 * 60 * 1000) {
+          localStorage.removeItem('salesOrderDraft');
+          setDraft(createEmptyDraft());
+          setHasUnsavedChanges(false);
+          return;
+        }
+        const hydratedDraft: DraftSalesOrder = {
+          ...createEmptyDraft(),
           ...parsedDraft,
-          lastModified: new Date(parsedDraft.lastModified)
-        });
-        setHasUnsavedChanges(true);
+          lastModified: parsedDraft.lastModified
+            ? new Date(parsedDraft.lastModified)
+            : new Date()
+        };
+
+        setDraft(hydratedDraft);
+
+        const hasMeaningfulChanges =
+          !!hydratedDraft.customerId ||
+          (Array.isArray(hydratedDraft.items) && hydratedDraft.items.length > 0) ||
+          hydratedDraft.discountPercentage > 0;
+
+        setHasUnsavedChanges(hasMeaningfulChanges);
       } catch (error) {
         console.error('Error loading draft:', error);
       }
@@ -79,21 +107,15 @@ export const useDraftSalesOrder = () => {
   }, [saveDraft]);
 
   const resetOrder = useCallback(() => {
-    const emptyDraft: DraftSalesOrder = {
-      customerId: null,
-      customerName: '',
-      items: [],
-      discountPercentage: 0,
-      isDraft: true,
-      lastModified: new Date()
-    };
-    
+    const emptyDraft = createEmptyDraft();
     setDraft(emptyDraft);
     localStorage.removeItem('salesOrderDraft');
     setHasUnsavedChanges(false);
   }, []);
 
   const clearDraft = useCallback(() => {
+    const emptyDraft = createEmptyDraft();
+    setDraft(emptyDraft);
     localStorage.removeItem('salesOrderDraft');
     setHasUnsavedChanges(false);
   }, []);

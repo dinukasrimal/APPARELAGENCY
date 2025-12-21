@@ -303,13 +303,49 @@ export class ExternalInventoryService {
     });
 
     // Convert to array and clean up
-    return Array.from(groupedData.values()).map(item => ({
+    const initialItems = Array.from(groupedData.values()).map(item => ({
       ...item,
       sources: Array.from(item.sources).join(', '),
       transaction_types: Array.from(item.transaction_types).join(', '),
       stock_status: this.calculateStockStatus(item.current_stock),
       total_value: item.current_stock * (item.avg_unit_price || 0)
     }));
+
+    // Second‑level aggregation: merge items that share the same
+    // displayed product name and size (e.g. PANDA XL across colors)
+    const aggregatedMap = new Map<string, any>();
+
+    initialItems.forEach(item => {
+      const key = `${item.product_name}|${item.size}`;
+      if (!aggregatedMap.has(key)) {
+        aggregatedMap.set(key, { ...item });
+      } else {
+        const existing = aggregatedMap.get(key)!;
+        const combinedStock = existing.current_stock + item.current_stock;
+        const combinedTotalValue = existing.total_value + item.total_value;
+
+        existing.current_stock = combinedStock;
+        existing.total_stock_in += item.total_stock_in;
+        existing.total_stock_out += item.total_stock_out;
+        existing.transaction_count += item.transaction_count;
+        existing.variant_count += item.variant_count ?? 0;
+
+        // If colors differ across merged rows, mark as MULTI
+        if (existing.color !== item.color) {
+          existing.color = 'MULTI';
+        }
+
+        // Recalculate average unit price based on combined value/stock
+        existing.avg_unit_price = combinedStock !== 0
+          ? combinedTotalValue / combinedStock
+          : existing.avg_unit_price ?? item.avg_unit_price;
+
+        existing.total_value = combinedTotalValue;
+        existing.stock_status = this.calculateStockStatus(combinedStock);
+      }
+    });
+
+    return Array.from(aggregatedMap.values());
   }
 
   // Helper method to build stock summary from raw transactions filtered by user profile name  
@@ -587,13 +623,47 @@ export class ExternalInventoryService {
     });
 
     // Convert to array and clean up
-    const result = Array.from(groupedData.values()).map(item => ({
+    const initialItems = Array.from(groupedData.values()).map(item => ({
       ...item,
       sources: Array.from(item.sources).join(', '),
       transaction_types: Array.from(item.transaction_types).join(', '),
       stock_status: this.calculateStockStatus(item.current_stock),
       total_value: item.current_stock * (item.avg_unit_price || 0)
     }));
+
+    // Second‑level aggregation: merge items that share the same
+    // displayed product name and size for this user
+    const aggregatedMap = new Map<string, any>();
+
+    initialItems.forEach(item => {
+      const key = `${item.product_name}|${item.size}`;
+      if (!aggregatedMap.has(key)) {
+        aggregatedMap.set(key, { ...item });
+      } else {
+        const existing = aggregatedMap.get(key)!;
+        const combinedStock = existing.current_stock + item.current_stock;
+        const combinedTotalValue = existing.total_value + item.total_value;
+
+        existing.current_stock = combinedStock;
+        existing.total_stock_in += item.total_stock_in;
+        existing.total_stock_out += item.total_stock_out;
+        existing.transaction_count += item.transaction_count;
+        existing.variant_count += item.variant_count ?? 0;
+
+        if (existing.color !== item.color) {
+          existing.color = 'MULTI';
+        }
+
+        existing.avg_unit_price = combinedStock !== 0
+          ? combinedTotalValue / combinedStock
+          : existing.avg_unit_price ?? item.avg_unit_price;
+
+        existing.total_value = combinedTotalValue;
+        existing.stock_status = this.calculateStockStatus(combinedStock);
+      }
+    });
+
+    const result = Array.from(aggregatedMap.values());
     
     // Debug: Check final BRITNY-BLACK L result for user-specific function
     const britnyResult = result.find(item => 
@@ -798,32 +868,50 @@ export class ExternalInventoryService {
       unitPrice
     });
     
-    // No product matching needed - using direct relationship via product_name/description
+    // No product matching needed - but we want to normalize the product_name
+    // so it matches the GRN / bot format (usually products.description like "[PC22] PETTY COURT 22")
     const matchedProduct = null;
     
-    // Try to match the product name format used by external bot sync
-    // External bot uses format like "[BBL] BRITNY-BLACK L"
-    // We need to find the correct product code and format
+    // Start from the plain product name that comes from the UI
     let formattedProductName = productName;
     
-    // Check if we can find a matching product with a code
-    const { data: matchingProducts } = await supabase
-      .from('external_inventory_management')
-      .select('product_name, product_code')
-      .ilike('product_name', `%${productName.replace(/\s+/g, '%')}%`)
-      .not('product_code', 'is', null)
-      .limit(1);
-    
-    if (matchingProducts && matchingProducts.length > 0) {
-      formattedProductName = matchingProducts[0].product_name;
-      console.log('🔄 Using existing product name format:', formattedProductName);
+    // First, try to map products.name -> products.description
+    try {
+      const { data: productRecord, error: productError } = await supabase
+        .from('products')
+        .select('description')
+        .eq('name', productName)
+        .maybeSingle();
+
+      if (!productError && productRecord?.description) {
+        formattedProductName = productRecord.description;
+        console.log('🔄 Using products.description for sale transaction:', formattedProductName);
+      } else {
+        // Fallback: Try to match the product name format used by external bot sync
+        // External bot uses format like "[BBL] BRITNY-BLACK L"
+        const { data: matchingProducts } = await supabase
+          .from('external_inventory_management')
+          .select('product_name, product_code')
+          .ilike('product_name', `%${productName.replace(/\s+/g, '%')}%`)
+          .not('product_code', 'is', null)
+          .limit(1);
+        
+        if (matchingProducts && matchingProducts.length > 0) {
+          formattedProductName = matchingProducts[0].product_name;
+          console.log('🔄 Using existing product name format from external inventory:', formattedProductName);
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to normalize product name for sale transaction, using raw name:', e);
     }
     
-    // Use 'Default' for color and size to match external bot format
+    // Use provided color and size so the sale matches the same
+    // variant (color/size) buckets as GRN and other stock-in rows.
+    // Fallback to 'Default' only when not provided.
     const transactionData = {
       product_name: formattedProductName,
-      color: 'Default',
-      size: 'Default',
+      color: color || 'Default',
+      size: size || 'Default',
       unit_price: unitPrice || 0,
       category: matchedProduct?.category || 'General',
       sub_category: matchedProduct?.subCategory || 'General',
@@ -865,15 +953,31 @@ export class ExternalInventoryService {
     reason: string,
     originalInvoiceNumber?: string
   ): Promise<void> {
-    // No product matching needed - using direct relationship via product_name/description
+    // Normalize product name so it matches GRN / bot format (products.description)
     const matchedProduct = null;
+
+    let formattedProductName = productName;
+    try {
+      const { data: productRecord, error: productError } = await supabase
+        .from('products')
+        .select('description')
+        .eq('name', productName)
+        .maybeSingle();
+
+      if (!productError && productRecord?.description) {
+        formattedProductName = productRecord.description;
+        console.log('🔄 Using products.description for customer return:', formattedProductName);
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to normalize product name for customer return, using raw name:', e);
+    }
     
     const { error } = await supabase
       .from('external_inventory_management')
       .insert({
-        product_name: productName,
-        color: color,
-        size: size,
+        product_name: formattedProductName,
+        color: color || 'Default',
+        size: size || 'Default',
         category: matchedProduct?.category || 'General',
         sub_category: matchedProduct?.subCategory || 'General',
         matched_product_id: matchedProduct?.id || null,

@@ -406,7 +406,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     } finally {
       setIsLoading(false);
     }
-  }, [user.id, user.role, user.agencyId]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId]);
 
   // Memoized filtered orders to prevent unnecessary recalculations
   const filteredOrders = useMemo(() => {

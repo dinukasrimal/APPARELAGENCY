@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -26,6 +26,7 @@ const CreateOrderForm = ({ user, customers, products, onSubmit, onCancel }: Crea
   const [gpsCoordinates, setGpsCoordinates] = useState({ latitude: 0, longitude: 0 });
   const [gpsLoading, setGpsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const { toast } = useToast();
 
   // Auto-capture GPS on component mount
@@ -166,6 +167,12 @@ const CreateOrderForm = ({ user, customers, products, onSubmit, onCancel }: Crea
 
     console.log('✓ All validations passed, proceeding with order creation...');
 
+    if (submitLockRef.current) {
+      return;
+    }
+
+    submitLockRef.current = true;
+    
     try {
       setIsSubmitting(true);
       
@@ -270,6 +277,7 @@ const CreateOrderForm = ({ user, customers, products, onSubmit, onCancel }: Crea
       });
     } finally {
       setIsSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 

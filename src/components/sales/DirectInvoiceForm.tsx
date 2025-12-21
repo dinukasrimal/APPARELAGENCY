@@ -13,7 +13,7 @@ import { ArrowLeft, MapPin, Plus, Trash2, FileText, Save } from 'lucide-react';
 import SignatureCapture from './SignatureCapture';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { externalInventoryService } from '@/services/external-inventory.service';
+import { externalInventoryService, type ExternalInventoryItem } from '@/services/external-inventory.service';
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 import CustomerSearch from '@/components/customers/CustomerSearch';
@@ -79,21 +79,24 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         .flatMap(p => p.colors))]
     : [];
 
+  // Ensure colors always appear in a consistent order across categories/subcategories
+  const sortedColors = (() => {
+    const preferredOrder = ['WHITE', 'BLACK', 'GREY', 'GRAY', 'MAROON', 'PURPLE', 'RED', 'BLUE', 'GREEN', 'YELLOW', 'PINK', 'ORANGE', 'BROWN', 'BEIGE'];
+    const orderIndex = (color: string) => {
+      const idx = preferredOrder.indexOf(color.toUpperCase());
+      return idx === -1 ? preferredOrder.length : idx;
+    };
+    return [...colors].sort((a, b) => {
+      const orderA = orderIndex(a);
+      const orderB = orderIndex(b);
+      if (orderA !== orderB) return orderA - orderB;
+      return a.localeCompare(b);
+    });
+  })();
+
   const getVariantKey = useCallback((productId: string, color: string, size: string) => {
     return [productId, color?.trim().toLowerCase() || 'default', size?.trim().toLowerCase() || 'default'].join('::');
   }, []);
-
-  const getAvailableStock = (productId: string, color: string, size: string) => {
-    const primaryKey = getVariantKey(productId, color, size);
-    const colorFallbackKey = getVariantKey(productId, color, 'default');
-    const sizeFallbackKey = getVariantKey(productId, 'default', size);
-    const defaultKey = getVariantKey(productId, 'default', 'default');
-
-    return inventoryMap[primaryKey] ??
-      inventoryMap[colorFallbackKey] ??
-      inventoryMap[sizeFallbackKey] ??
-      inventoryMap[defaultKey];
-  };
 
   const loadInventory = useCallback(async () => {
     if (!user.agencyId) {
@@ -104,60 +107,92 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
     try {
       setInventoryLoading(true);
 
-      const { data: matchedRows, error: matchedError } = await supabase
-        .from('external_inventory_management')
-        .select('matched_product_id, color, size, quantity')
-        .eq('agency_id', user.agencyId)
-        .eq('approval_status', 'approved')
-        .not('matched_product_id', 'is', null);
-
-      if (matchedError) throw matchedError;
-
-      const totalsById: Record<string, number> = {};
-      (matchedRows || []).forEach(row => {
-        if (!row.matched_product_id) return;
-        const key = getVariantKey(row.matched_product_id, row.color || 'default', row.size || 'default');
-        totalsById[key] = (totalsById[key] || 0) + (row.quantity ?? 0);
-      });
-
-      const { data: summaryRows, error: summaryError } = await supabase
-        .from('external_inventory_stock_summary')
-        .select('product_name, color, size, current_stock')
-        .eq('agency_id', user.agencyId);
-
-      if (summaryError) throw summaryError;
+      // Use same agency-level aggregated inventory logic as EnhancedSalesOrderForm
+      const summary: ExternalInventoryItem[] = await externalInventoryService.getAgencyStockSummary(user.agencyId);
 
       const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
-      const productsByName = new Map<string, string>();
+
+      const getBaseName = (name: string) => {
+        let base = name;
+        base = base.replace(/^\[[^\]]+\]\s*/, '');
+        base = base.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+        base = base.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+        base = base.replace(/-[A-Z]+$/i, '');
+        return normalize(base);
+      };
+
+      const productsByName = new Map<string, string[]>();
+      const productsByBaseName = new Map<string, string[]>();
+
       products.forEach((p) => {
-        if (p.name) productsByName.set(normalize(p.name), p.id);
-        if (p.description) productsByName.set(normalize(p.description), p.id);
+        const add = (map: Map<string, string[]>, key?: string | null) => {
+          const k = normalize(key);
+          if (!k) return;
+          const current = map.get(k) || [];
+          if (!current.includes(p.id)) {
+            map.set(k, [...current, p.id]);
+          }
+        };
+
+        add(productsByName, p.name);
+        add(productsByName, p.description);
+
+        const baseFromName = p.name ? getBaseName(p.name) : '';
+        if (baseFromName) add(productsByBaseName, baseFromName);
+
+        if (p.description) {
+          const baseFromDescription = getBaseName(p.description);
+          if (baseFromDescription) add(productsByBaseName, baseFromDescription);
+        }
       });
 
-      const nextMap: Record<string, number> = { ...totalsById };
-      (summaryRows || []).forEach(item => {
-        const productId =
-          productsByName.get(normalize(item.product_name)) ||
-          products.find(p =>
-            normalize(item.product_name).includes(normalize(p.name)) ||
-            normalize(item.product_name).includes(normalize(p.description))
-          )?.id;
+      const nextMap: Record<string, number> = {};
 
-        if (!productId) return;
+      summary.forEach(item => {
+        const normalizedName = normalize(item.product_name);
+        const baseName = getBaseName(item.product_name);
 
-        const colorValue = item.color || 'default';
-        const sizeValue = item.size || 'default';
-        const key = getVariantKey(productId, colorValue, sizeValue);
-        const colorFallbackKey = getVariantKey(productId, colorValue, 'default');
-        const sizeFallbackKey = getVariantKey(productId, 'default', sizeValue);
-        const defaultKey = getVariantKey(productId, 'default', 'default');
+        const exactMatches = productsByName.get(normalizedName) || [];
+        const baseMatches = productsByBaseName.get(baseName) || [];
+
+        let candidateIds = Array.from(new Set([...exactMatches, ...baseMatches]));
+
+        if (candidateIds.length === 0) {
+          const looseMatches = products
+            .filter(p => {
+              const n = normalize(p.name);
+              const d = normalize(p.description);
+              return (
+                (n && (normalizedName.includes(n) || n.includes(normalizedName))) ||
+                (d && (normalizedName.includes(d) || d.includes(normalizedName)))
+              );
+            })
+            .map(p => p.id);
+          candidateIds = Array.from(new Set(looseMatches));
+        }
+
+        if (candidateIds.length === 0) return;
+
+        const rawColor = (item.color || 'default').toString().toUpperCase();
+        const colorValue = (rawColor === 'MULTI' || rawColor === 'DEFAULT') ? 'default' : rawColor;
+        const sizeValue = (item.size || 'default').toString();
 
         const stockValue = item.current_stock ?? 0;
 
-        if (nextMap[key] === undefined) nextMap[key] = stockValue;
-        if (nextMap[colorFallbackKey] === undefined) nextMap[colorFallbackKey] = stockValue;
-        if (nextMap[sizeFallbackKey] === undefined) nextMap[sizeFallbackKey] = stockValue;
-        if (nextMap[defaultKey] === undefined) nextMap[defaultKey] = stockValue;
+        candidateIds.forEach(productId => {
+          const primaryKey = getVariantKey(productId, colorValue, sizeValue);
+          const colorFallbackKey = getVariantKey(productId, colorValue, 'default');
+          const sizeFallbackKey = getVariantKey(productId, 'default', sizeValue);
+          const defaultKey = getVariantKey(productId, 'default', 'default');
+
+          nextMap[primaryKey] = Math.max(nextMap[primaryKey] ?? 0, stockValue);
+          nextMap[sizeFallbackKey] = Math.max(nextMap[sizeFallbackKey] ?? 0, stockValue);
+
+          if (sizeValue.toLowerCase() === 'default') {
+            nextMap[colorFallbackKey] = Math.max(nextMap[colorFallbackKey] ?? 0, stockValue);
+            nextMap[defaultKey] = Math.max(nextMap[defaultKey] ?? 0, stockValue);
+          }
+        });
       });
 
       setInventoryMap(nextMap);
@@ -172,6 +207,18 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       setInventoryLoading(false);
     }
   }, [getVariantKey, products, toast, user.agencyId]);
+
+  const getAvailableStock = (productId: string, color: string, size: string) => {
+    const primaryKey = getVariantKey(productId, color, size);
+    const colorFallbackKey = getVariantKey(productId, color, 'default');
+    const sizeFallbackKey = getVariantKey(productId, 'default', size);
+    const defaultKey = getVariantKey(productId, 'default', 'default');
+
+    return inventoryMap[primaryKey] ??
+      inventoryMap[colorFallbackKey] ??
+      inventoryMap[sizeFallbackKey] ??
+      inventoryMap[defaultKey];
+  };
 
   useEffect(() => {
     if (selectedCategory && selectedSubCategory && selectedColor) {
@@ -216,6 +263,20 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         };
 
         return [...filteredProducts].sort((a, b) => {
+          // Special handling: prioritize PETTYCOURT over HAIMARRY PETTICOAT
+          const isPettyA = /pettycourt/i.test(a.name || a.description || '');
+          const isPettyB = /pettycourt/i.test(b.name || b.description || '');
+          const isHaimarryA = /haimarry/i.test(a.name || a.description || '');
+          const isHaimarryB = /haimarry/i.test(b.name || b.description || '');
+
+          if (isPettyA !== isPettyB) {
+            return isPettyA ? -1 : 1;
+          }
+
+          if (isHaimarryA !== isHaimarryB) {
+            return isHaimarryA ? 1 : -1;
+          }
+
           const sizeA = extractSizeFromName(a.name);
           const sizeB = extractSizeFromName(b.name);
           const orderA = getSizeOrder(sizeA);
@@ -643,7 +704,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
                 <div>
                   <Label className="text-base font-semibold mb-3 block">Select Color</Label>
                   <div className="flex flex-wrap gap-2">
-                    {colors.map((color) => (
+                    {sortedColors.map((color) => (
                       <Badge
                         key={color}
                         variant={selectedColor === color ? "default" : "outline"}

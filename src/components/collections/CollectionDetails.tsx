@@ -156,7 +156,7 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24 lg:pb-8 min-h-screen lg:min-h-0 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center gap-4">
         <Button variant="ghost" onClick={onBack}>
