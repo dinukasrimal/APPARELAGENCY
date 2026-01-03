@@ -54,6 +54,70 @@ export class ExternalDataService {
 
   private constructor() {}
 
+  private escapeFilterValue(value: string) {
+    return value.replace(/"/g, '\\"');
+  }
+
+  private async getMergedCustomers(primaryCustomer: string): Promise<string[]> {
+    try {
+      const { data: groups, error: groupError } = await externalSupabase
+        .from('customer_merge_groups')
+        .select('id, merge_type')
+        .eq('primary_customer', primaryCustomer)
+        .eq('merge_type', 'customer');
+
+      if (groupError || !groups || groups.length === 0) {
+        return [];
+      }
+
+      const groupIds = groups.map((g: any) => g.id);
+      const { data: members, error: memberError } = await externalSupabase
+        .from('customer_merge_members')
+        .select('merged_customer, merge_group_id')
+        .in('merge_group_id', groupIds);
+
+      if (memberError || !members) {
+        return [];
+      }
+
+      return Array.from(
+        new Set(
+          members
+            .map((m: any) => m.merged_customer)
+            .filter((name: string | null) => !!name)
+        )
+      ) as string[];
+    } catch (error) {
+      console.warn('Failed to load merged customers:', error);
+      return [];
+    }
+  }
+
+  private async getMergedInvoiceIds(primaryCustomer: string): Promise<string[]> {
+    try {
+      // Invoice merges live in customer_invoice_merges
+      const { data: invoiceMerges, error: invoiceMergeError } = await externalSupabase
+        .from('customer_invoice_merges')
+        .select('invoice_id')
+        .eq('primary_customer', primaryCustomer);
+
+      if (invoiceMergeError || !invoiceMerges) {
+        return [];
+      }
+
+      return Array.from(
+        new Set(
+          invoiceMerges
+            .map((m: any) => m.invoice_id)
+            .filter((id: string | null) => !!id)
+        )
+      ) as string[];
+    } catch (error) {
+      console.warn('Failed to load merged invoices:', error);
+      return [];
+    }
+  }
+
   /**
    * Check if external data service is available
    */
@@ -222,55 +286,96 @@ export class ExternalDataService {
 
       console.log('🧾 Fetching external invoices with filters:', filters);
 
-      let query = externalSupabase
+      let baseQuery = externalSupabase
         .from('invoices')
-        .select('*');
+        .select('*', { count: 'exact' });
 
       // Apply filters with fuzzy matching for user names
-      const searchName = filters.userName || filters.agencyName; // Support both for backward compatibility
+      const searchName = (filters.userName || filters.agencyName || '').trim(); // Support both for backward compatibility
       if (searchName) {
         const matchingCustomerName = await this.findMatchingExternalCustomerName(searchName);
+        const mergedCustomers = await this.getMergedCustomers(searchName);
+        const mergedInvoiceIds = await this.getMergedInvoiceIds(searchName);
+
+        const partnerNames = [searchName];
         if (matchingCustomerName) {
-          query = query.eq('partner_name', matchingCustomerName);
-        } else {
-          // No match found, return empty results
-          console.log(`No external customer match found for invoices: "${searchName}"`);
-          return {
-            data: [],
-            error: null
-          };
+          partnerNames.unshift(matchingCustomerName);
         }
+        if (mergedCustomers.length > 0) {
+          partnerNames.push(...mergedCustomers);
+        }
+
+        const uniquePartnerNames = Array.from(new Set(partnerNames)).filter(Boolean);
+
+        const filterParts = uniquePartnerNames.map(
+          (name) => `partner_name.eq."${this.escapeFilterValue(name)}"`
+        );
+        filterParts.push(`partner_name.ilike.%${searchName}%`);
+        if (matchingCustomerName) {
+          filterParts.unshift(`partner_name.eq."${this.escapeFilterValue(matchingCustomerName)}"`);
+        }
+        if (searchName.toUpperCase() === 'NEXUS MARKETING') {
+          filterParts.unshift(`partner_name.eq."NEXUS MARKETING"`);
+        }
+        if (mergedInvoiceIds.length > 0) {
+          filterParts.push(`id.in.(${mergedInvoiceIds.join(',')})`);
+        }
+        baseQuery = baseQuery.or(filterParts.join(','));
       }
 
       // Only apply date filters if we know the date column exists
       if (filters.startDate || filters.endDate) {
         try {
           if (filters.startDate) {
-            query = query.gte('date_order', filters.startDate);
+            baseQuery = baseQuery.gte('date_order', filters.startDate);
           }
           if (filters.endDate) {
-            query = query.lte('date_order', filters.endDate);
+            // Use exclusive upper bound by adding 1 day to end date
+            const end = new Date(`${filters.endDate}T00:00:00Z`);
+            const endPlusOne = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+            const endPlusOneStr = endPlusOne.toISOString().split('T')[0];
+            baseQuery = baseQuery.lt('date_order', endPlusOneStr);
           }
         } catch (error) {
           console.warn('Date filtering not supported, skipping date filters');
         }
       }
 
-      const { data, error } = await query;
+      // Fetch all rows in pages (Supabase default limit is 1000)
+      const pageSize = 1000;
+      let from = 0;
+      let to = pageSize - 1;
+      let allRows: any[] = [];
+      let hasMore = true;
 
-      if (error) {
-        console.error('Error fetching external invoices:', error);
-        return {
-          data: [],
-          error: error.message
-        };
+      while (hasMore) {
+        // Build paged query fresh each loop to avoid mutation side effects
+        const { data, error, count } = await baseQuery.range(from, to);
+
+        if (error) {
+          console.error('Error fetching external invoices:', error);
+          return {
+            data: [],
+            error: error.message
+          };
+        }
+
+        allRows = allRows.concat(data || []);
+
+        // Stop if we fetched all rows
+        if (!count || allRows.length >= count || (data || []).length < pageSize) {
+          hasMore = false;
+        } else {
+          from += pageSize;
+          to += pageSize;
+        }
       }
 
-      console.log(`🧾 Fetched ${data?.length || 0} external invoices for date range ${filters.startDate} to ${filters.endDate}`);
+      console.log(`🧾 Fetched ${allRows.length} external invoices for date range ${filters.startDate} to ${filters.endDate}`);
       
       // Log some sample invoice dates for debugging
-      if (data && data.length > 0) {
-        console.log('📋 Sample invoice dates:', data.slice(0, 3).map(inv => ({ 
+      if (allRows.length > 0) {
+        console.log('📋 Sample invoice dates:', allRows.slice(0, 3).map(inv => ({ 
           id: inv.id, 
           date_order: inv.date_order, 
           amount_total: inv.amount_total 
@@ -278,7 +383,7 @@ export class ExternalDataService {
       }
 
       return {
-        data: data || [],
+        data: allRows,
         error: null
       };
     } catch (error) {
@@ -511,11 +616,15 @@ export class ExternalDataService {
         const maxMonth = Math.max(...months);
         
         startDate = `${year}-${minMonth.toString().padStart(2, '0')}-01`;
-        endDate = new Date(year, maxMonth, 0).toISOString().split('T')[0]; // Last day of max month
+        // Use calendar last day at 23:59:59 to include full period (local date)
+        const end = new Date(year, maxMonth, 0);
+        const endStr = end.toISOString().split('T')[0];
+        endDate = `${endStr}T23:59:59`;
         
         console.log(`📆 Date range for category achievement: ${startDate} to ${endDate}`);
       }
 
+      // Use endDate inclusive by passing date-only (getInvoices adds < end+1day)
       const { data: invoices, error } = await this.getInvoices({
         userName,
         startDate,
@@ -631,7 +740,8 @@ export class ExternalDataService {
         const maxMonth = Math.max(...months);
         
         startDate = `${year}-${minMonth.toString().padStart(2, '0')}-01`;
-        endDate = new Date(year, maxMonth, 0).toISOString().split('T')[0]; // Last day of max month
+        // Use UTC to avoid timezone shifting the last day
+        endDate = new Date(Date.UTC(year, maxMonth, 0)).toISOString().split('T')[0];
         
         console.log(`📆 Target covers months ${months.join(',')} (${minMonth} to ${maxMonth})`);
         console.log(`📆 Date range for achievement calculation: ${startDate} to ${endDate}`);
