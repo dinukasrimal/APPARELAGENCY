@@ -170,7 +170,7 @@ serve(async (req) => {
         break;
 
       case 'invoices':
-        let domain = [['invoice_type', 'in', ['out_invoice', 'out_refund']]];
+        const domain = [['invoice_type', 'in', ['out_invoice', 'out_refund']]];
         if (startDate && endDate) {
           domain.push(['invoice_date', '>=', startDate]);
           domain.push(['invoice_date', '<=', endDate]);

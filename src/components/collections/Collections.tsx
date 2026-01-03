@@ -211,7 +211,8 @@ const Collections = ({ user }: CollectionsProps) => {
 
   const fetchCustomerInvoiceSummary = async (customerId: string) => {
     try {
-      const customerInvoices = invoices.filter(inv => inv.customerId === customerId);
+      // Only include invoices with outstanding > 0 (based on loaded invoice outstandingAmount or fallback)
+      const customerInvoices = invoices.filter(inv => inv.customerId === customerId && (inv.outstandingAmount ?? inv.total) > 0);
       const customerCollections = collections.filter(col => col.customerId === customerId);
 
       // Fetch approved/processed returns for this customer

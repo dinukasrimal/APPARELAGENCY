@@ -194,7 +194,7 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
           // Return a safe fallback object
           return {
             id: target?.id || `fallback-${Math.random()}`,
-            quarter: 'Q1' as 'Q1',
+            quarter: 'Q1' as const,
             year: target?.target_year || new Date().getFullYear(),
             productCategory: `External Target (Invalid Data)`,
             targetAmount: target?.adjusted_total_value || target?.initial_total_value || 0,

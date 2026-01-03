@@ -25,7 +25,7 @@ class ModuleErrorBoundary extends Component<
   }
 
   componentDidCatch(error: unknown, errorInfo: unknown) {
-    // eslint-disable-next-line no-console
+     
     console.error(
       `[ModuleErrorBoundary] Error in ${this.props.moduleName}:`,
       error,

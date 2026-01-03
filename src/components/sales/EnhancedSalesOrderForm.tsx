@@ -67,6 +67,7 @@ const EnhancedSalesOrderForm = ({
   const [isEditing, setIsEditing] = useState(false);
   const [agencyPriceType, setAgencyPriceType] = useState<PriceType>('billing_price');
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
+  const [pendingStockKeys, setPendingStockKeys] = useState<Set<string>>(new Set());
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const { toast } = useToast();
   const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
@@ -177,11 +178,27 @@ const EnhancedSalesOrderForm = ({
   // Custom sorting function for product names
   const sortProductsByName = (products: Product[]) => {
     return products.sort((a, b) => {
+      const nameA = a.name || '';
+      const nameB = b.name || '';
+
+      // Macbell grouping: standard MACBELL- variants before MAC BELL LONG LEG, both sorted by size
+      const macbellPriority = (name: string) => {
+        if (/^macbell-\s*/i.test(name)) return 0; // MACBELL- S/M/L...
+        if (/^mac bell long leg/i.test(name)) return 1; // Long leg variants
+        return 2; // everything else
+      };
+
+      const macbellA = macbellPriority(nameA);
+      const macbellB = macbellPriority(nameB);
+      if (macbellA !== macbellB) {
+        return macbellA - macbellB;
+      }
+
       // Special handling: prioritize PETTYCOURT over HAIMARRY PETTICOAT
-      const isPettyA = /pettycourt/i.test(a.name || a.description || '');
-      const isPettyB = /pettycourt/i.test(b.name || b.description || '');
-      const isHaimarryA = /haimarry/i.test(a.name || a.description || '');
-      const isHaimarryB = /haimarry/i.test(b.name || b.description || '');
+      const isPettyA = /pettycourt/i.test(nameA || a.description || '');
+      const isPettyB = /pettycourt/i.test(nameB || b.description || '');
+      const isHaimarryA = /haimarry/i.test(nameA || a.description || '');
+      const isHaimarryB = /haimarry/i.test(nameB || b.description || '');
 
       if (isPettyA !== isPettyB) {
         return isPettyA ? -1 : 1;
@@ -239,8 +256,8 @@ const EnhancedSalesOrderForm = ({
         return 999;
       };
 
-      const sizeA = extractSizeFromName(a.name);
-      const sizeB = extractSizeFromName(b.name);
+      const sizeA = extractSizeFromName(nameA);
+      const sizeB = extractSizeFromName(nameB);
       
       const orderA = getSizeOrder(sizeA);
       const orderB = getSizeOrder(sizeB);
@@ -278,6 +295,34 @@ const EnhancedSalesOrderForm = ({
   const getVariantKey = useCallback((productId: string, color: string, size: string) => {
     return [productId, color?.trim().toLowerCase() || 'default', size?.trim().toLowerCase() || 'default'].join('::');
   }, []);
+
+  // Async fetch for a missing variant stock, uses product name fallback
+  const fetchVariantStock = useCallback(async (productId: string, productName: string, color: string, size: string, primaryKey: string) => {
+    if (!user.agencyId) return;
+    setPendingStockKeys(prev => {
+      if (prev.has(primaryKey)) return prev;
+      const next = new Set(prev);
+      next.add(primaryKey);
+      return next;
+    });
+    try {
+      const stock = await externalInventoryService.getCurrentStock(
+        user.agencyId,
+        productName,
+        color || 'Default',
+        size || 'Default'
+      );
+      setInventoryMap(prev => ({ ...prev, [primaryKey]: stock }));
+    } catch (err) {
+      console.error('Failed to fetch fallback stock', err);
+    } finally {
+      setPendingStockKeys(prev => {
+        const next = new Set(prev);
+        next.delete(primaryKey);
+        return next;
+      });
+    }
+  }, [user.agencyId]);
 
   const loadInventory = useCallback(async () => {
     if (!user.agencyId) {
@@ -345,6 +390,13 @@ const EnhancedSalesOrderForm = ({
 
       const nextMap: Record<string, number> = {};
 
+      const setStock = (key: string, value: number) => {
+        const current = nextMap[key];
+        if (current === undefined || Math.abs(value) > Math.abs(current)) {
+          nextMap[key] = value;
+        }
+      };
+
       summary.forEach(item => {
         const normalizedName = normalize(item.product_name);
         const baseName = getBaseName(item.product_name);
@@ -381,7 +433,7 @@ const EnhancedSalesOrderForm = ({
         const colorValue = (rawColor === 'MULTI' || rawColor === 'DEFAULT') ? 'default' : rawColor;
         const sizeValue = (item.size || 'default').toString();
 
-        const stockValue = item.current_stock ?? 0;
+        const stockValue = Number.isFinite(item.current_stock) ? Number(item.current_stock) : 0;
 
         candidateIds.forEach(productId => {
           const primaryKey = getVariantKey(productId, colorValue, sizeValue);
@@ -389,17 +441,12 @@ const EnhancedSalesOrderForm = ({
           const sizeFallbackKey = getVariantKey(productId, 'default', sizeValue);
           const defaultKey = getVariantKey(productId, 'default', 'default');
 
-          // Use max() instead of += so the same inventory row
-          // can't accidentally double-count for a given key.
-          nextMap[primaryKey] = Math.max(nextMap[primaryKey] ?? 0, stockValue);
-
-          // Fallback for same size across colors
-          nextMap[sizeFallbackKey] = Math.max(nextMap[sizeFallbackKey] ?? 0, stockValue);
-
-          // Fallback for same color when size is unknown/aggregated
+          // Prefer the value with the greatest magnitude so negative stock is preserved
+          setStock(primaryKey, stockValue);
+          setStock(sizeFallbackKey, stockValue);
           if (sizeValue.toLowerCase() === 'default') {
-            nextMap[colorFallbackKey] = Math.max(nextMap[colorFallbackKey] ?? 0, stockValue);
-            nextMap[defaultKey] = Math.max(nextMap[defaultKey] ?? 0, stockValue);
+            setStock(colorFallbackKey, stockValue);
+            setStock(defaultKey, stockValue);
           }
         });
       });
@@ -421,16 +468,22 @@ const EnhancedSalesOrderForm = ({
     loadInventory();
   }, [loadInventory]);
 
-  const getAvailableStock = (productId: string, color: string, size: string) => {
+  const getAvailableStock = (productId: string, productName: string, color: string, size: string) => {
     const primaryKey = getVariantKey(productId, color, size);
     const colorFallbackKey = getVariantKey(productId, color, 'default');
     const sizeFallbackKey = getVariantKey(productId, 'default', size);
     const defaultKey = getVariantKey(productId, 'default', 'default');
 
-    return inventoryMap[primaryKey] ??
+    const known = inventoryMap[primaryKey] ??
       inventoryMap[colorFallbackKey] ??
       inventoryMap[sizeFallbackKey] ??
       inventoryMap[defaultKey];
+
+    if (known === undefined && user.agencyId && !pendingStockKeys.has(primaryKey)) {
+      fetchVariantStock(productId, productName, color, size, primaryKey);
+    }
+
+    return known;
   };
 
   const updateQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
@@ -642,10 +695,12 @@ const EnhancedSalesOrderForm = ({
         orderData = data;
 
         // Delete existing items and insert new ones
-        await supabase
+        const { error: deleteError } = await supabase
           .from('sales_order_items')
           .delete()
           .eq('sales_order_id', editingOrder.id);
+
+        if (deleteError) throw deleteError;
       } else {
         // Create new order
         salesOrderData = {
@@ -871,7 +926,7 @@ const EnhancedSalesOrderForm = ({
                         <h5 className="font-medium mb-3">{gridItem.product.name}</h5>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                           {gridItem.sizes.map((sizeItem, sizeIndex) => {
-                            const availableStock = getAvailableStock(gridItem.product.id, gridItem.color, sizeItem.size);
+                            const availableStock = getAvailableStock(gridItem.product.id, gridItem.product.name, gridItem.color, sizeItem.size);
                             const stockClass = inventoryLoading
                               ? 'text-gray-400'
                               : availableStock === undefined
@@ -883,7 +938,7 @@ const EnhancedSalesOrderForm = ({
                                     : 'text-green-600';
                             const stockLabel = inventoryLoading
                               ? 'Stock: —'
-                              : `Stock: ${Math.max(0, availableStock ?? 0)}`;
+                              : `Stock: ${availableStock ?? '—'}`;
 
                             return (
                               <div key={sizeItem.size} className="space-y-1">

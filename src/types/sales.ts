@@ -46,6 +46,7 @@ export interface Invoice {
   subtotal: number;
   discountAmount: number;
   total: number;
+  outstandingAmount?: number;
   gpsCoordinates: {
     latitude: number;
     longitude: number;
@@ -104,7 +105,7 @@ export interface Return {
 
 export interface ReturnItem {
   id: string;
-  invoiceItemId: string;
+  invoiceItemId: string | null;
   productId: string;
   productName: string;
   color: string;

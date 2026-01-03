@@ -53,7 +53,7 @@ class OptimizedDataService {
 
       // Batch fetch product details
       const productIds = [...new Set(inventoryData?.map(item => item.product_id).filter(Boolean) || [])];
-      let productDetails = new Map();
+      const productDetails = new Map();
       
       if (productIds.length > 0) {
         // Batch query for product details

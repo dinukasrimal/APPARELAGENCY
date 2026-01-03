@@ -275,7 +275,7 @@ export class ExternalBotSyncService {
       let matchedInvoices = 0;
       let unmatchedInvoices = 0;
       let globalMatchedProducts = 0;
-      let globalUnmatchedProducts = 0;
+      const globalUnmatchedProducts = 0;
 
       for (const invoice of externalInvoices) {
         // Find matching user by partner_name
@@ -328,8 +328,8 @@ export class ExternalBotSyncService {
           console.log(`    🔍 Processing line: ${productName} (Qty: ${quantity})`);
 
           // No product matching needed - direct relationship via product_name/description
-          let category = 'General';
-          let subCategory = 'General';
+          const category = 'General';
+          const subCategory = 'General';
           
           console.log(`📦 Processing product: "${productName}" (no matching required)`);
           globalMatchedProducts++; // All products are considered "matched" since we have direct relationship

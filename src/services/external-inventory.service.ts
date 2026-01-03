@@ -94,44 +94,64 @@ export class ExternalInventoryService {
   private async buildAgencyStockSummaryFromTransactions(agencyId: string, filters?: { searchTerm?: string; category?: string }): Promise<ExternalInventoryItem[]> {
     console.log(`🔍 Debug: Getting ALL stock for agency ${agencyId} (superuser mode)`);
 
-    // Get transactions first, then join with products table
-    // Only include approved transactions in stock calculations
-    let query = supabase
-      .from('external_inventory_management')
-      .select(`
-        product_name,
-        product_code,
-        color,
-        size,
-        category,
-        sub_category,
-        unit_price,
-        quantity,
-        transaction_date,
-        external_source,
-        transaction_type,
-        reference_name
-      `)
-      .eq('agency_id', agencyId)
-      .eq('approval_status', 'approved'); // Only approved transactions affect stock
+    const PAGE_SIZE = 1000;
 
-    // Apply filters
-    if (filters?.searchTerm) {
-      query = query.ilike('product_name', `%${filters.searchTerm}%`);
+    const fetchPage = async (from: number, to: number) => {
+      let pageQuery = supabase
+        .from('external_inventory_management')
+        .select(`
+          product_name,
+          product_code,
+          color,
+          size,
+          category,
+          sub_category,
+          unit_price,
+          quantity,
+          transaction_date,
+          external_source,
+          transaction_type,
+          reference_name
+        `, { count: 'exact' })
+        .eq('agency_id', agencyId)
+        .eq('approval_status', 'approved'); // Only approved transactions affect stock
+
+      // Apply filters per page
+      if (filters?.searchTerm) {
+        pageQuery = pageQuery.ilike('product_name', `%${filters.searchTerm}%`);
+      }
+
+      if (filters?.category) {
+        pageQuery = pageQuery.eq('sub_category', filters.category);
+      }
+
+      return pageQuery.range(from, to);
+    };
+
+    // Fetch first page
+    const firstPage = await fetchPage(0, PAGE_SIZE - 1);
+
+    if (firstPage.error) {
+      console.error('Error fetching agency transactions:', firstPage.error);
+      throw firstPage.error;
     }
 
-    if (filters?.category) {
-      query = query.eq('sub_category', filters.category);
+    const data: any[] = firstPage.data || [];
+    const totalCount = firstPage.count ?? data.length;
+
+    // Fetch remaining pages
+    while (data.length < totalCount) {
+      const from = data.length;
+      const to = from + PAGE_SIZE - 1;
+      const page = await fetchPage(from, to);
+      if (page.error) {
+        console.error('Error fetching paginated agency transactions:', page.error);
+        throw page.error;
+      }
+      data.push(...(page.data || []));
     }
 
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('Error fetching agency transactions:', error);
-      throw error;
-    }
-
-    console.log(`🔍 Debug: Fetched ${data?.length || 0} transactions for agency ${agencyId}`);
+    console.log(`🔍 Debug: Fetched ${data.length} transactions for agency ${agencyId}`);
     if (data && data.length > 0) {
       console.log(`🔍 Debug: Sample transactions:`, data.slice(0, 3));
     } else {
@@ -247,7 +267,8 @@ export class ExternalInventoryService {
       // Get product info from products table
       const productInfo = productsMap.get(transaction.product_name);
       const displayName = productInfo?.displayName || transaction.product_name;
-      const subCategory = productInfo?.subCategory || transaction.sub_category || 'General';
+      // Prefer transaction's sub_category, then product mapping, then category fallback
+      const subCategory = transaction.sub_category || productInfo?.subCategory || transaction.category || 'General';
       
       const key = `${transaction.product_name}|${normalizedColor}|${normalizedSize}`;
       
@@ -276,6 +297,14 @@ export class ExternalInventoryService {
       }
       
       const item = groupedData.get(key)!;
+      // Upgrade sub_category/category if we previously had a generic value
+      if ((item.sub_category === 'General' || !item.sub_category) && subCategory && subCategory !== 'General') {
+        item.sub_category = subCategory;
+      }
+      if ((item.category === 'General' || !item.category) && transaction.category) {
+        item.category = transaction.category;
+      }
+
       item.current_stock += transaction.quantity;
       item.transaction_count++;
       
@@ -311,12 +340,35 @@ export class ExternalInventoryService {
       total_value: item.current_stock * (item.avg_unit_price || 0)
     }));
 
-    // Second‑level aggregation: merge items that share the same
-    // displayed product name and size (e.g. PANDA XL across colors)
+    // Second‑level aggregation: merge items by normalized product name + normalized size (ignore product_code/ids)
     const aggregatedMap = new Map<string, any>();
 
     initialItems.forEach(item => {
-      const key = `${item.product_name}|${item.size}`;
+      const normalizeBaseName = (name: string | null | undefined) => {
+        if (!name) return '';
+        let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
+        base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
+        base = base.replace(/[-\s]+$/, '').trim();
+        base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
+        return base;
+      };
+      const normalizeSize = (size: string | null | undefined) => {
+        if (!size) return '';
+        const s = size.toUpperCase().trim();
+        if (s === 'DEFAULT' || /FREE\s*SIZE/.test(s) || /ONE\s*SIZE/.test(s)) return '';
+        // Normalize size tokens like 1-2, 1 — 2, etc.
+        return s.replace(/\s+/g, '').replace(/–/g, '-');
+      };
+      const extractSizeFromName = (name: string | null | undefined) => {
+        if (!name) return '';
+        const match = name.match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
+        return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
+      };
+
+      const baseName = normalizeBaseName(item.product_name);
+      const sizeKey = normalizeSize(item.size) || extractSizeFromName(item.product_name) || 'NOSIZE';
+
+      const key = `name:${baseName}|size:${sizeKey}`;
       if (!aggregatedMap.has(key)) {
         aggregatedMap.set(key, { ...item });
       } else {
@@ -330,12 +382,18 @@ export class ExternalInventoryService {
         existing.transaction_count += item.transaction_count;
         existing.variant_count += item.variant_count ?? 0;
 
-        // If colors differ across merged rows, mark as MULTI
+        // Prefer non-default colors/sizes; else mark MULTI
         if (existing.color !== item.color) {
-          existing.color = 'MULTI';
+          if (existing.color === 'Default') existing.color = item.color;
+          else if (item.color === 'Default') existing.color = existing.color;
+          else existing.color = 'MULTI';
+        }
+        if (existing.size !== item.size) {
+          if (existing.size === 'Default') existing.size = item.size;
+          else if (item.size === 'Default') existing.size = existing.size;
+          else existing.size = 'MULTI';
         }
 
-        // Recalculate average unit price based on combined value/stock
         existing.avg_unit_price = combinedStock !== 0
           ? combinedTotalValue / combinedStock
           : existing.avg_unit_price ?? item.avg_unit_price;
@@ -372,41 +430,62 @@ export class ExternalInventoryService {
 
     console.log(`🔍 Debug: Loading inventory for agency ${agencyId} (all approved transactions, no reference_name filter)`);
 
-    let query = supabase
-      .from('external_inventory_management')
-      .select(`
-        product_name,
-        product_code,
-        color,
-        size,
-        category,
-        sub_category,
-        unit_price,
-        quantity,
-        transaction_date,
-        external_source,
-        transaction_type,
-        reference_name
-      `)
-      .eq('agency_id', agencyId)
-      .eq('approval_status', 'approved'); // Only approved transactions affect stock
+    const PAGE_SIZE = 1000;
 
-    // Apply filters
-    if (filters?.searchTerm) {
-      query = query.ilike('product_name', `%${filters.searchTerm}%`);
+    const fetchPage = async (from: number, to: number) => {
+      let pageQuery = supabase
+        .from('external_inventory_management')
+        .select(`
+          product_name,
+          product_code,
+          color,
+          size,
+          category,
+          sub_category,
+          unit_price,
+          quantity,
+          transaction_date,
+          external_source,
+          transaction_type,
+          reference_name
+        `, { count: 'exact' })
+        .eq('agency_id', agencyId)
+        .eq('approval_status', 'approved'); // Only approved transactions affect stock
+
+      // Apply filters per page
+      if (filters?.searchTerm) {
+        pageQuery = pageQuery.ilike('product_name', `%${filters.searchTerm}%`);
+      }
+      if (filters?.category) {
+        pageQuery = pageQuery.eq('sub_category', filters.category);
+      }
+
+      return pageQuery.range(from, to);
+    };
+
+    // Fetch first page
+    const firstPage = await fetchPage(0, PAGE_SIZE - 1);
+    if (firstPage.error) {
+      console.error('Error fetching external inventory transactions:', firstPage.error);
+      throw firstPage.error;
     }
-    if (filters?.category) {
-      query = query.eq('category', filters.category);
+
+    const transactions: any[] = firstPage.data || [];
+    const totalCount = firstPage.count ?? transactions.length;
+
+    // Fetch remaining pages if needed
+    while (transactions.length < totalCount) {
+      const from = transactions.length;
+      const to = from + PAGE_SIZE - 1;
+      const page = await fetchPage(from, to);
+      if (page.error) {
+        console.error('Error fetching paginated transactions:', page.error);
+        throw page.error;
+      }
+      transactions.push(...(page.data || []));
     }
 
-    const { data: transactions, error } = await query.order('product_name', { ascending: true });
-
-    if (error) {
-      console.error('Error fetching external inventory transactions:', error);
-      throw error;
-    }
-
-    console.log(`🔍 Debug: Fetched ${transactions?.length || 0} transactions for agency ${agencyId}`);
+    console.log(`🔍 Debug: Fetched ${transactions.length} transactions for agency ${agencyId}`);
     if (transactions && transactions.length > 0) {
       console.log('🔍 Debug: Sample transactions:', transactions.slice(0, 3));
       
@@ -554,7 +633,8 @@ export class ExternalInventoryService {
       // Get product info from products table
       const productInfo = productsMap.get(transaction.product_name);
       const displayName = productInfo?.displayName || transaction.product_name;
-      const subCategory = productInfo?.subCategory || transaction.sub_category || 'General';
+      // Prefer transaction's sub_category, then product mapping, then category fallback
+      const subCategory = transaction.sub_category || productInfo?.subCategory || transaction.category || 'General';
       
       const key = `${transaction.product_name}|${normalizedColor}|${normalizedSize}`;
       
@@ -583,6 +663,13 @@ export class ExternalInventoryService {
       }
       
       const item = groupedData.get(key)!;
+      // Upgrade sub_category/category if we previously had a generic value
+      if ((item.sub_category === 'General' || !item.sub_category) && subCategory && subCategory !== 'General') {
+        item.sub_category = subCategory;
+      }
+      if ((item.category === 'General' || !item.category) && transaction.category) {
+        item.category = transaction.category;
+      }
       
       // Debug specific product
       if (transaction.product_name?.includes('BRITNY') && normalizedColor === 'BLACK' && normalizedSize === 'L') {
@@ -631,12 +718,34 @@ export class ExternalInventoryService {
       total_value: item.current_stock * (item.avg_unit_price || 0)
     }));
 
-    // Second‑level aggregation: merge items that share the same
-    // displayed product name and size for this user
+    // Second‑level aggregation: merge items by normalized product name + normalized size for this user (ignore product_code)
     const aggregatedMap = new Map<string, any>();
 
     initialItems.forEach(item => {
-      const key = `${item.product_name}|${item.size}`;
+      const normalizeBaseName = (name: string | null | undefined) => {
+        if (!name) return '';
+        let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
+        base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
+        base = base.replace(/[-\s]+$/, '').trim();
+        base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
+        return base;
+      };
+      const normalizeSize = (size: string | null | undefined) => {
+        if (!size) return '';
+        const s = size.toUpperCase().trim();
+        if (s === 'DEFAULT' || /FREE\s*SIZE/.test(s) || /ONE\s*SIZE/.test(s)) return '';
+        return s.replace(/\s+/g, '').replace(/–/g, '-');
+      };
+      const extractSizeFromName = (name: string | null | undefined) => {
+        if (!name) return '';
+        const match = name.match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
+        return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
+      };
+
+      const baseName = normalizeBaseName(item.product_name);
+      const sizeKey = normalizeSize(item.size) || extractSizeFromName(item.product_name) || 'NOSIZE';
+
+      const key = `name:${baseName}|size:${sizeKey}`;
       if (!aggregatedMap.has(key)) {
         aggregatedMap.set(key, { ...item });
       } else {
@@ -651,7 +760,14 @@ export class ExternalInventoryService {
         existing.variant_count += item.variant_count ?? 0;
 
         if (existing.color !== item.color) {
-          existing.color = 'MULTI';
+          if (existing.color === 'Default') existing.color = item.color;
+          else if (item.color === 'Default') existing.color = existing.color;
+          else existing.color = 'MULTI';
+        }
+        if (existing.size !== item.size) {
+          if (existing.size === 'Default') existing.size = item.size;
+          else if (item.size === 'Default') existing.size = existing.size;
+          else existing.size = 'MULTI';
         }
 
         existing.avg_unit_price = combinedStock !== 0
@@ -816,8 +932,12 @@ export class ExternalInventoryService {
     reason: string,
     notes?: string
   ): Promise<void> {
-    // No product matching needed - using direct relationship via product_name/description
-    const matchedProduct = null;
+    // Look up category/sub-category from products so adjustments land in correct buckets
+    const { data: productMeta } = await supabase
+      .from('products')
+      .select('category, sub_category')
+      .eq('name', productName)
+      .maybeSingle();
     
     const { error } = await supabase
       .from('external_inventory_management')
@@ -825,9 +945,9 @@ export class ExternalInventoryService {
         product_name: productName,
         color: color,
         size: size,
-        category: matchedProduct?.category || 'General',
-        sub_category: matchedProduct?.subCategory || 'General',
-        matched_product_id: matchedProduct?.id || null,
+        category: productMeta?.category || 'General',
+        sub_category: productMeta?.sub_category || 'General',
+        matched_product_id: null,
         transaction_type: 'adjustment',
         transaction_id: `ADJ-${Date.now()}`,
         quantity: adjustmentQuantity,
@@ -870,7 +990,12 @@ export class ExternalInventoryService {
     
     // No product matching needed - but we want to normalize the product_name
     // so it matches the GRN / bot format (usually products.description like "[PC22] PETTY COURT 22")
-    const matchedProduct = null;
+    // Pull category/sub-category from products table when possible
+    const { data: productMeta } = await supabase
+      .from('products')
+      .select('category, sub_category, description')
+      .eq('name', productName)
+      .maybeSingle();
     
     // Start from the plain product name that comes from the UI
     let formattedProductName = productName;
@@ -913,9 +1038,9 @@ export class ExternalInventoryService {
       color: color || 'Default',
       size: size || 'Default',
       unit_price: unitPrice || 0,
-      category: matchedProduct?.category || 'General',
-      sub_category: matchedProduct?.subCategory || 'General',
-      matched_product_id: matchedProduct?.id || null,
+      category: productMeta?.category || 'General',
+      sub_category: productMeta?.sub_category || 'General',
+      matched_product_id: null,
       transaction_type: 'sale',
       transaction_id: invoiceNumber || `SALE-${Date.now()}`,
       quantity: -Math.abs(quantity), // Negative for stock OUT
@@ -954,18 +1079,17 @@ export class ExternalInventoryService {
     originalInvoiceNumber?: string
   ): Promise<void> {
     // Normalize product name so it matches GRN / bot format (products.description)
-    const matchedProduct = null;
+    // and pull category info for correct bucketing
+    const { data: productMeta } = await supabase
+      .from('products')
+      .select('category, sub_category, description')
+      .eq('name', productName)
+      .maybeSingle();
 
     let formattedProductName = productName;
     try {
-      const { data: productRecord, error: productError } = await supabase
-        .from('products')
-        .select('description')
-        .eq('name', productName)
-        .maybeSingle();
-
-      if (!productError && productRecord?.description) {
-        formattedProductName = productRecord.description;
+      if (productMeta?.description) {
+        formattedProductName = productMeta.description;
         console.log('🔄 Using products.description for customer return:', formattedProductName);
       }
     } catch (e) {
@@ -978,9 +1102,9 @@ export class ExternalInventoryService {
         product_name: formattedProductName,
         color: color || 'Default',
         size: size || 'Default',
-        category: matchedProduct?.category || 'General',
-        sub_category: matchedProduct?.subCategory || 'General',
-        matched_product_id: matchedProduct?.id || null,
+        category: productMeta?.category || 'General',
+        sub_category: productMeta?.sub_category || 'General',
+        matched_product_id: null,
         transaction_type: 'customer_return',
         transaction_id: `RET-${Date.now()}`,
         quantity: Math.abs(quantity), // Positive for stock IN

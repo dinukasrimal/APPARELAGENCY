@@ -95,9 +95,54 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       const ordersData = ordersResult.data;
       const itemsData = itemsResult.data;
 
+      // Helper: pick subset of items whose total is closest to the target subtotal.
+      // This mitigates duplicate legacy rows (we lack delete perms on sales_order_items).
+      const selectItemsClosestToSubtotal = (items: any[], targetSubtotal: number) => {
+        const parsedItems = items.map((item) => ({
+          ...item,
+          totalValue: Math.round(Number(item.total) * 100) // work in cents for precision
+        }));
+
+        const target = Math.round(targetSubtotal * 100);
+        let bestDiff = Number.POSITIVE_INFINITY;
+        let bestSelection: any[] = [];
+
+        // For large item counts, just return all to avoid combinatorial blowup
+        if (parsedItems.length > 18) {
+          return items;
+        }
+
+        const dfs = (index: number, currentSum: number, selection: any[]) => {
+          const currentDiff = Math.abs(currentSum - target);
+          if (
+            currentDiff < bestDiff ||
+            (currentDiff === bestDiff && selection.length < bestSelection.length)
+          ) {
+            bestDiff = currentDiff;
+            bestSelection = selection.slice();
+          }
+
+          if (index >= parsedItems.length) return;
+
+          // If we're already over target and worse than best, prune
+          if (currentSum > target && currentSum - target > bestDiff) return;
+
+          const item = parsedItems[index];
+          // Include
+          dfs(index + 1, currentSum + item.totalValue, selection.concat(item));
+          // Exclude
+          dfs(index + 1, currentSum, selection);
+        };
+
+        dfs(0, 0, []);
+        // Map back to original shape (drop helper field)
+        return bestSelection.map(({ totalValue, ...rest }) => rest);
+      };
+
       // Transform orders with items
       const transformedOrders: SalesOrder[] = (ordersData || []).map(order => {
-        const orderItems = (itemsData || []).filter(item => item.sales_order_id === order.id);
+        const allOrderItems = (itemsData || []).filter(item => item.sales_order_id === order.id);
+        const trimmedItems = selectItemsClosestToSubtotal(allOrderItems, Number(order.subtotal));
         
         return {
           id: order.id,
@@ -105,7 +150,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           customerId: order.customer_id,
           customerName: order.customer_name,
           agencyId: order.agency_id,
-          items: orderItems.map((item: any) => ({
+          items: trimmedItems.map((item: any) => ({
             id: item.id,
             productId: item.product_id,
             productName: item.product_name,
@@ -260,10 +305,62 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       const returnsData = returnsResult.data;
       const returnItemsData = returnItemsResult.data;
 
+      // Fetch collection allocations for invoices to compute outstanding
+      const invoiceIds = (invoicesData || []).map((inv: any) => inv.id);
+      let allocationTotals: Record<string, number> = {};
+      if (invoiceIds.length > 0) {
+        const { data: allocationsData, error: allocationsError } = await supabase
+          .from('collection_allocations')
+          .select('invoice_id, allocated_amount')
+          .in('invoice_id', invoiceIds);
+        if (allocationsError) {
+          console.warn('Allocations fetch issue:', allocationsError);
+        } else {
+          allocationTotals = (allocationsData || []).reduce((acc: Record<string, number>, row: any) => {
+            if (row.invoice_id) {
+              acc[row.invoice_id] = (acc[row.invoice_id] || 0) + Number(row.allocated_amount || 0);
+            }
+            return acc;
+          }, {});
+        }
+      }
+
+      // Map invoice_item_id -> invoice_id for return allocation
+      const invoiceItemToInvoice: Record<string, string> = {};
+      (invoiceItemsData || []).forEach((item: any) => {
+        if (item.id && item.invoice_id) {
+          invoiceItemToInvoice[item.id] = item.invoice_id;
+        }
+      });
+
+      // Sum returns by invoice via header and item linking
+      const returnsByInvoiceFromHeader: Record<string, number> = {};
+      (returnsData || []).forEach((ret: any) => {
+        if (ret.invoice_id) {
+          returnsByInvoiceFromHeader[ret.invoice_id] =
+            (returnsByInvoiceFromHeader[ret.invoice_id] || 0) + Number(ret.total || 0);
+        }
+      });
+      const returnsByInvoiceFromItems: Record<string, number> = {};
+      (returnItemsData || []).forEach((ri: any) => {
+        const invId = ri.invoice_item_id ? invoiceItemToInvoice[ri.invoice_item_id] : null;
+        if (invId) {
+          returnsByInvoiceFromItems[invId] =
+            (returnsByInvoiceFromItems[invId] || 0) + Number(ri.total || 0);
+        }
+      });
+
       // Transform invoices with items
       const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => {
         const invoiceItems = (invoiceItemsData || []).filter(item => item.invoice_id === invoice.id);
         const agency = (agenciesData || []).find((ag: any) => ag.id === invoice.agency_id);
+        const allocated = allocationTotals[invoice.id] || 0;
+        const returnsFromHeader = returnsByInvoiceFromHeader[invoice.id] || 0;
+        const returnsFromItems = returnsByInvoiceFromItems[invoice.id] || 0;
+        const outstanding = Math.max(
+          0,
+          Number(invoice.total) - allocated - returnsFromHeader - returnsFromItems
+        );
         
         return {
           id: invoice.id,
@@ -286,6 +383,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           subtotal: Number(invoice.subtotal),
           discountAmount: Number(invoice.discount_amount),
           total: Number(invoice.total),
+          outstandingAmount: outstanding,
           gpsCoordinates: {
             latitude: invoice.latitude || 0,
             longitude: invoice.longitude || 0
@@ -352,8 +450,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       setDeliveries(transformedDeliveries);
 
-      // Transform returns with items (customer returns only)
-      const customerReturns = (returnsData || []).filter(ret => ret.customer_id && ret.invoice_id);
+      // Transform returns with items (show even if no invoice is linked yet)
+      const customerReturns = (returnsData || []).filter(ret => ret.customer_id);
       const transformedReturns: Return[] = customerReturns.map(ret => {
         const items = (returnItemsData || []).filter((item: any) => item.return_id === ret.id);
 
@@ -368,7 +466,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           agencyId: ret.agency_id,
           items: items.map((item: any) => ({
             id: item.id,
-            invoiceItemId: item.invoice_item_id,
+            invoiceItemId: item.invoice_item_id || null,
             productId: item.product_id,
             productName: item.product_name,
             color: item.color,
@@ -438,6 +536,15 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   const getRemainingAmount = useCallback((order: SalesOrder) => {
     return order.total - order.totalInvoiced;
   }, []);
+
+  const invoicedItemsByOrder = useMemo<Record<string, InvoiceItem[]>>(() => {
+    const map: Record<string, InvoiceItem[]> = {};
+    invoices.forEach((inv) => {
+      if (!inv.salesOrderId) return;
+      map[inv.salesOrderId] = (map[inv.salesOrderId] || []).concat(inv.items || []);
+    });
+    return map;
+  }, [invoices]);
 
   const canEdit = useCallback((order: SalesOrder) => {
     // Allow editing if order is pending OR if it's approved/partially_invoiced but not fully invoiced
@@ -616,6 +723,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       <CreateInvoiceForm
         user={effectiveUser}
         salesOrder={convertingToInvoiceOrder}
+        invoicedItems={invoicedItemsByOrder[convertingToInvoiceOrder.id] || []}
         onSubmit={handleOrderSuccess}
         onCancel={() => setConvertingToInvoiceOrder(null)}
       />
@@ -954,6 +1062,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             returns={returns} 
             invoices={invoices}
             customers={customers}
+            products={products}
             onRefresh={fetchData}
           />
         </TabsContent>

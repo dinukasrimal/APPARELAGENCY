@@ -25,6 +25,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
   onCancel,
   loading = false
 }) => {
+  const filteredInvoices = (customerInvoices || []).filter((inv) => (inv.outstandingAmount || 0) > 0);
   const [formData, setFormData] = useState<CollectionFormData>({
     customerId: customerId,
     customerName: customerName,
@@ -160,9 +161,15 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
       return;
     }
 
-    // Validate invoice allocations - now required for all payments
-    if (customerInvoices.length === 0) {
-      alert('Cannot record payment: No outstanding invoices found for this customer');
+    // Validate invoice allocations - only against invoices with outstanding
+    if (filteredInvoices.length === 0) {
+      // No outstanding invoices: treat as advance; allow submission with zero allocations
+      onSubmit({
+        ...formData,
+        totalAmount: total,
+        paymentType,
+        invoiceAllocations: []
+      });
       return;
     }
     
@@ -225,14 +232,16 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
             </div>
           </div>
 
-          {/* Payment must be allocated to specific invoices */}
+          {/* Payment info */}
           <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="text-sm font-medium text-blue-900 mb-1">Invoice Payment Only</div>
-            <div className="text-xs text-blue-700">All payments must be allocated to specific outstanding invoices. Advance payments are not allowed.</div>
+            <div className="text-sm font-medium text-blue-900 mb-1">Payment Allocation</div>
+            <div className="text-xs text-blue-700">
+              Allocate to outstanding invoices when available. If none exist, the payment will be recorded as an advance for this customer.
+            </div>
           </div>
 
-          {/* Invoice Allocation - Required for all payments */}
-          {customerInvoices.length > 0 ? (
+          {/* Invoice Allocation - Only when outstanding invoices exist */}
+          {filteredInvoices.length > 0 ? (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <Label>Allocate Payment to Invoices</Label>
@@ -241,7 +250,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
                 </div>
               </div>
               <div className="space-y-3 max-h-64 overflow-y-auto">
-                {customerInvoices.map((invoice) => (
+                {filteredInvoices.map((invoice) => (
                   <div key={invoice.id} className="border rounded-lg p-3">
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex-1">
@@ -275,18 +284,10 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
                 ))}
               </div>
             </div>
-          ) : (
-            <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-              <div className="text-sm font-medium text-red-900 mb-1">Cannot Record Payment</div>
-              <div className="text-sm text-red-700">
-                No outstanding invoices found for this customer. Payments can only be recorded against specific invoices.
-              </div>
-            </div>
-          )}
+          ) : null}
 
-          {/* Only show payment form if there are outstanding invoices */}
-          {customerInvoices.length > 0 && (
-            <>
+          {/* Payment form always visible; allocations optional when no outstanding */}
+          <>
           {/* Payment Method */}
           <div>
             <Label htmlFor="paymentMethod">Payment Method</Label>

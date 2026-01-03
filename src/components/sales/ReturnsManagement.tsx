@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { User } from '@/types/auth';
 import { Invoice, Return } from '@/types/sales';
 import { Customer } from '@/types/customer';
+import { Product } from '@/types/product';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -18,10 +19,11 @@ interface ReturnsManagementProps {
   returns: Return[];
   invoices: Invoice[];
   customers: Customer[];
+  products: Product[];
   onRefresh?: () => void;
 }
 
-const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: ReturnsManagementProps) => {
+const ReturnsManagement = ({ user, returns, invoices, customers, products, onRefresh }: ReturnsManagementProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -32,7 +34,7 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
   const filteredReturns = returns.filter(returnItem => {
     const matchesSearch = returnItem.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          returnItem.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         returnItem.invoiceId.toLowerCase().includes(searchTerm.toLowerCase());
+                         (returnItem.invoiceId || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'all' || returnItem.status === statusFilter;
     const matchesAgency = user.role === 'superuser' || returnItem.agencyId === user.agencyId;
     
@@ -78,7 +80,7 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
       // Create return items
       const itemsPayload = (returnData.items || []).map((item: any) => ({
         return_id: createdReturn.id,
-        invoice_item_id: item.invoiceItemId,
+        invoice_item_id: item.invoiceItemId || null,
         product_id: item.productId,
         product_name: item.productName,
         color: item.color,
@@ -144,6 +146,7 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
             transaction_type: 'customer_return',
             quantity: item.quantity_returned, // positive to increase stock
             reference_name: `Return ${createdReturn.id}`,
+            user_id: user.id,
             user_name: userName,
             notes: item.reason || returnData.reason || '',
             matched_product_id: item.product_id || null,
@@ -160,9 +163,19 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
 
         if (invError) {
           console.error('Failed to create inventory transactions for return:', invError);
+          toast({
+            title: 'Inventory update failed',
+            description: invError.message || 'Could not add returned items back to inventory.',
+            variant: 'destructive'
+          });
         }
       } catch (invErr) {
         console.error('Inventory update (return) failed:', invErr);
+        toast({
+          title: 'Inventory update failed',
+          description: 'Could not add returned items back to inventory.',
+          variant: 'destructive'
+        });
       }
 
       toast({
@@ -188,8 +201,8 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
     return (
       <CreateReturnForm
         user={user}
-        invoices={invoices}
         customers={customers}
+        products={products}
         onSubmit={handleCreateReturn}
         onCancel={() => setShowCreateForm(false)}
       />
@@ -197,6 +210,42 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
   }
 
   if (selectedReturn) {
+    const customerInvoices = invoices.filter(
+      (inv) =>
+        inv.customerId === selectedReturn.customerId &&
+        (user.role === 'superuser' || inv.agencyId === user.agencyId) &&
+        ((inv.outstandingAmount ?? inv.total) > 0)
+    );
+
+    const handleLinkInvoice = async (invoiceId: string) => {
+      try {
+        const { error } = await supabase
+          .from('returns')
+          .update({ invoice_id: invoiceId })
+          .eq('id', selectedReturn.id);
+
+        if (error) throw error;
+
+        toast({
+          title: 'Invoice linked',
+          description: `Return ${selectedReturn.id} is now linked to invoice ${invoiceId}`
+        });
+
+        const updated = { ...selectedReturn, invoiceId };
+        setSelectedReturn(updated);
+        if (onRefresh) {
+          onRefresh();
+        }
+      } catch (err) {
+        console.error('Failed to link invoice to return:', err);
+        toast({
+          title: 'Error',
+          description: 'Could not link invoice. Please try again.',
+          variant: 'destructive'
+        });
+      }
+    };
+
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3">
@@ -211,9 +260,26 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
         <Card>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-              <div>
+              <div className="space-y-2">
                 <p className="font-medium text-gray-700">Invoice</p>
-                <p className="text-gray-800">{selectedReturn.invoiceId}</p>
+                <p className="text-gray-800">{selectedReturn.invoiceId || 'Not linked yet'}</p>
+                {customerInvoices.length > 0 && (
+                  <Select
+                    onValueChange={handleLinkInvoice}
+                    value={selectedReturn.invoiceId || undefined}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Link an invoice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {customerInvoices.map((inv) => (
+                        <SelectItem key={inv.id} value={inv.id}>
+                          {inv.invoiceNumber || inv.id} • LKR {inv.total.toLocaleString()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
                 <p className="text-gray-600">Customer: {selectedReturn.customerName}</p>
               </div>
               <div className="text-right md:text-left">
@@ -235,8 +301,8 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
               <p className="font-medium text-gray-700">Items</p>
               <div className="space-y-2">
                 {selectedReturn.items.map(item => (
-                  <div key={item.id} className="border rounded p-2 text-sm flex justify-between">
-                    <div>
+                  <div key={item.id} className="border rounded p-2 text-sm flex justify-between gap-3">
+                    <div className="space-y-1">
                       <p className="font-medium">{item.productName}</p>
                       <p className="text-gray-600">{item.color}, {item.size}</p>
                       <p className="text-gray-600">Returned: {item.quantityReturned} / {item.originalQuantity}</p>
@@ -329,7 +395,7 @@ const ReturnsManagement = ({ user, returns, invoices, customers, onRefresh }: Re
                     </div>
                     <p className="text-sm text-gray-600 truncate">{returnItem.customerName}</p>
                     <p className="text-xs md:text-sm text-gray-500">
-                      Invoice: {returnItem.invoiceId} • {returnItem.items.length} items
+                      Invoice: {returnItem.invoiceId || 'Not linked yet'} • {returnItem.items.length} items
                     </p>
                     <p className="text-xs md:text-sm text-gray-500 mt-1 line-clamp-2">{returnItem.reason}</p>
                   </div>

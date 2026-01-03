@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { User } from '@/types/auth';
 import { SalesOrder, Invoice, InvoiceItem } from '@/types/sales';
 import { Button } from '@/components/ui/button';
@@ -13,44 +13,44 @@ import { externalInventoryService } from '@/services/external-inventory.service'
 interface CreateInvoiceFormProps {
   user: User;
   salesOrder: SalesOrder;
+  invoicedItems?: InvoiceItem[];
   onSubmit: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'createdBy'> & { signature?: string }) => void;
   onCancel: () => void;
 }
 
-const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoiceFormProps) => {
-  // When an order is partially invoiced, only allow invoicing the remaining
-  // quantity of each line item so that the total invoiced quantity cannot exceed
-  // the original sales order quantity.
-  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(() => {
-    const remainingFraction =
-      salesOrder.total > 0
-        ? Math.max(
-            0,
-            Math.min(1, (salesOrder.total - salesOrder.totalInvoiced) / salesOrder.total)
-          )
-        : 1;
+const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onCancel }: CreateInvoiceFormProps) => {
+  // Helper to group already invoiced quantities by product/color/size
+  const invoicedQtyByKey = invoicedItems.reduce<Record<string, number>>((acc, item) => {
+    const key = `${item.productId || item.productName}|${item.color}|${item.size}`;
+    acc[key] = (acc[key] || 0) + item.quantity;
+    return acc;
+  }, {});
 
-    return salesOrder.items
-      .map(item => {
-        const remainingQty = Math.round(item.quantity * remainingFraction);
-        if (remainingQty <= 0) return null;
-        return {
-          id: item.id,
-          productId: item.productId,
-          productName: item.productName,
-          color: item.color,
-          size: item.size,
-          quantity: remainingQty,
-          unitPrice: item.unitPrice,
-          total: item.unitPrice * remainingQty
-        } as InvoiceItem;
-      })
-      .filter((item): item is InvoiceItem => item !== null);
-  });
+  const initialInvoiceItems: InvoiceItem[] = salesOrder.items
+    .map((item) => {
+      const key = `${item.productId || item.productName}|${item.color}|${item.size}`;
+      const alreadyQty = invoicedQtyByKey[key] || 0;
+      const remainingQty = Math.max(0, item.quantity - alreadyQty);
+      if (remainingQty <= 0) return null;
+      return {
+        id: item.id,
+        productId: item.productId,
+        productName: item.productName,
+        color: item.color,
+        size: item.size,
+        quantity: remainingQty,
+        unitPrice: item.unitPrice,
+        total: item.unitPrice * remainingQty
+      } as InvoiceItem;
+    })
+    .filter((item): item is InvoiceItem => item !== null);
+
+  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(initialInvoiceItems);
   const [gpsCoordinates, setGpsCoordinates] = useState({ latitude: 0, longitude: 0 });
   const [signature, setSignature] = useState<string>('');
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const { toast } = useToast();
 
   const captureGPS = async (): Promise<{ latitude: number; longitude: number }> => {
@@ -88,10 +88,12 @@ const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoi
   const updateQuantity = (itemId: string, quantity: number) => {
     if (quantity < 0) return;
 
-    // Do not allow increasing quantity beyond the original sales order line quantity
     const originalItem = salesOrder.items.find(item => item.id === itemId);
     if (!originalItem) return;
-    const clampedQuantity = Math.min(quantity, originalItem.quantity);
+    const key = `${originalItem.productId || originalItem.productName}|${originalItem.color}|${originalItem.size}`;
+    const alreadyQty = invoicedQtyByKey[key] || 0;
+    const remainingCap = Math.max(0, originalItem.quantity - alreadyQty);
+    const clampedQuantity = Math.min(quantity, remainingCap);
 
     setInvoiceItems(
       invoiceItems
@@ -110,6 +112,8 @@ const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoi
   };
 
   const handleSubmit = async () => {
+    if (submitLockRef.current) return;
+
     if (invoiceItems.length === 0 || !signature) {
       toast({
         title: "Error",
@@ -120,6 +124,7 @@ const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoi
     }
 
     setIsSubmitting(true);
+    submitLockRef.current = true;
 
     try {
       // Capture GPS coordinates when creating invoice
@@ -277,6 +282,7 @@ const CreateInvoiceForm = ({ user, salesOrder, onSubmit, onCancel }: CreateInvoi
       });
     } finally {
       setIsSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 

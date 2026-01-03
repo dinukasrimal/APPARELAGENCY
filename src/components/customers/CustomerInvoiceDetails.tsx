@@ -199,6 +199,51 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
     const outstandingWithUnrealized = totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount;
 
     // Create invoice summaries with proper collection calculations
+    // Build invoice item lookup to support per-item return linking
+    const invoiceItemIds = Array.from(
+      new Set(
+        customerInvoices.flatMap((inv) => (inv.items || []).map((item) => item.id))
+      )
+    );
+    const invoiceItemToInvoice: Record<string, string> = {};
+    customerInvoices.forEach((inv) => {
+      (inv.items || []).forEach((item) => {
+        invoiceItemToInvoice[item.id] = inv.id;
+      });
+    });
+
+    let returnsByInvoiceItem: Record<string, number> = {};
+    try {
+      if (invoiceItemIds.length > 0) {
+        const { data: returnItemsData, error: returnItemsError } = await supabase
+          .from('return_items')
+          .select('invoice_item_id,total')
+          .in('invoice_item_id', invoiceItemIds);
+
+        if (returnItemsError) {
+          console.warn('Return items fetch issue:', returnItemsError);
+        } else {
+          const map: Record<string, number> = {};
+          (returnItemsData || []).forEach((ri) => {
+            if (ri.invoice_item_id && typeof ri.total === 'number') {
+              map[ri.invoice_item_id] = (map[ri.invoice_item_id] || 0) + Number(ri.total);
+            }
+          });
+          returnsByInvoiceItem = map;
+        }
+      }
+    } catch (err) {
+      console.warn('Return items lookup failed:', err);
+    }
+
+    const returnsByInvoiceId: Record<string, number> = {};
+    Object.entries(returnsByInvoiceItem).forEach(([invoiceItemId, amount]) => {
+      const invId = invoiceItemToInvoice[invoiceItemId];
+      if (invId) {
+        returnsByInvoiceId[invId] = (returnsByInvoiceId[invId] || 0) + amount;
+      }
+    });
+
     const invoiceSummaries: InvoiceSummary[] = await Promise.all(
       customerInvoices.map(async (invoice) => {
         // Get allocations for this invoice
@@ -212,9 +257,11 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         }
 
         const collectedAmount = (allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0);
-        const invoiceReturns = customerReturnsList
+        const invoiceReturnsFromHeader = customerReturnsList
           .filter((ret) => ret.invoice_id === invoice.id)
           .reduce((sum, ret) => sum + (ret.total || 0), 0);
+        const invoiceReturnsFromItems = returnsByInvoiceId[invoice.id] || 0;
+        const invoiceReturns = invoiceReturnsFromHeader + invoiceReturnsFromItems;
         const invoiceOutstandingAmount = invoice.total - collectedAmount - invoiceReturns;
         
         return {

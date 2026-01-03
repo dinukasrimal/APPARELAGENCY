@@ -1,30 +1,44 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { User } from '@/types/auth';
-import { Invoice, ReturnItem } from '@/types/sales';
+import { ReturnItem } from '@/types/sales';
 import { Customer } from '@/types/customer';
+import { Product } from '@/types/product';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, Search, Minus, Plus, User as UserIcon } from 'lucide-react';
+import { ArrowLeft, Search, Trash2, User as UserIcon } from 'lucide-react';
+import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 
 interface CreateReturnFormProps {
   user: User;
-  invoices: Invoice[];
   customers: Customer[];
+  products: Product[];
   onSubmit: (returnData: any) => void;
   onCancel: () => void;
 }
 
-const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: CreateReturnFormProps) => {
+const CreateReturnForm = ({ user, customers, products, onSubmit, onCancel }: CreateReturnFormProps) => {
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
-  const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('');
   const [returnItems, setReturnItems] = useState<ReturnItem[]>([]);
   const [reason, setReason] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedSubCategory, setSelectedSubCategory] = useState('');
+  const [selectedColor, setSelectedColor] = useState('');
+  const [discountType, setDiscountType] = useState<'percentage' | 'amount'>('percentage');
+  const [discountValue, setDiscountValue] = useState(0);
+  const [priceType, setPriceType] = useState<PriceType>('selling_price');
+
+  useEffect(() => {
+    const loadPriceType = async () => {
+      if (!user.agencyId) return;
+      const pt = await getAgencyPriceType(user.agencyId);
+      setPriceType(pt);
+    };
+    loadPriceType();
+  }, [user.agencyId]);
 
   // Filter customers based on user role and search
   const filteredCustomers = customers.filter(customer => {
@@ -35,71 +49,126 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
     return matchesSearch && matchesAgency;
   });
 
-  // Filter invoices for selected customer
-  const customerInvoices = invoices.filter(invoice => 
-    invoice.customerId === selectedCustomerId &&
-    invoice.id.toLowerCase().includes(invoiceSearchTerm.toLowerCase())
-  );
-
   const selectedCustomer = customers.find(customer => customer.id === selectedCustomerId);
-  const selectedInvoice = invoices.find(invoice => invoice.id === selectedInvoiceId);
 
-  const updateReturnItem = (invoiceItemId: string, field: string, value: any) => {
+  const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean))).sort();
+  const subCategories = selectedCategory
+    ? Array.from(
+        new Set(
+          products
+            .filter(p => p.category === selectedCategory)
+            .map(p => p.subCategory)
+            .filter(Boolean)
+        )
+      ).sort()
+    : [];
+  const availableColors = selectedCategory && selectedSubCategory
+    ? Array.from(
+        new Set(
+          products
+            .filter(p => p.category === selectedCategory && p.subCategory === selectedSubCategory)
+            .flatMap(p => p.colors || [])
+        )
+      ).sort((a, b) => a.localeCompare(b))
+    : [];
+  const filteredProducts = selectedCategory && selectedSubCategory && selectedColor
+    ? products.filter(
+        p =>
+          p.category === selectedCategory &&
+          p.subCategory === selectedSubCategory &&
+          (p.colors || []).includes(selectedColor)
+      )
+    : [];
+
+  const handleCategoryChange = (category: string) => {
+    setSelectedCategory(category);
+    setSelectedSubCategory('');
+    setSelectedColor('');
+  };
+
+  const handleSubCategoryChange = (subCategory: string) => {
+    setSelectedSubCategory(subCategory);
+    setSelectedColor('');
+  };
+
+  const handleColorChange = (color: string) => {
+    setSelectedColor(color);
+  };
+
+  const updateReturnItem = (returnItemId: string, field: string, value: any) => {
     setReturnItems(prev => {
-      const existing = prev.find(item => item.invoiceItemId === invoiceItemId);
-      const invoiceItem = selectedInvoice?.items.find(item => item.id === invoiceItemId);
-      
-      if (!invoiceItem) return prev;
-
-      if (!existing) {
-        if (field === 'quantityReturned' && value > 0) {
-          const newItem: ReturnItem = {
-            id: `return-${Date.now()}-${invoiceItemId}`,
-            invoiceItemId,
-            productId: invoiceItem.productId,
-            productName: invoiceItem.productName,
-            color: invoiceItem.color,
-            size: invoiceItem.size,
-            quantityReturned: value,
-            originalQuantity: invoiceItem.quantity,
-            unitPrice: invoiceItem.unitPrice,
-            total: invoiceItem.unitPrice * value,
-            reason: ''
-          };
-          return [...prev, newItem];
-        }
-        return prev;
-      } else {
-        if (field === 'quantityReturned' && value === 0) {
-          return prev.filter(item => item.invoiceItemId !== invoiceItemId);
-        }
-        return prev.map(item => 
-          item.invoiceItemId === invoiceItemId 
-            ? { 
-                ...item, 
-                [field]: value,
-                total: field === 'quantityReturned' ? item.unitPrice * value : item.total
-              }
-            : item
-        );
-      }
+      return prev.map(item => 
+        item.id === returnItemId 
+          ? { 
+              ...item, 
+              [field]: value,
+              total: field === 'quantityReturned' ? item.unitPrice * value : item.total
+            }
+          : item
+      );
     });
   };
 
-  const getReturnQuantity = (invoiceItemId: string) => {
-    const returnItem = returnItems.find(item => item.invoiceItemId === invoiceItemId);
-    return returnItem?.quantityReturned || 0;
+  const updateQuantity = (returnItemId: string, quantity: number) => {
+    if (quantity <= 0) {
+      setReturnItems(prev => prev.filter(item => item.id !== returnItemId));
+      return;
+    }
+
+    setReturnItems(prev =>
+      prev.map(item =>
+        item.id === returnItemId
+          ? { ...item, quantityReturned: quantity, total: item.unitPrice * quantity }
+          : item
+      )
+    );
   };
 
-  const getReturnReason = (invoiceItemId: string) => {
-    const returnItem = returnItems.find(item => item.invoiceItemId === invoiceItemId);
-    return returnItem?.reason || '';
+  const addReturnItem = (product: Product, size: string) => {
+    const color = selectedColor || product.colors[0] || 'Default';
+    const unitPrice = getProductPriceForAgency(product, priceType) || 0;
+    const existingIndex = returnItems.findIndex(
+      item => item.productId === product.id && item.color === color && item.size === size
+    );
+
+    if (existingIndex >= 0) {
+      const updated = [...returnItems];
+      const newQty = updated[existingIndex].quantityReturned + 1;
+      updated[existingIndex] = {
+        ...updated[existingIndex],
+        quantityReturned: newQty,
+        total: unitPrice * newQty
+      };
+      setReturnItems(updated);
+      return;
+    }
+
+    const id = `${product.id}-${color}-${size}-${Date.now()}`;
+    const newItem: ReturnItem = {
+      id,
+      invoiceItemId: null,
+      productId: product.id,
+      productName: product.name,
+      color,
+      size,
+      quantityReturned: 1,
+      originalQuantity: 1,
+      unitPrice,
+      total: unitPrice,
+      reason: ''
+    };
+
+    setReturnItems(prev => [...prev, newItem]);
   };
 
-  const totalReturnAmount = returnItems.reduce((sum, item) => sum + item.total, 0);
+  const subtotalReturnAmount = returnItems.reduce((sum, item) => sum + item.total, 0);
+  const discountAmount = discountType === 'percentage'
+    ? (subtotalReturnAmount * discountValue) / 100
+    : discountValue;
+  const totalReturnAmount = Math.max(0, subtotalReturnAmount - discountAmount);
 
   const handleSubmit = async () => {
-    if (!selectedInvoice || returnItems.length === 0 || !reason) {
+    if (!selectedCustomer || !reason || returnItems.length === 0) {
       return;
     }
 
@@ -123,15 +192,17 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
       });
 
       const returnData = {
-        invoiceId: selectedInvoice.id,
-        customerId: selectedInvoice.customerId,
-        customerName: selectedInvoice.customerName,
-        agencyId: selectedInvoice.agencyId,
+        invoiceId: null, // invoice allocation deferred
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+        agencyId: selectedCustomer.agencyId,
         items: returnItems,
-        subtotal: totalReturnAmount,
+        subtotal: subtotalReturnAmount,
         total: totalReturnAmount,
+        discountType,
+        discountValue,
+        discountAmount,
         reason,
-        // Auto-approve customer returns (no manual approval step)
         status: 'approved' as const,
         gpsCoordinates: {
           latitude: position.coords.latitude,
@@ -145,15 +216,17 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
       console.error('Error getting location:', error);
       // Fallback coordinates if location access is denied
       const returnData = {
-        invoiceId: selectedInvoice.id,
-        customerId: selectedInvoice.customerId,
-        customerName: selectedInvoice.customerName,
-        agencyId: selectedInvoice.agencyId,
+        invoiceId: null, // invoice allocation deferred
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+        agencyId: selectedCustomer.agencyId,
         items: returnItems,
-        subtotal: totalReturnAmount,
+        subtotal: subtotalReturnAmount,
         total: totalReturnAmount,
+        discountType,
+        discountValue,
+        discountAmount,
         reason,
-        // Auto-approve customer returns (no manual approval step)
         status: 'approved' as const,
         gpsCoordinates: {
           latitude: 7.8731 + Math.random() * 0.01,
@@ -168,10 +241,11 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
 
   const resetSelection = () => {
     setSelectedCustomerId('');
-    setSelectedInvoiceId('');
     setReturnItems([]);
     setReason('');
-    setInvoiceSearchTerm('');
+    setSelectedCategory('');
+    setSelectedSubCategory('');
+    setSelectedColor('');
   };
 
   return (
@@ -183,7 +257,7 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
         </Button>
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Process Return</h2>
-          <p className="text-gray-600">Select a customer and then their invoice to process return</p>
+          <p className="text-gray-600">Select a customer; linking an invoice is optional and can be done later</p>
         </div>
       </div>
 
@@ -208,9 +282,11 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
 
           <Select value={selectedCustomerId} onValueChange={(value) => {
             setSelectedCustomerId(value);
-            setSelectedInvoiceId('');
             setReturnItems([]);
             setReason('');
+            setSelectedCategory('');
+            setSelectedSubCategory('');
+            setSelectedColor('');
           }}>
             <SelectTrigger>
               <SelectValue placeholder="Select a customer" />
@@ -234,163 +310,162 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
         </CardContent>
       </Card>
 
-      {/* Invoice Selection - Only show if customer is selected */}
-      {selectedCustomerId && (
+      {/* Return Items Entry */}
+      {selectedCustomer && (
         <Card>
           <CardHeader>
-            <CardTitle>Step 2: Select Invoice</CardTitle>
+            <CardTitle>Step 2: Select Items to Return</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <Input
-                placeholder="Search invoices by ID..."
-                value={invoiceSearchTerm}
-                onChange={(e) => setInvoiceSearchTerm(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-
-            {customerInvoices.length > 0 ? (
-              <Select value={selectedInvoiceId} onValueChange={setSelectedInvoiceId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select an invoice to process return" />
-                </SelectTrigger>
-                <SelectContent>
-                  {customerInvoices.map((invoice) => (
-                    <SelectItem key={invoice.id} value={invoice.id}>
-                      {invoice.id} - LKR {invoice.total.toLocaleString()} ({invoice.createdAt.toLocaleDateString()})
-                    </SelectItem>
+          <CardContent className="space-y-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Category</label>
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                  {categories.map((category) => (
+                    <Card
+                      key={category}
+                      className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                        selectedCategory === category ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+                      }`}
+                      onClick={() => handleCategoryChange(category)}
+                    >
+                      <CardContent className="p-4 text-center">
+                        <h3 className="font-semibold text-sm">{category}</h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {products.filter(p => p.category === category).length} products
+                        </p>
+                      </CardContent>
+                    </Card>
                   ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <div className="text-center py-6 text-gray-500">
-                No invoices found for this customer
-              </div>
-            )}
-
-            {selectedCustomerId && (
-              <Button variant="outline" onClick={resetSelection} size="sm">
-                Reset Selection
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Selected Invoice Details - Only show if invoice is selected */}
-      {selectedInvoice && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Step 3: Invoice Details & Return Items</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <span className="font-medium text-sm text-gray-700">Invoice ID:</span>
-                <p className="text-sm">{selectedInvoice.id}</p>
-              </div>
-              <div>
-                <span className="font-medium text-sm text-gray-700">Customer:</span>
-                <p className="text-sm">{selectedInvoice.customerName}</p>
-              </div>
-              <div>
-                <span className="font-medium text-sm text-gray-700">Total Amount:</span>
-                <p className="text-sm">LKR {selectedInvoice.total.toLocaleString()}</p>
-              </div>
-              <div>
-                <span className="font-medium text-sm text-gray-700">Date:</span>
-                <p className="text-sm">{selectedInvoice.createdAt.toLocaleDateString()}</p>
-              </div>
-            </div>
-
-            {/* Invoice Items for Return */}
-            <div className="space-y-3">
-              <h4 className="font-medium text-sm text-gray-700">Select Items to Return:</h4>
-              {selectedInvoice.items.map((item) => (
-                <div key={item.id} className="border rounded-lg p-3 space-y-3">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="font-medium">{item.productName}</p>
-                      <p className="text-sm text-gray-600">
-                        {item.color}, {item.size} - LKR {item.unitPrice} each
-                      </p>
-                      <p className="text-sm text-gray-600">
-                        Original Quantity: {item.quantity}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-medium">LKR {item.total.toLocaleString()}</p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm font-medium text-gray-700">Return Quantity:</label>
-                      <div className="flex items-center gap-2 mt-1">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const currentQty = getReturnQuantity(item.id);
-                            if (currentQty > 0) {
-                              updateReturnItem(item.id, 'quantityReturned', currentQty - 1);
-                            }
-                          }}
-                        >
-                          <Minus className="h-3 w-3" />
-                        </Button>
-                        <Input
-                          type="number"
-                          min="0"
-                          max={item.quantity}
-                          value={getReturnQuantity(item.id)}
-                          onChange={(e) => {
-                            const value = Math.min(parseInt(e.target.value) || 0, item.quantity);
-                            updateReturnItem(item.id, 'quantityReturned', value);
-                          }}
-                          className="w-20 text-center"
-                        />
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const currentQty = getReturnQuantity(item.id);
-                            if (currentQty < item.quantity) {
-                              updateReturnItem(item.id, 'quantityReturned', currentQty + 1);
-                            }
-                          }}
-                        >
-                          <Plus className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </div>
-
-                    {getReturnQuantity(item.id) > 0 && (
-                      <div>
-                        <label className="text-sm font-medium text-gray-700">Return Reason:</label>
-                        <Input
-                          value={getReturnReason(item.id)}
-                          onChange={(e) => updateReturnItem(item.id, 'reason', e.target.value)}
-                          placeholder="Reason for return"
-                          className="mt-1"
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {getReturnQuantity(item.id) > 0 && (
-                    <div className="bg-red-50 p-2 rounded text-sm">
-                      <span className="font-medium">Return Value: </span>
-                      <span className="text-red-600 font-medium">
-                        LKR {(item.unitPrice * getReturnQuantity(item.id)).toLocaleString()}
-                      </span>
-                    </div>
-                  )}
                 </div>
-              ))}
+              </div>
+
+              {selectedCategory && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Sub-category</label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {subCategories.map((subCategory) => (
+                      <Card
+                        key={subCategory}
+                        className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                          selectedSubCategory === subCategory ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+                        }`}
+                        onClick={() => handleSubCategoryChange(subCategory)}
+                      >
+                        <CardContent className="p-4 text-center">
+                          <h3 className="font-semibold text-sm">{subCategory}</h3>
+                          <p className="text-xs text-gray-500 mt-1">
+                            {products.filter(p => p.category === selectedCategory && p.subCategory === subCategory).length} products
+                          </p>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {selectedSubCategory && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Color</label>
+                  <div className="flex flex-wrap gap-2">
+                    {availableColors.map((color) => (
+                      <Button
+                        key={color}
+                        type="button"
+                        variant={selectedColor === color ? 'default' : 'outline'}
+                        className={`py-2 px-4 text-sm ${
+                          selectedColor === color ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'
+                        }`}
+                        onClick={() => handleColorChange(color)}
+                      >
+                        {color}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
+
+            {selectedCategory && selectedSubCategory && selectedColor && (
+              <div className="space-y-3">
+                <h4 className="font-medium text-sm text-gray-800">
+                  Products - {selectedCategory} / {selectedSubCategory} / {selectedColor}
+                </h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse border border-gray-200 text-sm">
+                    <thead>
+                      <tr className="bg-gray-50">
+                        <th className="border border-gray-200 p-3 text-left">Product</th>
+                        <th className="border border-gray-200 p-3 text-left">Size</th>
+                        <th className="border border-gray-200 p-3 text-left">Price</th>
+                        <th className="border border-gray-200 p-3 text-left">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredProducts.map(product =>
+                        product.sizes.map(size => {
+                          const unitPrice = getProductPriceForAgency(product, priceType) || 0;
+                          return (
+                          <tr key={`${product.id}-${size}`}>
+                            <td className="border border-gray-200 p-3">{product.name}</td>
+                            <td className="border border-gray-200 p-3">{size}</td>
+                            <td className="border border-gray-200 p-3">LKR {unitPrice.toLocaleString()}</td>
+                            <td className="border border-gray-200 p-3">
+                              <Button size="sm" onClick={() => addReturnItem(product, size)}>
+                                Add
+                              </Button>
+                            </td>
+                          </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {returnItems.length > 0 && (
+              <div className="space-y-3">
+                <h4 className="font-medium text-sm text-gray-800">Return Items</h4>
+                <div className="space-y-3">
+                  {returnItems.map((item) => (
+                    <div key={item.id} className="border rounded-lg p-3 space-y-2">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-medium">{item.productName}</p>
+                          <p className="text-sm text-gray-600">Color: {item.color} • Size: {item.size}</p>
+                          <p className="text-sm text-gray-600">Unit Price: LKR {item.unitPrice}</p>
+                        </div>
+                        <Button variant="outline" size="icon" onClick={() => setReturnItems(prev => prev.filter(r => r.id !== item.id))}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="text-center">
+                          <p className="text-sm text-gray-600">Qty to Return</p>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={item.quantityReturned}
+                            onChange={(e) => updateQuantity(item.id, Number(e.target.value))}
+                            className="w-24 text-center"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600 mb-1">Reason for return:</p>
+                        <Textarea
+                          placeholder="Explain why this item is being returned"
+                          value={item.reason}
+                          onChange={(e) => updateReturnItem(item.id, 'reason', e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -399,7 +474,7 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
       {returnItems.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Step 4: Return Summary</CardTitle>
+            <CardTitle>Step 3: Return Summary</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
@@ -412,14 +487,42 @@ const CreateReturnForm = ({ user, invoices, customers, onSubmit, onCancel }: Cre
               />
             </div>
 
-            <div className="space-y-2 p-3 bg-red-50 rounded">
+            <div className="space-y-3 p-3 bg-red-50 rounded">
               <div className="flex justify-between">
                 <span className="font-medium">Items to Return:</span>
                 <span>{returnItems.length}</span>
               </div>
-              <div className="flex justify-between text-lg font-bold text-red-600">
-                <span>Total Return Amount:</span>
-                <span>LKR {totalReturnAmount.toLocaleString()}</span>
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between">
+                  <span>Subtotal:</span>
+                  <span>LKR {subtotalReturnAmount.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Select value={discountType} onValueChange={(v) => setDiscountType(v as 'percentage' | 'amount')}>
+                    <SelectTrigger className="w-36">
+                      <SelectValue placeholder="Discount type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="percentage">Percent (%)</SelectItem>
+                      <SelectItem value="amount">Fixed (LKR)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    type="number"
+                    min="0"
+                    max={discountType === 'percentage' ? 100 : undefined}
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(Number(e.target.value))}
+                    className="w-32"
+                  />
+                  <span className="text-sm text-gray-600">
+                    Discount: LKR {discountAmount.toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex justify-between text-lg font-bold text-red-600">
+                  <span>Total Return Amount:</span>
+                  <span>LKR {totalReturnAmount.toLocaleString()}</span>
+                </div>
               </div>
             </div>
 

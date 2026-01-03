@@ -235,7 +235,9 @@ const ReturnDetails = ({ returnItem, invoice, onBack, onUpdate, user }: ReturnDe
                 <h4 className="font-medium text-sm text-gray-700">Original Invoice Items:</h4>
                 <div className="space-y-2">
                   {invoice.items.map((item) => {
-                    const returnedItem = returnItem.items.find(ri => ri.invoiceItemId === item.id);
+                    const returnedItem = returnItem.items.find(
+                      (ri) => ri.invoiceItemId && ri.invoiceItemId === item.id
+                    );
                     return (
                       <div key={item.id} className="flex justify-between items-center p-2 bg-blue-50 rounded">
                         <div>
