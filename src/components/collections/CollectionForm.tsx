@@ -287,7 +287,6 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
           ) : null}
 
           {/* Payment form always visible; allocations optional when no outstanding */}
-          <>
           {/* Payment Method */}
           <div>
             <Label htmlFor="paymentMethod">Payment Method</Label>
@@ -506,8 +505,6 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
               rows={3}
             />
           </div>
-            </>
-          )}
 
           {/* Form Actions */}
           <div className="flex justify-end space-x-2">

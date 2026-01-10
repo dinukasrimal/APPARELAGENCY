@@ -33,7 +33,7 @@ interface DashboardProps {
 
 const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
   const [activeModule, setActiveModule] = useState('dashboard');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Loading component for lazy-loaded modules
   const ModuleLoader = () => (
