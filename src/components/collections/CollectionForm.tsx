@@ -32,6 +32,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
     totalAmount: 0,
     paymentMethod: 'cash',
     cashAmount: 0,
+    cashDiscount: 0,
     chequeAmount: 0,
     cashDate: new Date(),
     chequeDetails: [],
@@ -53,7 +54,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
 
   // Calculate total amount automatically
   const calculateTotalAmount = () => {
-    return formData.cashAmount + formData.chequeAmount;
+    return formData.cashAmount + formData.chequeAmount + formData.cashDiscount;
   };
 
   // Calculate total allocated amount for direct payments
@@ -236,7 +237,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
           <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <div className="text-sm font-medium text-blue-900 mb-1">Payment Allocation</div>
             <div className="text-xs text-blue-700">
-              Allocate to outstanding invoices when available. If none exist, the payment will be recorded as an advance for this customer.
+              Allocate to outstanding invoices when available. Cash discount is included in the allocatable total.
             </div>
           </div>
 
@@ -332,6 +333,21 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
               </div>
             </div>
           )}
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="cashDiscount">Cash Discount (LKR)</Label>
+              <Input
+                id="cashDiscount"
+                type="number"
+                min="0"
+                value={formData.cashDiscount}
+                onChange={(e) => handleInputChange('cashDiscount', parseFloat(e.target.value) || 0)}
+                placeholder="0.00"
+                step="0.01"
+              />
+            </div>
+          </div>
 
           {/* Cheque Payment */}
           {(formData.paymentMethod === 'cheque' || formData.paymentMethod === 'mixed') && (

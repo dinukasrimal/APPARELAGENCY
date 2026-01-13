@@ -7,6 +7,7 @@ export interface Collection {
   totalAmount: number;
   paymentMethod: string;
   cashAmount: number;
+  cashDiscount: number;
   chequeAmount: number;
   cashDate: Date;
   chequeDetails: ChequeDetail[];
@@ -73,6 +74,7 @@ export interface CollectionFormData {
   totalAmount: number;
   paymentMethod: string;
   cashAmount: number;
+  cashDiscount: number;
   chequeAmount: number;
   cashDate: Date;
   chequeDetails: Omit<ChequeDetail, 'id' | 'status' | 'clearedAt'>[];

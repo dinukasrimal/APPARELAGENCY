@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS collections (
     total_amount DECIMAL(10,2) NOT NULL,
     payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'cheque', 'mixed')),
     cash_amount DECIMAL(10,2) DEFAULT 0,
+    cash_discount DECIMAL(10,2) DEFAULT 0,
     cheque_amount DECIMAL(10,2) DEFAULT 0,
     cash_date DATE NOT NULL,
     notes TEXT,
@@ -142,9 +143,9 @@ CREATE POLICY "Users can update allocations from their agency collections" ON co
 CREATE OR REPLACE FUNCTION validate_collection_amounts()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Ensure total_amount equals cash_amount + cheque_amount
-    IF NEW.total_amount != (NEW.cash_amount + NEW.cheque_amount) THEN
-        RAISE EXCEPTION 'Total amount must equal cash amount plus cheque amount';
+    -- Ensure total_amount equals cash_amount + cheque_amount + cash_discount
+    IF NEW.total_amount != (NEW.cash_amount + NEW.cheque_amount + NEW.cash_discount) THEN
+        RAISE EXCEPTION 'Total amount must equal cash amount plus cheque amount plus cash discount';
     END IF;
     
     -- Ensure payment method matches amounts

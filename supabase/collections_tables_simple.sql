@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS collections (
     total_amount DECIMAL(10,2) NOT NULL,
     payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'cheque', 'mixed')),
     cash_amount DECIMAL(10,2) DEFAULT 0,
+    cash_discount DECIMAL(10,2) DEFAULT 0,
     cheque_amount DECIMAL(10,2) DEFAULT 0,
     cash_date DATE NOT NULL,
     notes TEXT,

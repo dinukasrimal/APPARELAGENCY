@@ -1,8 +1,10 @@
 import { useRef, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Camera, X, RotateCcw } from 'lucide-react';
+import { X, RotateCcw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { Camera as CapacitorCamera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { Capacitor } from '@capacitor/core';
 
 interface InAppCameraProps {
   onPhotoTaken: (photoData: string) => void;
@@ -17,11 +19,46 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
   const { toast } = useToast();
   const isMobile = useIsMobile();
+  const isNative = Capacitor.isNativePlatform ? Capacitor.isNativePlatform() : Capacitor.getPlatform() !== 'web';
+  const nativeLaunchRef = useRef(false);
 
   useEffect(() => {
+    if (isNative) {
+      if (!nativeLaunchRef.current) {
+        nativeLaunchRef.current = true;
+        void openNativeCamera();
+      }
+      return;
+    }
+
     startCamera();
     return () => stopCamera();
-  }, [facingMode]);
+  }, [facingMode, isNative]);
+
+  const openNativeCamera = async () => {
+    try {
+      const photo = await CapacitorCamera.getPhoto({
+        quality: 90,
+        allowEditing: false,
+        resultType: CameraResultType.DataUrl,
+        source: CameraSource.Camera,
+      });
+
+      if (!photo.dataUrl) {
+        throw new Error('No photo data returned');
+      }
+
+      onPhotoTaken(photo.dataUrl);
+    } catch (error) {
+      console.error('Native camera error:', error);
+      toast({
+        title: "Camera Error",
+        description: "Unable to open the camera. Please try again.",
+        variant: "destructive",
+      });
+      onCancel();
+    }
+  };
 
   const startCamera = async () => {
     try {
@@ -145,7 +182,11 @@ const InAppCamera = ({ onPhotoTaken, onCancel }: InAppCameraProps) => {
 
       {/* Camera View */}
       <div className="flex-1 relative overflow-hidden">
-        {capturedPhoto ? (
+        {isNative ? (
+          <div className="flex h-full w-full items-center justify-center text-white text-base md:text-lg">
+            Opening camera...
+          </div>
+        ) : capturedPhoto ? (
           // Photo Preview
           <img 
             src={capturedPhoto} 

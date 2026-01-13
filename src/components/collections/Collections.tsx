@@ -165,6 +165,7 @@ const Collections = ({ user }: CollectionsProps) => {
             totalAmount: collection.total_amount,
             paymentMethod: collection.payment_method,
             cashAmount: collection.cash_amount,
+            cashDiscount: collection.cash_discount || 0,
             chequeAmount: collection.cheque_amount,
             cashDate: new Date(collection.cash_date),
             chequeDetails: (collection.collection_cheques || []).map(cheque => ({
@@ -232,6 +233,7 @@ const Collections = ({ user }: CollectionsProps) => {
       today.setHours(23, 59, 59, 999); // Set to end of day for comparison
       
       let totalCashCollected = 0;
+      let totalCashDiscounts = 0;
       let totalRealizedChequePayments = 0; // Only past/current dated cheques
       let totalUnrealizedChequePayments = 0; // Future-dated cheques
       let returnedChequesAmount = 0;
@@ -239,6 +241,7 @@ const Collections = ({ user }: CollectionsProps) => {
 
       customerCollections.forEach(collection => {
         totalCashCollected += collection.cashAmount;
+        totalCashDiscounts += collection.cashDiscount || 0;
         
         // Process cheques with proper date logic
         collection.chequeDetails?.forEach(cheque => {
@@ -262,7 +265,7 @@ const Collections = ({ user }: CollectionsProps) => {
       // Calculate totals
       const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
       const totalReturns = customerReturns.reduce((sum, ret) => sum + (ret.total || 0), 0);
-      const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments;
+      const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments + totalCashDiscounts;
       
       // Outstanding calculation:
       // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
@@ -354,6 +357,7 @@ const Collections = ({ user }: CollectionsProps) => {
         total_amount: formData.totalAmount,
         payment_method: formData.paymentMethod,
         cash_amount: formData.cashAmount,
+        cash_discount: formData.cashDiscount,
         cheque_amount: formData.chequeAmount,
         cash_date: formData.cashDate.toISOString(),
         notes: formData.notes,
@@ -442,6 +446,7 @@ const Collections = ({ user }: CollectionsProps) => {
         totalAmount: savedCollection.total_amount,
         paymentMethod: savedCollection.payment_method,
         cashAmount: savedCollection.cash_amount,
+        cashDiscount: savedCollection.cash_discount || 0,
         chequeAmount: savedCollection.cheque_amount,
         cashDate: new Date(savedCollection.cash_date),
         chequeDetails: (formData.chequeDetails || []).map((cheque: any) => ({

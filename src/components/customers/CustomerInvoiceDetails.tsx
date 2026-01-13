@@ -95,6 +95,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
             totalAmount: collection.total_amount,
             paymentMethod: collection.payment_method,
             cashAmount: collection.cash_amount,
+            cashDiscount: collection.cash_discount || 0,
             chequeAmount: collection.cheque_amount,
             cashDate: new Date(collection.cash_date),
             chequeDetails: (collection.collection_cheques || []).map(cheque => ({
@@ -157,6 +158,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
     today.setHours(23, 59, 59, 999); // Set to end of day for comparison
     
     let totalCashCollected = 0;
+    let totalCashDiscounts = 0;
     let totalRealizedChequePayments = 0; // Only past/current dated cheques
     let totalUnrealizedChequePayments = 0; // Future-dated cheques
     let returnedChequesAmount = 0;
@@ -164,6 +166,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
 
     customerCollections.forEach(collection => {
       totalCashCollected += collection.cashAmount;
+      totalCashDiscounts += collection.cashDiscount || 0;
       
       // Process cheques with proper date logic
       collection.chequeDetails?.forEach(cheque => {
@@ -187,7 +190,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
     // Calculate totals
     const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
     const totalReturns = customerReturnsList.reduce((sum, ret) => sum + (ret.total || 0), 0);
-    const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments;
+    const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments + totalCashDiscounts;
     
     // Outstanding calculation:
     // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
@@ -303,6 +306,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         total_amount: formData.totalAmount,
         payment_method: formData.paymentMethod,
         cash_amount: formData.cashAmount,
+        cash_discount: formData.cashDiscount,
         cheque_amount: formData.chequeAmount,
         cash_date: formData.cashDate.toISOString(),
         notes: formData.notes,

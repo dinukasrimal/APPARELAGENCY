@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -47,6 +47,10 @@ const SimplifiedSalesOrderForm = ({
   const [gpsCoordinates, setGpsCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { toast } = useToast();
+  const productNameCollator = useMemo(
+    () => new Intl.Collator('en', { numeric: true, sensitivity: 'base' }),
+    []
+  );
 
   // Get unique categories and subcategories
   const categories = [...new Set(products.map(p => p.category))];
@@ -63,11 +67,15 @@ const SimplifiedSalesOrderForm = ({
     : [];
 
   // Get products for selected category, subcategory, and color
-  const filteredProducts = products.filter(p => 
-    p.category === selectedCategory && 
-    p.subCategory === selectedSubCategory &&
-    (selectedColor ? p.colors.includes(selectedColor) : true)
-  );
+  const filteredProducts = useMemo(() => {
+    const matches = products.filter(p => 
+      p.category === selectedCategory && 
+      p.subCategory === selectedSubCategory &&
+      (selectedColor ? p.colors.includes(selectedColor) : true)
+    );
+
+    return matches.sort((a, b) => productNameCollator.compare(a.name, b.name));
+  }, [products, selectedCategory, selectedSubCategory, selectedColor, productNameCollator]);
 
   useEffect(() => {
     // Get GPS coordinates on component mount

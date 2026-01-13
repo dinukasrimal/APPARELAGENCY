@@ -208,6 +208,12 @@ const EnhancedSalesOrderForm = ({
         return isHaimarryA ? 1 : -1;
       }
 
+      const extractRangeFromName = (name: string) => {
+        const match = name.match(/\b(\d+)\s*-\s*(\d+)\b\s*$/);
+        if (!match) return null;
+        return { start: Number(match[1]), end: Number(match[2]) };
+      };
+
       const extractSizeFromName = (name: string) => {
         // Check for size patterns at the end of product name
         const sizePatterns = [
@@ -255,6 +261,16 @@ const EnhancedSalesOrderForm = ({
 
         return 999;
       };
+
+      const rangeA = extractRangeFromName(nameA);
+      const rangeB = extractRangeFromName(nameB);
+
+      if (rangeA && rangeB) {
+        if (rangeA.start !== rangeB.start) return rangeA.start - rangeB.start;
+        if (rangeA.end !== rangeB.end) return rangeA.end - rangeB.end;
+      } else if (rangeA || rangeB) {
+        return rangeA ? -1 : 1;
+      }
 
       const sizeA = extractSizeFromName(nameA);
       const sizeB = extractSizeFromName(nameB);

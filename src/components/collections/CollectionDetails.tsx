@@ -226,6 +226,12 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
                     <span className="text-sm font-medium">LKR {collection.cashAmount.toLocaleString()}</span>
                   </div>
                 )}
+                {collection.cashDiscount > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-sm">Cash Discount:</span>
+                    <span className="text-sm font-medium">LKR {collection.cashDiscount.toLocaleString()}</span>
+                  </div>
+                )}
                 {collection.chequeAmount > 0 && (
                   <div className="flex justify-between">
                     <span className="text-sm">Cheque Amount:</span>
@@ -468,6 +474,12 @@ export const CollectionDetails: React.FC<CollectionDetailsProps> = ({
                 <div style={{ fontSize: '12px', color: '#6b7280' }}>Cash</div>
                 <div style={{ fontWeight: 600 }}>LKR {collection.cashAmount.toLocaleString()}</div>
                 <div style={{ fontSize: '12px', color: '#6b7280' }}>Cash Date: {collection.cashDate.toLocaleDateString()}</div>
+              </div>
+            )}
+            {collection.cashDiscount > 0 && (
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Cash Discount</div>
+                <div style={{ fontWeight: 600 }}>LKR {collection.cashDiscount.toLocaleString()}</div>
               </div>
             )}
             {collection.chequeAmount > 0 && (
