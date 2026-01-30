@@ -1,8 +1,10 @@
-import { Invoice, SalesOrder } from '@/types/sales';
+import { useEffect, useState } from 'react';
+import { Invoice, InvoiceItem, SalesOrder } from '@/types/sales';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Printer, FileText, ShoppingCart } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
 
 interface InvoiceDetailsProps {
   invoice: Invoice;
@@ -12,6 +14,62 @@ interface InvoiceDetailsProps {
 }
 
 const InvoiceDetails = ({ invoice, salesOrder, onBack, onPrint }: InvoiceDetailsProps) => {
+  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(invoice.items || []);
+  const [isLoadingItems, setIsLoadingItems] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadInvoiceItems = async () => {
+      if (invoice.items && invoice.items.length > 0) {
+        if (isMounted) {
+          setInvoiceItems(invoice.items);
+        }
+        return;
+      }
+
+      setIsLoadingItems(true);
+      const { data, error } = await supabase
+        .from('invoice_items')
+        .select('id, product_id, product_name, color, size, quantity, unit_price, total')
+        .eq('invoice_id', invoice.id);
+
+      if (!error && data && isMounted) {
+        setInvoiceItems(data.map((item) => ({
+          id: item.id,
+          productId: item.product_id || '',
+          productName: item.product_name,
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: Number(item.unit_price),
+          total: Number(item.total)
+        })));
+      } else if (isMounted && salesOrder?.items?.length) {
+        // Fallback to sales order items when invoice items are not available.
+        setInvoiceItems(salesOrder.items.map((item) => ({
+          id: item.id,
+          productId: item.productId,
+          productName: item.productName,
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          total: item.total
+        })));
+      }
+
+      if (isMounted) {
+        setIsLoadingItems(false);
+      }
+    };
+
+    loadInvoiceItems();
+    return () => {
+      isMounted = false;
+    };
+  }, [invoice.id, invoice.items, salesOrder?.items]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -74,25 +132,45 @@ const InvoiceDetails = ({ invoice, salesOrder, onBack, onPrint }: InvoiceDetails
               </div>
             </div>
 
-            {/* Invoice Items */}
+            {/* Invoice Items - Line-wise table */}
             <div className="space-y-3 pt-4 border-t">
               <h4 className="font-medium text-sm text-gray-700">Invoice Items:</h4>
-              <div className="space-y-2">
-                {invoice.items.map((item) => (
-                  <div key={item.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                    <div>
-                      <p className="font-medium text-sm">{item.productName}</p>
-                      <p className="text-xs text-gray-600">
-                        {item.color}, {item.size} - LKR {item.unitPrice} each
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm">Qty: {item.quantity}</p>
-                      <p className="font-medium text-sm">LKR {item.total.toLocaleString()}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {isLoadingItems && invoiceItems.length === 0 ? (
+                <div className="text-sm text-gray-500">Loading line items...</div>
+              ) : invoiceItems.length === 0 ? (
+                <div className="text-sm text-gray-500">No line items found for this invoice.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse border border-gray-200 text-sm">
+                    <thead>
+                      <tr className="bg-gray-50">
+                        <th className="border border-gray-200 px-3 py-2 text-left">#</th>
+                        <th className="border border-gray-200 px-3 py-2 text-left">Product</th>
+                        <th className="border border-gray-200 px-3 py-2 text-left">Color/Size</th>
+                        <th className="border border-gray-200 px-3 py-2 text-right">Unit Price</th>
+                        <th className="border border-gray-200 px-3 py-2 text-right">Qty</th>
+                        <th className="border border-gray-200 px-3 py-2 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invoiceItems.map((item, index) => (
+                        <tr key={item.id}>
+                          <td className="border border-gray-200 px-3 py-2">{index + 1}</td>
+                          <td className="border border-gray-200 px-3 py-2">{item.productName}</td>
+                          <td className="border border-gray-200 px-3 py-2">{item.color}, {item.size}</td>
+                          <td className="border border-gray-200 px-3 py-2 text-right">
+                            LKR {item.unitPrice.toLocaleString()}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-right">{item.quantity}</td>
+                          <td className="border border-gray-200 px-3 py-2 text-right">
+                            LKR {item.total.toLocaleString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
             {/* Invoice Total */}

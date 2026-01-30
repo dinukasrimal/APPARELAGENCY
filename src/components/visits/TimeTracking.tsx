@@ -2,22 +2,28 @@ import { useState, useEffect, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { Geolocation } from '@capacitor/geolocation';
 import { User } from '@/types/auth';
-import { TimeTracking as TimeTrackingType, TimeTrackingRoutePoint } from '@/types/visits';
+import { TimeTracking as TimeTrackingType, TimeTrackingRoutePoint, TimeTrackingOdometerEntry } from '@/types/visits';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Clock, MapPin, Calendar, Play, Square } from 'lucide-react';
+import { Clock, MapPin, Calendar, Play, Square, Camera } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Database } from '@/integrations/supabase/types';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useAgencies } from '@/hooks/useAgency';
+import { useAgencyFeatureAccess } from '@/hooks/useAgencyFeatureAccess';
+import { uploadFile } from '@/utils/storage';
+import ImageModal from '@/components/ui/image-modal';
 
 const ROUTE_RECORD_INTERVAL_MS = 60_000; // capture roughly every minute
 const ROUTE_DISTANCE_THRESHOLD_METERS = 30; // record if moved ~30 meters
 
 type TimeTrackingRow = Database['public']['Tables']['time_tracking']['Row'];
 type RoutePointRow = Database['public']['Tables']['time_tracking_route_points']['Row'];
+type OdometerRow = Database['public']['Tables']['time_tracking_odometer_entries']['Row'];
 
 type LocationSample = {
   latitude: number;
@@ -60,10 +66,23 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentDuration, setCurrentDuration] = useState<string>('');
   const { toast } = useToast();
+  const { agencies } = useAgencies();
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
+    user.role === 'superuser' ? null : user.agencyId || null
+  );
+  const { features } = useAgencyFeatureAccess(user.role === 'superuser' ? selectedAgencyId : user.agencyId);
+  const [odometerKm, setOdometerKm] = useState('');
+  const [odometerPhoto, setOdometerPhoto] = useState<File | null>(null);
+  const [odometerUploading, setOdometerUploading] = useState(false);
+  const [imageModalUrl, setImageModalUrl] = useState<string | null>(null);
+  const [imageModalTitle, setImageModalTitle] = useState('');
   const locationWatchIdRef = useRef<string | number | null>(null);
   const locationWatchSourceRef = useRef<'native' | 'web' | null>(null);
   const lastRoutePersistRef = useRef<number>(0);
   const lastRecordedPointRef = useRef<{ latitude: number; longitude: number } | null>(null);
+
+  const requiresOdometer = user.role !== 'superuser' && features.enableTimeTrackingOdometer;
+  const clockInDisabled = requiresOdometer && (!odometerKm || !odometerPhoto);
 
   const stopLocationWatch = () => {
     const watchId = locationWatchIdRef.current;
@@ -89,7 +108,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   useEffect(() => {
     fetchTimeRecords();
     checkTodayClockIn();
-  }, [selectedDate]);
+  }, [selectedDate, selectedAgencyId]);
 
   useEffect(() => {
     return () => {
@@ -336,6 +355,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     date: record.date,
     createdAt: new Date(record.created_at),
     routePoints: [],
+    odometerEntry: null,
   });
 
   const attachRoutesToRecords = async (
@@ -380,21 +400,74 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     }));
   };
 
+  const attachOdometerEntries = async (
+    records: TimeTrackingType[]
+  ): Promise<TimeTrackingType[]> => {
+    if (records.length === 0) return records;
+
+    const recordIds = records.map((record) => record.id);
+    const { data, error } = await supabase
+      .from('time_tracking_odometer_entries')
+      .select<OdometerRow>('id, time_tracking_id, agency_id, user_id, odometer_km, photo_url, photo_path, created_at')
+      .in('time_tracking_id', recordIds);
+
+    if (error) {
+      console.error('Error fetching odometer entries:', error);
+      return records;
+    }
+
+    const grouped = new Map<string, TimeTrackingOdometerEntry>();
+
+    (data || []).forEach((entry: OdometerRow) => {
+      grouped.set(entry.time_tracking_id, {
+        id: entry.id,
+        timeTrackingId: entry.time_tracking_id,
+        agencyId: entry.agency_id,
+        userId: entry.user_id,
+        odometerKm: Number(entry.odometer_km),
+        photoUrl: entry.photo_url,
+        photoPath: entry.photo_path,
+        createdAt: new Date(entry.created_at),
+      });
+    });
+
+    return records.map((record) => ({
+      ...record,
+      odometerEntry: grouped.get(record.id) ?? null,
+    }));
+  };
+
   const fetchTimeRecords = async () => {
     try {
-      const { data, error } = await supabase
+      const agencyId = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
+
+      if (user.role === 'superuser' && !agencyId) {
+        setTimeRecords([]);
+        setLoading(false);
+        return;
+      }
+
+      let query = supabase
         .from('time_tracking')
         .select<TimeTrackingRow>('*')
-        .eq('user_id', user.id)
         .eq('date', selectedDate)
         .order('clock_in_time', { ascending: false });
+
+      if (user.role === 'superuser') {
+        query = query.eq('agency_id', agencyId as string);
+      } else {
+        query = query.eq('user_id', user.id);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       
       // Transform database data to match our TypeScript interface
       const transformedRecords = (data || []).map(transformTimeRecord);
       const enrichedRecords = await attachRoutesToRecords(transformedRecords);
-      setTimeRecords(enrichedRecords);
+      const enrichedWithOdometer = await attachOdometerEntries(enrichedRecords);
+      setTimeRecords(enrichedWithOdometer);
     } catch (error) {
       console.error('Error fetching time records:', error);
       toast({
@@ -410,6 +483,12 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   const checkTodayClockIn = async () => {
     const today = new Date().toISOString().split('T')[0];
     try {
+      if (user.role === 'superuser') {
+        setIsClockedIn(false);
+        setTodayRecord(null);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('time_tracking')
         .select<TimeTrackingRow>('*')
@@ -428,7 +507,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       if (data && data.length > 0) {
         const transformedRecord = transformTimeRecord(data[0]);
         const [enrichedRecord] = await attachRoutesToRecords([transformedRecord]);
-        setTodayRecord(enrichedRecord || transformedRecord);
+        const [withOdometer] = await attachOdometerEntries([enrichedRecord || transformedRecord]);
+        setTodayRecord(withOdometer || enrichedRecord || transformedRecord);
         setIsClockedIn(true);
       } else {
         setIsClockedIn(false);
@@ -498,6 +578,35 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   };
 
   const handleClockIn = async () => {
+    if (user.role === 'superuser') {
+      toast({
+        title: "Clock in unavailable",
+        description: "Superusers can view records but cannot clock in.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (requiresOdometer) {
+      const odometerValue = Number(odometerKm);
+      if (!odometerValue || odometerValue <= 0) {
+        toast({
+          title: "Odometer required",
+          description: "Please enter a valid odometer reading before clocking in.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!odometerPhoto) {
+        toast({
+          title: "Photo required",
+          description: "Please attach an odometer photo before clocking in.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     // Show immediate feedback
     toast({
       title: "Clocking in...",
@@ -508,6 +617,30 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       console.log('Starting clock in process for user:', user.id);
       const clockInTime = new Date();
       console.log('Clock in time:', clockInTime.toISOString());
+
+      let odometerUpload: { url: string; path: string; value: number } | null = null;
+      if (requiresOdometer && odometerPhoto && user.agencyId) {
+        setOdometerUploading(true);
+        const extension = odometerPhoto.name.split('.').pop() || 'jpg';
+        const fileName = `odometer-${Date.now()}.${extension}`;
+        const path = `agency-${user.agencyId}/user-${user.id}`;
+        const upload = await uploadFile({
+          bucket: 'time-tracking-odometer',
+          path,
+          file: odometerPhoto,
+          fileName,
+        });
+
+        if (!upload.success || !upload.url) {
+          throw new Error(upload.error || 'Failed to upload odometer photo');
+        }
+
+        odometerUpload = {
+          url: upload.url,
+          path: `${path}/${fileName}`,
+          value: Number(odometerKm),
+        };
+      }
       
       // Get location with fallback
       console.log('Getting location...');
@@ -554,6 +687,38 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       const transformedRecord = transformTimeRecord(data);
       console.log('Transformed record:', transformedRecord);
 
+      if (odometerUpload && user.agencyId) {
+        const { data: odometerData, error: odometerError } = await supabase
+          .from('time_tracking_odometer_entries')
+          .insert([
+            {
+              time_tracking_id: data.id,
+              agency_id: user.agencyId,
+              user_id: user.id,
+              odometer_km: odometerUpload.value,
+              photo_url: odometerUpload.url,
+              photo_path: odometerUpload.path,
+            },
+          ])
+          .select()
+          .single();
+
+        if (odometerError) {
+          console.error('Error saving odometer entry:', odometerError);
+        } else if (odometerData) {
+          transformedRecord.odometerEntry = {
+            id: odometerData.id,
+            timeTrackingId: odometerData.time_tracking_id,
+            agencyId: odometerData.agency_id,
+            userId: odometerData.user_id,
+            odometerKm: Number(odometerData.odometer_km),
+            photoUrl: odometerData.photo_url,
+            photoPath: odometerData.photo_path,
+            createdAt: new Date(odometerData.created_at),
+          };
+        }
+      }
+
       const { data: routeData, error: routeError } = await supabase
         .from('time_tracking_route_points')
         .insert([
@@ -598,6 +763,9 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
 
       setTodayRecord(transformedRecord);
       setIsClockedIn(true);
+
+      setOdometerKm('');
+      setOdometerPhoto(null);
       
       // Refresh records in background
       fetchTimeRecords();
@@ -620,6 +788,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         description: `Failed to clock in: ${error.message || 'Unknown error'}`,
         variant: "destructive",
       });
+    } finally {
+      setOdometerUploading(false);
     }
   };
 
@@ -770,6 +940,28 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
           </div>
         </div>
 
+        {user.role === 'superuser' && (
+          <Card className="bg-white/80 backdrop-blur-sm border border-white/20 shadow-lg rounded-2xl mb-8">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-lg font-bold text-slate-800">Select Agency</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <Select value={selectedAgencyId || ''} onValueChange={(value) => setSelectedAgencyId(value)}>
+                <SelectTrigger className="w-72">
+                  <SelectValue placeholder="Select an agency to view records" />
+                </SelectTrigger>
+                <SelectContent>
+                  {agencies.map((agency) => (
+                    <SelectItem key={agency.id} value={agency.id}>
+                      {agency.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Clock In/Out Card */}
         <Card className="bg-white/80 backdrop-blur-sm border border-white/20 shadow-lg rounded-2xl mb-8">
           <CardHeader className="pb-4">
@@ -783,7 +975,15 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
           <CardContent className="pt-0">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
               <div className="flex-1">
-                {isClockedIn && todayRecord ? (
+                {user.role === 'superuser' ? (
+                  <div className="bg-slate-50 rounded-2xl p-8 text-center border border-slate-200">
+                    <div className="bg-slate-100 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
+                      <Clock className="h-8 w-8 text-slate-400" />
+                    </div>
+                    <p className="text-lg font-medium text-slate-600">Select an agency to view records</p>
+                    <p className="text-sm text-slate-500 mt-1">Clock in/out is only available for agency users</p>
+                  </div>
+                ) : isClockedIn && todayRecord ? (
                   <div className="space-y-4">
                     <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-2xl p-6 border border-green-200">
                       <div className="flex items-center gap-3 mb-4">
@@ -804,6 +1004,31 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                         </div>
                       )}
                     </div>
+                    {todayRecord.odometerEntry && (
+                      <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200">
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center">
+                              <Camera className="h-4 w-4 text-slate-600" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-slate-700">Odometer</p>
+                              <p className="text-sm text-slate-600">{todayRecord.odometerEntry.odometerKm} km</p>
+                            </div>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setImageModalUrl(todayRecord.odometerEntry?.photoUrl || '');
+                              setImageModalTitle('Odometer Photo');
+                            }}
+                          >
+                            View Photo
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     {todayRecord.clockInLatitude && (
                       <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200">
                         <div className="flex items-center gap-3">
@@ -821,28 +1046,52 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                     )}
                   </div>
                 ) : (
-                  <div className="bg-slate-50 rounded-2xl p-8 text-center border border-slate-200">
-                    <div className="bg-slate-100 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
-                      <Clock className="h-8 w-8 text-slate-400" />
+                  <div className="bg-slate-50 rounded-2xl p-8 text-center border border-slate-200 space-y-6">
+                    <div>
+                      <div className="bg-slate-100 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
+                        <Clock className="h-8 w-8 text-slate-400" />
+                      </div>
+                      <p className="text-lg font-medium text-slate-600">Not clocked in yet today</p>
+                      <p className="text-sm text-slate-500 mt-1">Start tracking your time to begin</p>
                     </div>
-                    <p className="text-lg font-medium text-slate-600">Not clocked in yet today</p>
-                    <p className="text-sm text-slate-500 mt-1">Start tracking your time to begin</p>
+                    {requiresOdometer && (
+                      <div className="bg-white/80 rounded-2xl p-4 border border-slate-200 text-left space-y-4">
+                        <div>
+                          <Label>Odometer Reading (km)</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={odometerKm}
+                            onChange={(e) => setOdometerKm(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <Label>Odometer Photo</Label>
+                          <Input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => setOdometerPhoto(e.target.files?.[0] || null)}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
               
               <div className="flex flex-col gap-3 lg:w-48">
-                {!isClockedIn ? (
+                {user.role !== 'superuser' && !isClockedIn ? (
                   <Button 
                     onClick={handleClockIn} 
-                    className="group h-16 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
+                    disabled={clockInDisabled || odometerUploading}
+                    className="group h-16 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <div className="flex flex-col items-center gap-1 group-hover:scale-105 transition-transform duration-200">
                       <Play className="h-6 w-6" />
-                      <span>Clock In</span>
+                      <span>{odometerUploading ? 'Uploading...' : 'Clock In'}</span>
                     </div>
                   </Button>
-                ) : (
+                ) : user.role !== 'superuser' ? (
                   <Button 
                     onClick={handleClockOut} 
                     className="group h-16 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white font-semibold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
@@ -852,7 +1101,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                       <span>Clock Out</span>
                     </div>
                   </Button>
-                )}
+                ) : null}
               </div>
             </div>
           </CardContent>
@@ -987,6 +1236,31 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                             </p>
                           </div>
                         )}
+                        {record.odometerEntry && (
+                          <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 flex-1">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <div className="bg-slate-100 rounded-full w-6 h-6 flex items-center justify-center">
+                                  <Camera className="h-3 w-3 text-slate-600" />
+                                </div>
+                                <div>
+                                  <span className="text-sm font-medium text-slate-700">Odometer</span>
+                                  <p className="text-sm text-slate-600">{record.odometerEntry.odometerKm} km</p>
+                                </div>
+                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setImageModalUrl(record.odometerEntry?.photoUrl || '');
+                                  setImageModalTitle('Odometer Photo');
+                                }}
+                              >
+                                View Photo
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -996,6 +1270,12 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
           )}
         </div>
       </div>
+      <ImageModal
+        isOpen={Boolean(imageModalUrl)}
+        onClose={() => setImageModalUrl(null)}
+        imageUrl={imageModalUrl || ''}
+        title={imageModalTitle}
+      />
     </div>
   );
 };

@@ -50,6 +50,51 @@ export type Database = {
           },
         ]
       }
+      agency_feature_access: {
+        Row: {
+          agency_id: string
+          created_at: string | null
+          enable_fuel_expenses: boolean | null
+          enable_time_tracking_odometer: boolean | null
+          id: string
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          agency_id: string
+          created_at?: string | null
+          enable_fuel_expenses?: boolean | null
+          enable_time_tracking_odometer?: boolean | null
+          id?: string
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          agency_id?: string
+          created_at?: string | null
+          enable_fuel_expenses?: boolean | null
+          enable_time_tracking_odometer?: boolean | null
+          id?: string
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agency_feature_access_agency_id_fkey"
+            columns: ["agency_id"]
+            isOneToOne: true
+            referencedRelation: "agencies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agency_feature_access_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       collection_allocations: {
         Row: {
           allocated_amount: number
@@ -1738,6 +1783,111 @@ export type Database = {
           },
         ]
       }
+      agency_expenses: {
+        Row: {
+          agency_id: string
+          amount: number
+          bill_photo_path: string
+          bill_photo_url: string
+          category: string
+          created_at: string | null
+          id: string
+          notes: string | null
+          occurred_at: string
+          user_id: string
+        }
+        Insert: {
+          agency_id: string
+          amount: number
+          bill_photo_path: string
+          bill_photo_url: string
+          category: string
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          occurred_at?: string
+          user_id: string
+        }
+        Update: {
+          agency_id?: string
+          amount?: number
+          bill_photo_path?: string
+          bill_photo_url?: string
+          category?: string
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          occurred_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agency_expenses_agency_id_fkey"
+            columns: ["agency_id"]
+            isOneToOne: false
+            referencedRelation: "agencies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agency_expenses_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      fuel_recharges: {
+        Row: {
+          agency_id: string
+          bill_photo_path: string
+          bill_photo_url: string
+          created_at: string | null
+          id: string
+          notes: string | null
+          occurred_at: string
+          odometer_km: number
+          user_id: string
+        }
+        Insert: {
+          agency_id: string
+          bill_photo_path: string
+          bill_photo_url: string
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          occurred_at?: string
+          odometer_km: number
+          user_id: string
+        }
+        Update: {
+          agency_id?: string
+          bill_photo_path?: string
+          bill_photo_url?: string
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          occurred_at?: string
+          odometer_km?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fuel_recharges_agency_id_fkey"
+            columns: ["agency_id"]
+            isOneToOne: false
+            referencedRelation: "agencies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fuel_recharges_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       time_tracking: {
         Row: {
           agency_id: string
@@ -1782,6 +1932,61 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      time_tracking_odometer_entries: {
+        Row: {
+          agency_id: string
+          created_at: string | null
+          id: string
+          odometer_km: number
+          photo_path: string
+          photo_url: string
+          time_tracking_id: string
+          user_id: string
+        }
+        Insert: {
+          agency_id: string
+          created_at?: string | null
+          id?: string
+          odometer_km: number
+          photo_path: string
+          photo_url: string
+          time_tracking_id: string
+          user_id: string
+        }
+        Update: {
+          agency_id?: string
+          created_at?: string | null
+          id?: string
+          odometer_km?: number
+          photo_path?: string
+          photo_url?: string
+          time_tracking_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "time_tracking_odometer_entries_agency_id_fkey"
+            columns: ["agency_id"]
+            isOneToOne: false
+            referencedRelation: "agencies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "time_tracking_odometer_entries_time_tracking_id_fkey"
+            columns: ["time_tracking_id"]
+            isOneToOne: true
+            referencedRelation: "time_tracking"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "time_tracking_odometer_entries_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       time_tracking_route_points: {
         Row: {

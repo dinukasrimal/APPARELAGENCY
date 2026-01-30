@@ -25,6 +25,7 @@ export interface TimeTracking {
   date: string;
   createdAt: Date;
   routePoints?: TimeTrackingRoutePoint[];
+  odometerEntry?: TimeTrackingOdometerEntry | null;
 }
 
 export interface TimeTrackingRoutePoint {
@@ -35,6 +36,17 @@ export interface TimeTrackingRoutePoint {
   recordedAt: Date;
   accuracy?: number | null;
   speed?: number | null;
+}
+
+export interface TimeTrackingOdometerEntry {
+  id: string;
+  timeTrackingId: string;
+  agencyId: string;
+  userId: string;
+  odometerKm: number;
+  photoUrl: string;
+  photoPath: string;
+  createdAt: Date;
 }
 
 export const NON_PRODUCTIVE_REASONS = [

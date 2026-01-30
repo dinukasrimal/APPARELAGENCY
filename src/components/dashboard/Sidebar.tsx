@@ -26,7 +26,9 @@ import {
   FileX,
   Percent,
   CheckSquare,
+  Droplet,
 } from 'lucide-react';
+import { useAgencyFeatureAccess } from '@/hooks/useAgencyFeatureAccess';
 
 interface SidebarProps {
   user: User;
@@ -36,17 +38,19 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management' | 'agency-pricing-configuration';
+type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management' | 'agency-pricing-configuration' | 'agency-feature-access' | 'fuel-expenses';
 
 const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: SidebarProps) => {
   const { agency } = useAgency(user.agencyId);
+  const { features } = useAgencyFeatureAccess(user.role === 'superuser' ? null : user.agencyId);
   
   const sidebarItems = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3, roles: ['agency', 'superuser', 'agent'] },
     { id: 'customers', label: 'Customers', icon: Users, roles: ['agency', 'superuser', 'agent'] },
     { id: 'assets', label: 'Assets', icon: Image, roles: ['agency', 'superuser', 'agent'] },
     { id: 'products', label: 'Products', icon: Package, roles: ['agency', 'superuser', 'agent'] },
-    { id: 'time-tracking', label: 'Time Tracking', icon: Clock, roles: ['agency', 'agent'] },
+    { id: 'time-tracking', label: 'Time Tracking', icon: Clock, roles: ['agency', 'agent', 'superuser'] },
+    { id: 'fuel-expenses', label: 'Fuel & Expenses', icon: Droplet, roles: ['agency', 'agent', 'superuser'] },
     { id: 'non-productive-visits', label: 'Non-Productive Visits', icon: AlertTriangle, roles: ['agency', 'agent', 'superuser'] },
     { id: 'sales', label: 'Sales', icon: ShoppingCart, roles: ['agency', 'superuser', 'agent'] },
     { id: 'collections', label: 'Collections', icon: DollarSign, roles: ['agency', 'superuser', 'agent'] },
@@ -58,6 +62,7 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'user-management', label: 'User Management', icon: UserCog, roles: ['superuser'] },
     { id: 'approval-management', label: 'Order Approvals', icon: CheckSquare, roles: ['superuser'] },
     { id: 'discount-management', label: 'Discount Management', icon: Percent, roles: ['superuser'] },
+    { id: 'agency-feature-access', label: 'Agency Features', icon: Settings, roles: ['superuser'] },
     { id: 'agency-pricing-configuration', label: 'Agency Pricing', icon: Settings, roles: ['superuser'] },
     {
       id: 'reports',
@@ -67,9 +72,13 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     },
   ];
 
-  const filteredMenuItems = sidebarItems.filter(item => 
-    item.roles.includes(user.role)
-  );
+  const filteredMenuItems = sidebarItems.filter(item => {
+    if (!item.roles.includes(user.role)) return false;
+    if (item.id === 'fuel-expenses' && user.role !== 'superuser') {
+      return features.enableFuelExpenses;
+    }
+    return true;
+  });
 
   const handleMenuItemClick = (itemId: string) => {
     onModuleChange(itemId);

@@ -19,12 +19,14 @@ const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/Quart
 const UserManagement = lazy(() => import('@/components/admin/UserManagement'));
 const SuperuserApprovalManagement = lazy(() => import('@/components/sales/SuperuserApprovalManagement'));
 const DiscountManagement = lazy(() => import('@/components/admin/DiscountManagement'));
+const AgencyFeatureAccess = lazy(() => import('@/components/admin/AgencyFeatureAccess'));
 const AgencyPricingConfiguration = lazy(() => import('@/components/admin/AgencyPricingConfiguration'));
 const SimpleCompanyReturns = lazy(() => import('@/components/returns/SimpleCompanyReturns'));
 const Reports = lazy(() => import('@/components/reports/Reports'));
 const Collections = lazy(() => import('@/components/collections/Collections'));
 const Assets = lazy(() => import('@/components/assets/Assets'));
 const ReturnChequesLodge = lazy(() => import('@/components/cheques/ReturnChequesLodge'));
+const FuelExpenses = lazy(() => import('@/components/visits/FuelExpenses'));
 
 interface DashboardProps {
   user: User;
@@ -123,6 +125,12 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
             <DiscountManagement />
           </Suspense>
         );
+      case 'agency-feature-access':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <AgencyFeatureAccess user={user} />
+          </Suspense>
+        );
       case 'agency-pricing-configuration':
         return (
           <Suspense fallback={<ModuleLoader />}>
@@ -145,6 +153,12 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
         return (
           <Suspense fallback={<ModuleLoader />}>
             <ReturnChequesLodge user={user} onBack={() => setActiveModule('dashboard')} />
+          </Suspense>
+        );
+      case 'fuel-expenses':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <FuelExpenses user={user} />
           </Suspense>
         );
       default:

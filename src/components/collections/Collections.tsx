@@ -348,12 +348,22 @@ const Collections = ({ user }: CollectionsProps) => {
     try {
       // All payments are now direct payments allocated to specific invoices
       const status = 'allocated';
+      const resolvedAgencyId = selectedAgencyId || user.agencyId;
+
+      if (!resolvedAgencyId) {
+        toast({
+          title: "Missing Agency",
+          description: "Please select an agency before recording a collection.",
+          variant: "destructive",
+        });
+        return;
+      }
       
       // Create a new collection object with database field names
       const newCollection = {
         customer_id: formData.customerId,
         customer_name: formData.customerName,
-        agency_id: selectedAgencyId || user.agencyId,
+        agency_id: resolvedAgencyId,
         total_amount: formData.totalAmount,
         payment_method: formData.paymentMethod,
         cash_amount: formData.cashAmount,
@@ -378,7 +388,7 @@ const Collections = ({ user }: CollectionsProps) => {
         console.error('Error saving collection:', error);
         toast({
           title: "Error",
-          description: "Failed to save collection",
+          description: error.message || "Failed to save collection",
           variant: "destructive",
         });
         return;

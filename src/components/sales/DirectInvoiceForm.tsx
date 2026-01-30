@@ -94,6 +94,118 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
     });
   })();
 
+  // Match sales order product sorting so direct invoices show the same ordering.
+  const sortProductsByName = (products: Product[]) => {
+    return products.sort((a, b) => {
+      const nameA = a.name || '';
+      const nameB = b.name || '';
+
+      // Macbell grouping: standard MACBELL- variants before MAC BELL LONG LEG, both sorted by size
+      const macbellPriority = (name: string) => {
+        if (/^macbell-\s*/i.test(name)) return 0; // MACBELL- S/M/L...
+        if (/^mac bell long leg/i.test(name)) return 1; // Long leg variants
+        return 2; // everything else
+      };
+
+      const macbellA = macbellPriority(nameA);
+      const macbellB = macbellPriority(nameB);
+      if (macbellA !== macbellB) {
+        return macbellA - macbellB;
+      }
+
+      // Special handling: prioritize PETTYCOURT over HAIMARRY PETTICOAT
+      const isPettyA = /pettycourt/i.test(nameA || a.description || '');
+      const isPettyB = /pettycourt/i.test(nameB || b.description || '');
+      const isHaimarryA = /haimarry/i.test(nameA || a.description || '');
+      const isHaimarryB = /haimarry/i.test(nameB || b.description || '');
+
+      if (isPettyA !== isPettyB) {
+        return isPettyA ? -1 : 1;
+      }
+
+      if (isHaimarryA !== isHaimarryB) {
+        return isHaimarryA ? 1 : -1;
+      }
+
+      const extractRangeFromName = (name: string) => {
+        const match = name.match(/\b(\d+)\s*-\s*(\d+)\b\s*$/);
+        if (!match) return null;
+        return { start: Number(match[1]), end: Number(match[2]) };
+      };
+
+      const extractSizeFromName = (name: string) => {
+        // Check for size patterns at the end of product name
+        const sizePatterns = [
+          // Clothing sizes: S, M, L, XL, 2XL, 3XL, 4XL
+          /\b(S|M|L|XL|2XL|3XL|4XL)$/i,
+          // Numeric sizes: 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42
+          /\b(20|22|24|26|28|30|32|34|36|38|40|42)$/,
+          // Larger numeric sizes: 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100
+          /\b(50|55|60|65|70|75|80|85|90|95|100)$/,
+          // Negative sizes: -50, -55, -60, -65, -70, -75, -80, -85, -90, -95, -100
+          /\b(-50|-55|-60|-65|-70|-75|-80|-85|-90|-95|-100)$/
+        ];
+
+        for (const pattern of sizePatterns) {
+          const match = name.match(pattern);
+          if (match) {
+            return match[1];
+          }
+        }
+        return null;
+      };
+
+      const getSizeOrder = (size: string | null) => {
+        if (!size) return 999; // No size pattern found, put at end
+
+        // Clothing sizes order
+        const clothingSizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+        const clothingIndex = clothingSizes.indexOf(size.toUpperCase());
+        if (clothingIndex !== -1) return clothingIndex;
+
+        // Numeric sizes 20-42
+        const numericSmall = ['20', '22', '24', '26', '28', '30', '32', '34', '36', '38', '40', '42'];
+        const numericSmallIndex = numericSmall.indexOf(size);
+        if (numericSmallIndex !== -1) return numericSmallIndex + 100;
+
+        // Numeric sizes 50-100
+        const numericLarge = ['50', '55', '60', '65', '70', '75', '80', '85', '90', '95', '100'];
+        const numericLargeIndex = numericLarge.indexOf(size);
+        if (numericLargeIndex !== -1) return numericLargeIndex + 200;
+
+        // Negative sizes -50 to -100
+        const negativeSizes = ['-50', '-55', '-60', '-65', '-70', '-75', '-80', '-85', '-90', '-95', '-100'];
+        const negativeIndex = negativeSizes.indexOf(size);
+        if (negativeIndex !== -1) return negativeIndex + 300;
+
+        return 999;
+      };
+
+      const rangeA = extractRangeFromName(nameA);
+      const rangeB = extractRangeFromName(nameB);
+
+      if (rangeA && rangeB) {
+        if (rangeA.start !== rangeB.start) return rangeA.start - rangeB.start;
+        if (rangeA.end !== rangeB.end) return rangeA.end - rangeB.end;
+      } else if (rangeA || rangeB) {
+        return rangeA ? -1 : 1;
+      }
+
+      const sizeA = extractSizeFromName(nameA);
+      const sizeB = extractSizeFromName(nameB);
+      
+      const orderA = getSizeOrder(sizeA);
+      const orderB = getSizeOrder(sizeB);
+
+      if (orderA !== orderB) {
+        return orderA - orderB;
+      }
+
+      // If same size order or no size pattern, sort alphabetically
+      return a.name.localeCompare(b.name);
+    });
+  };
+
   const getVariantKey = useCallback((productId: string, color: string, size: string) => {
     return [productId, color?.trim().toLowerCase() || 'default', size?.trim().toLowerCase() || 'default'].join('::');
   }, []);
@@ -228,63 +340,8 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         p.colors.includes(selectedColor)
       );
 
-      // Sort variants so sizes appear S, M, L, XL... or 28, 30, 32, etc.
-      const sortedProducts = (() => {
-        const extractSizeFromName = (name: string): string | null => {
-          const sizePatterns = [
-            /\b(S|M|L|XL|2XL|3XL|4XL)\b/i,
-            /\b(2XL|3XL|4XL)\b/i,
-            /\b(20|22|24|26|28|30|32|34|36|38|40|42)\b/,
-            /\b(50|55|60|65|70|75|80|85|90|95|100)\b/,
-            /\b(-50|-55|-60|-65|-70|-75|-80|-85|-90|-95|-100)\b/
-          ];
-          for (const pattern of sizePatterns) {
-            const match = name.match(pattern);
-            if (match) return match[0].toUpperCase();
-          }
-          return null;
-        };
-
-        const getSizeOrder = (size: string | null) => {
-          if (!size) return 999;
-          const clothingSizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
-          const clothingIndex = clothingSizes.indexOf(size.toUpperCase());
-          if (clothingIndex !== -1) return clothingIndex;
-          const numericSmall = ['20', '22', '24', '26', '28', '30', '32', '34', '36', '38', '40', '42'];
-          const numericSmallIndex = numericSmall.indexOf(size);
-          if (numericSmallIndex !== -1) return numericSmallIndex + 100;
-          const numericLarge = ['50', '55', '60', '65', '70', '75', '80', '85', '90', '95', '100'];
-          const numericLargeIndex = numericLarge.indexOf(size);
-          if (numericLargeIndex !== -1) return numericLargeIndex + 200;
-          const negativeSizes = ['-50', '-55', '-60', '-65', '-70', '-75', '-80', '-85', '-90', '-95', '-100'];
-          const negativeIndex = negativeSizes.indexOf(size);
-          if (negativeIndex !== -1) return negativeIndex + 300;
-          return 999;
-        };
-
-        return [...filteredProducts].sort((a, b) => {
-          // Special handling: prioritize PETTYCOURT over HAIMARRY PETTICOAT
-          const isPettyA = /pettycourt/i.test(a.name || a.description || '');
-          const isPettyB = /pettycourt/i.test(b.name || b.description || '');
-          const isHaimarryA = /haimarry/i.test(a.name || a.description || '');
-          const isHaimarryB = /haimarry/i.test(b.name || b.description || '');
-
-          if (isPettyA !== isPettyB) {
-            return isPettyA ? -1 : 1;
-          }
-
-          if (isHaimarryA !== isHaimarryB) {
-            return isHaimarryA ? 1 : -1;
-          }
-
-          const sizeA = extractSizeFromName(a.name);
-          const sizeB = extractSizeFromName(b.name);
-          const orderA = getSizeOrder(sizeA);
-          const orderB = getSizeOrder(sizeB);
-          if (orderA !== orderB) return orderA - orderB;
-          return a.name.localeCompare(b.name);
-        });
-      })();
+      // Sort products using same logic as sales orders.
+      const sortedProducts = sortProductsByName(filteredProducts);
 
       setProductGridItems(sortedProducts.map(product => ({
         product,

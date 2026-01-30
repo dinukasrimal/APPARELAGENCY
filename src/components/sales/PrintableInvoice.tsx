@@ -1,10 +1,11 @@
-import { useEffect } from 'react';
-import { Invoice, SalesOrder } from '@/types/sales';
+import { useEffect, useState } from 'react';
+import { Invoice, InvoiceItem, SalesOrder } from '@/types/sales';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Printer, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Capacitor } from '@capacitor/core';
 import companyLogo from '../../../assets/icon.png';
+import { supabase } from '@/integrations/supabase/client';
 
 interface PrintableInvoiceProps {
   invoice: Invoice;
@@ -14,6 +15,60 @@ interface PrintableInvoiceProps {
 
 const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProps) => {
   const { toast } = useToast();
+  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(invoice.items || []);
+  const [isLoadingItems, setIsLoadingItems] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadInvoiceItems = async () => {
+      if (invoice.items && invoice.items.length > 0) {
+        if (isMounted) {
+          setInvoiceItems(invoice.items);
+        }
+        return;
+      }
+
+      setIsLoadingItems(true);
+      const { data, error } = await supabase
+        .from('invoice_items')
+        .select('id, product_id, product_name, color, size, quantity, unit_price, total')
+        .eq('invoice_id', invoice.id);
+
+      if (!error && data && isMounted) {
+        setInvoiceItems(data.map((item) => ({
+          id: item.id,
+          productId: item.product_id || '',
+          productName: item.product_name,
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: Number(item.unit_price),
+          total: Number(item.total)
+        })));
+      } else if (isMounted && salesOrder?.items?.length) {
+        setInvoiceItems(salesOrder.items.map((item) => ({
+          id: item.id,
+          productId: item.productId,
+          productName: item.productName,
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          total: item.total
+        })));
+      }
+
+      if (isMounted) {
+        setIsLoadingItems(false);
+      }
+    };
+
+    loadInvoiceItems();
+    return () => {
+      isMounted = false;
+    };
+  }, [invoice.id, invoice.items, salesOrder?.items]);
 
   const handlePrint = () => {
     window.print();
@@ -266,7 +321,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
                 </tr>
               </thead>
               <tbody>
-                ${invoice.items.map((item, index) => `
+                ${invoiceItems.map((item, index) => `
                   <tr>
                     <td>${index + 1}</td>
                     <td>${item.productName}</td>
@@ -515,7 +570,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               </tr>
             </thead>
             <tbody>
-              {invoice.items.map((item, index) => (
+              {invoiceItems.map((item, index) => (
                 <tr key={item.id}>
                   <td className="border border-gray-300 px-4 py-2">{index + 1}</td>
                   <td className="border border-gray-300 px-4 py-2">{item.productName}</td>
@@ -527,6 +582,9 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               ))}
             </tbody>
           </table>
+          {isLoadingItems && invoiceItems.length === 0 && (
+            <div className="text-xs text-gray-500 mt-2">Loading line items...</div>
+          )}
         </div>
 
         {/* Totals */}
