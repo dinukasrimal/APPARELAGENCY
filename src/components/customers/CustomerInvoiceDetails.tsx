@@ -12,6 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { CollectionForm } from '../collections/CollectionForm';
 import { CollectionDetails } from '../collections/CollectionDetails';
 import InvoiceDetails from '../sales/InvoiceDetails';
+import { roundMoney } from '@/utils/money';
 
 interface CustomerInvoiceDetailsProps {
   user: User;
@@ -188,18 +189,18 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
     });
 
     // Calculate totals
-    const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
-    const totalReturns = customerReturnsList.reduce((sum, ret) => sum + (ret.total || 0), 0);
-    const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments + totalCashDiscounts;
+    const totalInvoiced = roundMoney(customerInvoices.reduce((sum, inv) => sum + inv.total, 0));
+    const totalReturns = roundMoney(customerReturnsList.reduce((sum, ret) => sum + (ret.total || 0), 0));
+    const totalRealizedPayments = roundMoney(totalCashCollected + totalRealizedChequePayments + totalCashDiscounts);
     
     // Outstanding calculation:
     // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
     // Future cheques don't count as payments until their date arrives
-    const outstandingAmount = totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount;
+    const outstandingAmount = roundMoney(totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount);
     
     // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) - Returns + Returned Cheques
-    const totalAllPayments = totalRealizedPayments + totalUnrealizedChequePayments;
-    const outstandingWithUnrealized = totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount;
+    const totalAllPayments = roundMoney(totalRealizedPayments + totalUnrealizedChequePayments);
+    const outstandingWithUnrealized = roundMoney(totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount);
 
     // Create invoice summaries with proper collection calculations
     // Build invoice item lookup to support per-item return linking
@@ -259,13 +260,13 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
           console.error('Error fetching allocations for invoice:', invoice.id, error);
         }
 
-        const collectedAmount = (allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0);
+        const collectedAmount = roundMoney((allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0));
         const invoiceReturnsFromHeader = customerReturnsList
           .filter((ret) => ret.invoice_id === invoice.id)
           .reduce((sum, ret) => sum + (ret.total || 0), 0);
         const invoiceReturnsFromItems = returnsByInvoiceId[invoice.id] || 0;
-        const invoiceReturns = invoiceReturnsFromHeader + invoiceReturnsFromItems;
-        const invoiceOutstandingAmount = invoice.total - collectedAmount - invoiceReturns;
+        const invoiceReturns = roundMoney(invoiceReturnsFromHeader + invoiceReturnsFromItems);
+        const invoiceOutstandingAmount = Math.max(0, roundMoney(invoice.total - collectedAmount - invoiceReturns));
         
         return {
           id: invoice.id,
@@ -400,6 +401,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         <CollectionForm
           customerId={customer.id}
           customerName={customer.name}
+          customerInvoices={customerInvoiceSummary?.invoices || []}
           onSubmit={handleCollectionFormSubmit}
           onCancel={() => setShowCollectionForm(false)}
         />

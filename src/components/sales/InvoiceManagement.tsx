@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Search, Eye, Printer, FileText, Truck, CheckCircle, Signature, MapPin } from 'lucide-react';
+import { Search, Eye, Printer, FileText, Truck, CheckCircle, Signature, MapPin, ChevronLeft, ChevronRight } from 'lucide-react';
 import InvoiceDetails from './InvoiceDetails';
 import PrintableInvoice from './PrintableInvoice';
 import { useToast } from '@/hooks/use-toast';
@@ -19,10 +19,24 @@ interface InvoiceManagementProps {
   invoices: Invoice[];
   orders: SalesOrder[];
   deliveries?: Delivery[];
+  currentPage?: number;
+  pageSize?: number;
+  totalCount?: number;
+  onPageChange?: (page: number) => void;
   onRefresh?: () => void;
 }
 
-const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh }: InvoiceManagementProps) => {
+const InvoiceManagement = ({
+  user,
+  invoices,
+  orders,
+  deliveries = [],
+  currentPage = 1,
+  pageSize = 50,
+  totalCount = invoices.length,
+  onPageChange,
+  onRefresh
+}: InvoiceManagementProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [showPrintView, setShowPrintView] = useState(false);
@@ -49,6 +63,10 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
   const getSalesOrder = (salesOrderId?: string) => {
     return salesOrderId ? orders.find(order => order.id === salesOrderId) : null;
   };
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const pageStart = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEnd = Math.min(currentPage * pageSize, totalCount);
 
   const handlePrint = (invoice: Invoice) => {
     setSelectedInvoice(invoice);
@@ -267,6 +285,35 @@ const InvoiceManagement = ({ user, invoices, orders, deliveries = [], onRefresh 
           <p className="text-sm md:text-base text-gray-600">
             {user.role === 'superuser' ? 'All invoices across agencies' : 'Your agency invoices'}
           </p>
+        </div>
+      </div>
+
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+        <p className="text-sm text-gray-600">
+          Showing {pageStart}-{pageEnd} of {totalCount} invoices
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onPageChange?.(Math.max(1, currentPage - 1))}
+            disabled={!onPageChange || currentPage <= 1}
+          >
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Previous
+          </Button>
+          <span className="text-sm text-gray-600">
+            Page {currentPage} of {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onPageChange?.(Math.min(totalPages, currentPage + 1))}
+            disabled={!onPageChange || currentPage >= totalPages}
+          >
+            Next
+            <ChevronRight className="h-4 w-4 ml-1" />
+          </Button>
         </div>
       </div>
 

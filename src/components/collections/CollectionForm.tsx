@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, X, MapPin, Navigation } from 'lucide-react';
 import { CollectionFormData, ChequeDetail } from '@/types/collections';
+import { centsToMoney, moneyToCents, roundMoney } from '@/utils/money';
 
 interface CollectionFormProps {
   customerId: string;
@@ -25,7 +26,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
   onCancel,
   loading = false
 }) => {
-  const filteredInvoices = (customerInvoices || []).filter((inv) => (inv.outstandingAmount || 0) > 0);
+  const filteredInvoices = (customerInvoices || []).filter((inv) => moneyToCents(inv.outstandingAmount || 0) > 0);
   const [formData, setFormData] = useState<CollectionFormData>({
     customerId: customerId,
     customerName: customerName,
@@ -54,19 +55,23 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
 
   // Calculate total amount automatically
   const calculateTotalAmount = () => {
-    return formData.cashAmount + formData.chequeAmount + formData.cashDiscount;
+    return roundMoney(formData.cashAmount + formData.chequeAmount + formData.cashDiscount);
   };
 
   // Calculate total allocated amount for direct payments
   const calculateAllocatedAmount = () => {
-    return Object.values(invoiceAllocations).reduce((sum, amount) => sum + amount, 0);
+    return roundMoney(Object.values(invoiceAllocations).reduce((sum, amount) => sum + amount, 0));
   };
 
   // Handle invoice allocation change
   const handleAllocationChange = (invoiceId: string, amount: number) => {
+    const invoice = filteredInvoices.find((item) => item.id === invoiceId);
+    const maxAllocation = invoice ? roundMoney(invoice.outstandingAmount || 0) : amount;
+    const nextAmount = Math.max(0, Math.min(roundMoney(amount || 0), maxAllocation));
+
     setInvoiceAllocations(prev => ({
       ...prev,
-      [invoiceId]: amount || 0
+      [invoiceId]: nextAmount
     }));
   };
 
@@ -175,22 +180,25 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
     }
     
     const allocatedAmount = calculateAllocatedAmount();
-    if (allocatedAmount === 0) {
+    const allocatedCents = moneyToCents(allocatedAmount);
+    const totalCents = moneyToCents(total);
+
+    if (allocatedCents === 0) {
       alert('Please allocate payment to at least one invoice');
       return;
     }
-    if (allocatedAmount > total) {
+    if (allocatedCents > totalCents) {
       alert('Total allocated amount cannot exceed payment amount');
       return;
     }
-    if (allocatedAmount !== total) {
+    if (allocatedCents !== totalCents) {
       alert('Total allocated amount must equal the payment amount');
       return;
     }
 
     const allocationsArray = Object.entries(invoiceAllocations)
           .filter(([, amount]) => amount > 0)
-          .map(([invoiceId, amount]) => ({ invoiceId, amount }));
+          .map(([invoiceId, amount]) => ({ invoiceId, amount: centsToMoney(moneyToCents(amount)) }));
 
     onSubmit({
       ...formData,
@@ -251,14 +259,18 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
                 </div>
               </div>
               <div className="space-y-3 max-h-64 overflow-y-auto">
-                {filteredInvoices.map((invoice) => (
+                {filteredInvoices.map((invoice) => {
+                  const outstandingAmount = roundMoney(invoice.outstandingAmount || 0);
+                  const maxAllocation = Math.min(outstandingAmount, calculateTotalAmount());
+
+                  return (
                   <div key={invoice.id} className="border rounded-lg p-3">
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex-1">
                         <div className="font-medium text-sm">Invoice #{invoice.invoiceNumber || invoice.id}</div>
                         <div className="text-xs text-gray-600">
                           Total: LKR {invoice.total?.toFixed(2) || '0.00'} | 
-                          Outstanding: LKR {invoice.outstandingAmount?.toFixed(2) || '0.00'}
+                          Outstanding: LKR {outstandingAmount.toFixed(2)}
                         </div>
                         <div className="text-xs text-gray-500">
                           {new Date(invoice.createdAt).toLocaleDateString()}
@@ -273,7 +285,7 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
                         id={`allocation-${invoice.id}`}
                         type="number"
                         min="0"
-                        max={Math.min(invoice.outstandingAmount || 0, calculateTotalAmount())}
+                        max={maxAllocation}
                         step="0.01"
                         value={invoiceAllocations[invoice.id] || ''}
                         onChange={(e) => handleAllocationChange(invoice.id, parseFloat(e.target.value) || 0)}
@@ -282,7 +294,8 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
                       />
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ) : null}

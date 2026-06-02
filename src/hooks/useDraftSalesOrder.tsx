@@ -121,12 +121,11 @@ export const useDraftSalesOrder = () => {
   }, []);
 
   const changeCustomer = useCallback(() => {
-    // Reset everything except keep it as draft
+    // Clear only the selected customer. Keep the current order lines and
+    // discount so accidental customer selection can be corrected.
     saveDraft({
       customerId: null,
-      customerName: '',
-      items: [],
-      discountPercentage: 0
+      customerName: ''
     });
   }, [saveDraft]);
 

@@ -14,6 +14,7 @@ import { CollectionForm } from './CollectionForm';
 import { CollectionDetails } from './CollectionDetails';
 import AgencySelector from '@/components/common/AgencySelector';
 import { useAgencies } from '@/hooks/useAgency';
+import { roundMoney } from '@/utils/money';
 
 interface CollectionsProps {
   user: User;
@@ -213,7 +214,7 @@ const Collections = ({ user }: CollectionsProps) => {
   const fetchCustomerInvoiceSummary = async (customerId: string) => {
     try {
       // Only include invoices with outstanding > 0 (based on loaded invoice outstandingAmount or fallback)
-      const customerInvoices = invoices.filter(inv => inv.customerId === customerId && (inv.outstandingAmount ?? inv.total) > 0);
+      const customerInvoices = invoices.filter(inv => inv.customerId === customerId && roundMoney(inv.outstandingAmount ?? inv.total) > 0);
       const customerCollections = collections.filter(col => col.customerId === customerId);
 
       // Fetch approved/processed returns for this customer
@@ -263,18 +264,18 @@ const Collections = ({ user }: CollectionsProps) => {
       });
 
       // Calculate totals
-      const totalInvoiced = customerInvoices.reduce((sum, inv) => sum + inv.total, 0);
-      const totalReturns = customerReturns.reduce((sum, ret) => sum + (ret.total || 0), 0);
-      const totalRealizedPayments = totalCashCollected + totalRealizedChequePayments + totalCashDiscounts;
+      const totalInvoiced = roundMoney(customerInvoices.reduce((sum, inv) => sum + inv.total, 0));
+      const totalReturns = roundMoney(customerReturns.reduce((sum, ret) => sum + (ret.total || 0), 0));
+      const totalRealizedPayments = roundMoney(totalCashCollected + totalRealizedChequePayments + totalCashDiscounts);
       
       // Outstanding calculation:
       // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
       // Future cheques don't count as payments until their date arrives
-      const outstandingAmount = totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount;
+      const outstandingAmount = roundMoney(totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount);
       
       // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) - Returns + Returned Cheques
-      const totalAllPayments = totalRealizedPayments + totalUnrealizedChequePayments;
-      const outstandingWithUnrealized = totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount;
+      const totalAllPayments = roundMoney(totalRealizedPayments + totalUnrealizedChequePayments);
+      const outstandingWithUnrealized = roundMoney(totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount);
 
       // Create invoice summaries with proper collection calculations
       const invoiceSummaries: InvoiceSummary[] = await Promise.all(
@@ -289,11 +290,11 @@ const Collections = ({ user }: CollectionsProps) => {
             console.error('Error fetching allocations for invoice:', invoice.id, error);
           }
 
-          const collectedAmount = (allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0);
-          const invoiceReturns = customerReturns
+          const collectedAmount = roundMoney((allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0));
+          const invoiceReturns = roundMoney(customerReturns
             .filter((ret) => ret.invoice_id === invoice.id)
-            .reduce((sum, ret) => sum + (ret.total || 0), 0);
-          const outstandingAmount = invoice.total - collectedAmount - invoiceReturns;
+            .reduce((sum, ret) => sum + (ret.total || 0), 0));
+          const outstandingAmount = Math.max(0, roundMoney(invoice.total - collectedAmount - invoiceReturns));
           
           return {
             id: invoice.id,

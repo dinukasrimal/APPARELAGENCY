@@ -10,6 +10,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { supabase } from '@/integrations/supabase/client';
 import LeafletMap from '@/components/dashboard/LeafletMap';
 import ImageModal from '@/components/ui/image-modal';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface DailyLogEntry {
   id: string;
@@ -261,7 +262,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         invoiceQuery = invoiceQuery.eq('created_by', userFilter);
       }
 
-      const { data: invoices } = await invoiceQuery;
+      const invoices = await fetchAllSupabaseRows<any>(() => invoiceQuery);
       invoices?.forEach(item => {
         const date = new Date(item.created_at).toISOString().split('T')[0];
         datesSet.add(date);
@@ -522,7 +523,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         invoiceQuery = invoiceQuery.eq('created_by', userFilter);
       }
 
-      const { data: invoices } = await invoiceQuery;
+      const invoices = await fetchAllSupabaseRows<any>(() => invoiceQuery);
 
       invoices?.forEach(invoice => {
         const user = users.find(u => u.id === invoice.created_by);
@@ -814,7 +815,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         invoiceQuery = invoiceQuery.eq('created_by', userFilter);
       }
 
-      const { data: invoices } = await invoiceQuery;
+      const invoices = await fetchAllSupabaseRows<any>(() => invoiceQuery);
 
       invoices?.forEach(invoice => {
         const user = users.find(u => u.id === invoice.created_by);

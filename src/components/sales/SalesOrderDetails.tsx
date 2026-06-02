@@ -109,20 +109,26 @@ const SalesOrderDetails = ({ user, order, onBack, onEdit }: SalesOrderDetailsPro
             <div>
               <h4 className="font-medium text-sm text-gray-700 mb-3">Items:</h4>
               <div className="space-y-2">
-                {order.items.map((item) => (
-                  <div key={item.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                    <div>
-                      <p className="font-medium">{item.productName}</p>
-                      <p className="text-sm text-gray-600">
-                        Color: {item.color} | Size: {item.size} | Quantity: {item.quantity}
-                      </p>
-                      <p className="text-sm text-gray-600">Unit Price: LKR {item.unitPrice.toLocaleString()}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold">LKR {item.total.toLocaleString()}</p>
-                    </div>
+                {order.items.length === 0 ? (
+                  <div className="p-3 bg-orange-50 text-orange-700 rounded-lg text-sm">
+                    No order items were loaded for this sales order.
                   </div>
-                ))}
+                ) : (
+                  order.items.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                      <div>
+                        <p className="font-medium">{item.productName}</p>
+                        <p className="text-sm text-gray-600">
+                          Color: {item.color} | Size: {item.size} | Quantity: {item.quantity}
+                        </p>
+                        <p className="text-sm text-gray-600">Unit Price: LKR {item.unitPrice.toLocaleString()}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-semibold">LKR {item.total.toLocaleString()}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 

@@ -662,10 +662,9 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
                   onCustomerChange={() => {
                     setSelectedCustomer(null);
                     setSelectedCustomerId('');
-                    setInvoiceSummary([]);
                     toast({
                       title: "Customer Changed",
-                      description: "Invoice items have been cleared due to customer change"
+                      description: "Select the correct customer. Existing invoice lines were kept."
                     });
                   }}
                 />

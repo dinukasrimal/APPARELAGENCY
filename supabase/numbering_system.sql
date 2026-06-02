@@ -17,10 +17,10 @@ BEGIN
     agency_code := RIGHT(agency_id::TEXT, 4);
     
     -- Get the next number for this agency
-    SELECT COALESCE(MAX(CAST(SUBSTRING(order_number FROM 9) AS INTEGER)), 99)
+    SELECT COALESCE(MAX(CAST(SPLIT_PART(order_number, '-', 2) AS INTEGER)), 99)
     INTO next_number
     FROM sales_orders 
-    WHERE order_number LIKE agency_code || '-%';
+    WHERE order_number ~ ('^' || agency_code || '-[0-9]+$');
     
     -- Generate the order number
     order_number := agency_code || '-' || LPAD((next_number + 1)::TEXT, 5, '0');

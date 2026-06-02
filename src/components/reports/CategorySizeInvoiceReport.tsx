@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ChevronDown, ChevronRight, Package, TrendingUp, Download, Filter, Search, User as UserIcon, X } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/components/ui/use-toast';
+import { chunkArray, fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface CategorySizeInvoiceReportProps {
   user: User;
@@ -142,29 +143,19 @@ const CategorySizeInvoiceReport = ({ user, onBack }: CategorySizeInvoiceReportPr
       setLoading(true);
       console.log('Fetching report data...', { startDate, endDate, selectedCustomer });
 
-      // Step 1: Get invoices in date range
-      let invoiceQuery = supabase
-        .from('invoices')
-        .select('id, customer_id, created_at')
-        .gte('created_at', startDate)
-        .lte('created_at', endDate + 'T23:59:59');
+      const invoices = await fetchAllSupabaseRows<{ id: string; customer_id: string | null; created_at: string }>(() => {
+        let invoiceQuery = supabase
+          .from('invoices')
+          .select('id, customer_id, created_at')
+          .gte('created_at', startDate)
+          .lte('created_at', endDate + 'T23:59:59');
 
-      // Filter by customer if selected
-      if (selectedCustomer && selectedCustomer !== 'all') {
-        invoiceQuery = invoiceQuery.eq('customer_id', selectedCustomer);
-      }
+        if (selectedCustomer && selectedCustomer !== 'all') {
+          invoiceQuery = invoiceQuery.eq('customer_id', selectedCustomer);
+        }
 
-      const { data: invoices, error: invoiceError } = await invoiceQuery;
-
-      if (invoiceError) {
-        console.error('Error fetching invoices:', invoiceError);
-        toast({
-          title: "Error",
-          description: `Failed to fetch invoices: ${invoiceError.message}`,
-          variant: "destructive",
-        });
-        return;
-      }
+        return invoiceQuery;
+      });
 
       if (!invoices || invoices.length === 0) {
         console.log('No invoices found for the date range');
@@ -181,33 +172,31 @@ const CategorySizeInvoiceReport = ({ user, onBack }: CategorySizeInvoiceReportPr
       // Step 2: Get invoice items for these invoices
       const invoiceIds = invoices.map(inv => inv.id);
       
-      const { data: invoiceItems, error: itemsError } = await supabase
-        .from('invoice_items')
-        .select(`
-          quantity,
-          unit_price,
-          product_id,
-          invoice_id,
-          color,
-          size,
-          products!inner(
-            name,
-            category,
-            sub_category,
-            sizes
+      const invoiceItems = (
+        await Promise.all(
+          chunkArray(invoiceIds, 200).map((invoiceIdChunk) =>
+            fetchAllSupabaseRows<any>(() =>
+              supabase
+                .from('invoice_items')
+                .select(`
+                  quantity,
+                  unit_price,
+                  product_id,
+                  invoice_id,
+                  color,
+                  size,
+                  products!inner(
+                    name,
+                    category,
+                    sub_category,
+                    sizes
+                  )
+                `)
+                .in('invoice_id', invoiceIdChunk)
+            )
           )
-        `)
-        .in('invoice_id', invoiceIds);
-
-      if (itemsError) {
-        console.error('Error fetching invoice items:', itemsError);
-        toast({
-          title: "Error",
-          description: `Failed to fetch invoice items: ${itemsError.message}`,
-          variant: "destructive",
-        });
-        return;
-      }
+        )
+      ).flat();
 
       console.log('Invoice items fetched:', invoiceItems?.length || 0, 'items');
       const data = invoiceItems;

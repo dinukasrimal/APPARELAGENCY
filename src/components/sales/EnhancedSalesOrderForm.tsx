@@ -141,11 +141,9 @@ const EnhancedSalesOrderForm = ({
   const handleCustomerChange = () => {
     setSelectedCustomer(null);
     changeCustomer();
-    setOrderSummary([]);
-    setDiscountPercentage(0);
     toast({
       title: "Customer Changed",
-      description: "Order has been reset due to customer change"
+      description: "Select the correct customer. Existing order lines were kept."
     });
   };
 
@@ -616,6 +614,35 @@ const EnhancedSalesOrderForm = ({
     return { subtotal, discountAmount, total };
   };
 
+  const getNextSalesOrderNumber = async (agencyId: string) => {
+    const agencyCode = agencyId.slice(-4);
+    const { data, error } = await supabase
+      .from('sales_orders')
+      .select('order_number')
+      .eq('agency_id', agencyId)
+      .like('order_number', `${agencyCode}-%`);
+
+    if (error) throw error;
+
+    const maxNumber = (data || []).reduce((max, order) => {
+      const match = order.order_number?.match(new RegExp(`^${agencyCode}-(\\d+)$`));
+      if (!match) return max;
+      return Math.max(max, Number(match[1]));
+    }, 99);
+
+    return `${agencyCode}-${String(maxNumber + 1).padStart(5, '0')}`;
+  };
+
+  const isDuplicateOrderNumberError = (error: unknown) => {
+    if (!error || typeof error !== 'object') return false;
+
+    const supabaseError = error as { code?: string; message?: string };
+    return (
+      supabaseError.code === '23505' &&
+      Boolean(supabaseError.message?.includes('sales_orders_order_number_key'))
+    );
+  };
+
   const createInventoryTransactions = async (salesOrderId: string, orderItems: OrderSummaryItem[]) => {
     try {
       const transactions = orderItems.map(item => ({
@@ -658,6 +685,15 @@ const EnhancedSalesOrderForm = ({
       return;
     }
 
+    if (!user.agencyId) {
+      toast({
+        title: "Agency required",
+        description: "Please select an agency before creating a sales order.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     if (submitLockRef.current) {
       return;
     }
@@ -681,6 +717,7 @@ const EnhancedSalesOrderForm = ({
       const discountValidation = validateDiscount(discountPercentage);
       const requiresApproval = discountValidation.requiresApproval;
       const status = requiresApproval ? 'pending' : 'approved';
+      const agencyId = user.agencyId;
 
       let salesOrderData;
       let orderData;
@@ -722,7 +759,7 @@ const EnhancedSalesOrderForm = ({
         salesOrderData = {
           customer_id: selectedCustomer.id,
           customer_name: selectedCustomer.name,
-          agency_id: user.agencyId,
+          agency_id: agencyId,
           subtotal,
           discount_percentage: discountPercentage,
           discount_amount: discountAmount,
@@ -734,14 +771,30 @@ const EnhancedSalesOrderForm = ({
           created_by: user.id
         };
 
-        const { data, error: orderError } = await supabase
-          .from('sales_orders')
-          .insert(salesOrderData)
-          .select()
-          .single();
+        let orderError = null;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const orderNumber = await getNextSalesOrderNumber(agencyId);
+          const { data, error } = await supabase
+            .from('sales_orders')
+            .insert({ ...salesOrderData, order_number: orderNumber })
+            .select()
+            .single();
+
+          if (!error) {
+            orderData = data;
+            orderError = null;
+            break;
+          }
+
+          orderError = error;
+
+          if (!isDuplicateOrderNumberError(error)) {
+            break;
+          }
+        }
 
         if (orderError) throw orderError;
-        orderData = data;
       }
 
       // Create order items

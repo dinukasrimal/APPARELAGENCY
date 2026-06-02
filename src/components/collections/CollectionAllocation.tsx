@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Collection, InvoiceSummary } from '@/types/collections';
+import { centsToMoney, moneyToCents, roundMoney } from '@/utils/money';
 
 interface CollectionAllocationProps {
   collection: Collection;
@@ -25,8 +26,11 @@ export const CollectionAllocation: React.FC<CollectionAllocationProps> = ({
   const [totalAllocated, setTotalAllocated] = useState(0);
 
   const handleAllocationChange = (invoiceId: string, amount: number) => {
-    const newAllocations = { ...allocations, [invoiceId]: amount };
-    const total = Object.values(newAllocations).reduce((sum, amt) => sum + amt, 0);
+    const invoice = invoices.find((item) => item.id === invoiceId);
+    const maxAllocation = invoice ? roundMoney(invoice.outstandingAmount || 0) : amount;
+    const nextAmount = Math.max(0, Math.min(roundMoney(amount || 0), maxAllocation));
+    const newAllocations = { ...allocations, [invoiceId]: nextAmount };
+    const total = roundMoney(Object.values(newAllocations).reduce((sum, amt) => sum + amt, 0));
     
     setAllocations(newAllocations);
     setTotalAllocated(total);
@@ -35,12 +39,12 @@ export const CollectionAllocation: React.FC<CollectionAllocationProps> = ({
   const handleSubmit = () => {
     const allocationList = Object.entries(allocations)
       .filter(([_, amount]) => amount > 0)
-      .map(([invoiceId, amount]) => ({ invoiceId, amount }));
+      .map(([invoiceId, amount]) => ({ invoiceId, amount: centsToMoney(moneyToCents(amount)) }));
 
     onAllocate(allocationList);
   };
 
-  const remainingAmount = collection.totalAmount - totalAllocated;
+  const remainingAmount = roundMoney(collection.totalAmount - totalAllocated);
 
   return (
     <Card className="w-full max-w-4xl mx-auto">
@@ -79,12 +83,15 @@ export const CollectionAllocation: React.FC<CollectionAllocationProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
-                {invoices.map((invoice) => (
+                {invoices.map((invoice) => {
+                  const outstandingAmount = roundMoney(invoice.outstandingAmount || 0);
+
+                  return (
                   <div key={invoice.id} className="flex items-center justify-between p-4 border rounded-lg">
                     <div className="flex-1">
                       <div className="font-medium">Invoice #{invoice.id}</div>
                       <div className="text-sm text-muted-foreground">
-                        Outstanding: LKR {invoice.outstandingAmount.toFixed(2)} • 
+                        Outstanding: LKR {outstandingAmount.toFixed(2)} • 
                         Total: LKR {invoice.total.toFixed(2)} • 
                         Created: {invoice.createdAt.toLocaleDateString()}
                       </div>
@@ -104,15 +111,16 @@ export const CollectionAllocation: React.FC<CollectionAllocationProps> = ({
                         placeholder="0.00"
                         step="0.01"
                         min="0"
-                        max={invoice.outstandingAmount}
+                        max={outstandingAmount}
                         className="w-32"
                       />
                       <span className="text-sm text-muted-foreground">
-                        / LKR {invoice.outstandingAmount.toFixed(2)}
+                        / LKR {outstandingAmount.toFixed(2)}
                       </span>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

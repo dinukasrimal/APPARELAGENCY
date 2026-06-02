@@ -25,11 +25,6 @@ const AgencySelector = ({
   const { agencies, loading } = useAgencies();
   const [selectedAgencyName, setSelectedAgencyName] = useState<string>('');
 
-  // Only show agency selector for superusers
-  if (!user || user.role !== 'superuser') {
-    return null;
-  }
-
   useEffect(() => {
     if (selectedAgencyId) {
       const agency = agencies.find(a => a.id === selectedAgencyId);
@@ -38,6 +33,11 @@ const AgencySelector = ({
       setSelectedAgencyName('');
     }
   }, [selectedAgencyId, agencies]);
+
+  // Only show agency selector for superusers
+  if (!user || user.role !== 'superuser') {
+    return null;
+  }
 
   const handleValueChange = (value: string) => {
     if (value === 'all') {

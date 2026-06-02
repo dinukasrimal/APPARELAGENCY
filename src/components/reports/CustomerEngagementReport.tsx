@@ -22,6 +22,7 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import AgencySelector from '@/components/common/AgencySelector';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface CustomerEngagementReportProps {
   user: User;
@@ -140,20 +141,19 @@ const CustomerEngagementReport = ({ user, onBack }: CustomerEngagementReportProp
         }
       }
 
-      // Fetch invoices for the date range
-      let invoicesQuery = supabase
-        .from('invoices')
-        .select('*');
-      
-      if (selectedAgencyId) {
-        invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
-      }
-      
-      const { data: invoicesData, error: invoicesError } = await invoicesQuery
-        .gte('created_at', `${startDate}T00:00:00.000Z`)
-        .lte('created_at', `${endDate}T23:59:59.999Z`);
+      const invoicesData = await fetchAllSupabaseRows<any>(() => {
+        let invoicesQuery = supabase
+          .from('invoices')
+          .select('*');
 
-      if (invoicesError) throw invoicesError;
+        if (selectedAgencyId) {
+          invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
+        }
+
+        return invoicesQuery
+          .gte('created_at', `${startDate}T00:00:00.000Z`)
+          .lte('created_at', `${endDate}T23:59:59.999Z`);
+      });
 
       // Fetch non-productive visits for the date range
       let visitsData = [];

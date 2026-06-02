@@ -41,7 +41,7 @@ interface AgencyExpenseRow {
   notes?: string | null;
 }
 
-const STORAGE_BUCKET = 'agency-expense-photos';
+const STORAGE_BUCKET = 'assets';
 
 const FuelExpenses = ({ user }: FuelExpensesProps) => {
   const { toast } = useToast();
@@ -67,6 +67,8 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
   const [loading, setLoading] = useState(true);
   const [imageModalUrl, setImageModalUrl] = useState<string | null>(null);
   const [imageModalTitle, setImageModalTitle] = useState<string>('');
+
+  const expenseCategories = ['Lodging', 'Food', 'Others'];
 
   const canAccessModule = user.role === 'superuser' || features.enableFuelExpenses;
   const activeAgencyId = useMemo(() => {
@@ -205,7 +207,7 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
       console.error('Error logging fuel recharge:', error);
       toast({
         title: 'Error',
-        description: 'Failed to log fuel recharge.',
+        description: error instanceof Error ? error.message : 'Failed to log fuel recharge.',
         variant: 'destructive',
       });
     }
@@ -287,7 +289,7 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
       console.error('Error logging expense:', error);
       toast({
         title: 'Error',
-        description: 'Failed to log expense.',
+        description: error instanceof Error ? error.message : 'Failed to log expense.',
         variant: 'destructive',
       });
     }
@@ -386,7 +388,18 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
           <CardContent className="space-y-4">
             <div>
               <Label>Category</Label>
-              <Input value={expenseCategory} onChange={(e) => setExpenseCategory(e.target.value)} />
+              <Select value={expenseCategory} onValueChange={setExpenseCategory}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {expenseCategories.map((category) => (
+                    <SelectItem key={category} value={category}>
+                      {category}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Amount</Label>

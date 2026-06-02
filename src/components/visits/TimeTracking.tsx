@@ -83,6 +83,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
 
   const requiresOdometer = user.role !== 'superuser' && features.enableTimeTrackingOdometer;
   const clockInDisabled = requiresOdometer && (!odometerKm || !odometerPhoto);
+  const clockOutDisabled = requiresOdometer && (!odometerKm || !odometerPhoto);
 
   const stopLocationWatch = () => {
     const watchId = locationWatchIdRef.current;
@@ -409,7 +410,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     const { data, error } = await supabase
       .from('time_tracking_odometer_entries')
       .select<OdometerRow>('id, time_tracking_id, agency_id, user_id, odometer_km, photo_url, photo_path, created_at')
-      .in('time_tracking_id', recordIds);
+      .in('time_tracking_id', recordIds)
+      .order('created_at', { ascending: false });
 
     if (error) {
       console.error('Error fetching odometer entries:', error);
@@ -419,6 +421,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
     const grouped = new Map<string, TimeTrackingOdometerEntry>();
 
     (data || []).forEach((entry: OdometerRow) => {
+      if (grouped.has(entry.time_tracking_id)) return;
       grouped.set(entry.time_tracking_id, {
         id: entry.id,
         timeTrackingId: entry.time_tracking_id,
@@ -625,7 +628,7 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         const fileName = `odometer-${Date.now()}.${extension}`;
         const path = `agency-${user.agencyId}/user-${user.id}`;
         const upload = await uploadFile({
-          bucket: 'time-tracking-odometer',
+          bucket: 'assets',
           path,
           file: odometerPhoto,
           fileName,
@@ -796,6 +799,27 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
   const handleClockOut = async () => {
     if (!todayRecord) return;
 
+    if (requiresOdometer) {
+      const odometerValue = Number(odometerKm);
+      if (!odometerValue || odometerValue <= 0) {
+        toast({
+          title: "Odometer required",
+          description: "Please enter a valid odometer reading before clocking out.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!odometerPhoto) {
+        toast({
+          title: "Photo required",
+          description: "Please attach an odometer photo before clocking out.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     // Show immediate feedback
     toast({
       title: "Clocking out...",
@@ -826,6 +850,30 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         };
       }
       
+      let odometerUpload: { url: string; path: string; value: number } | null = null;
+      if (requiresOdometer && odometerPhoto && user.agencyId) {
+        setOdometerUploading(true);
+        const extension = odometerPhoto.name.split('.').pop() || 'jpg';
+        const fileName = `odometer-${Date.now()}.${extension}`;
+        const path = `agency-${user.agencyId}/user-${user.id}`;
+        const upload = await uploadFile({
+          bucket: 'assets',
+          path,
+          file: odometerPhoto,
+          fileName,
+        });
+
+        if (!upload.success || !upload.url) {
+          throw new Error(upload.error || 'Failed to upload odometer photo');
+        }
+
+        odometerUpload = {
+          url: upload.url,
+          path: `${path}/${fileName}`,
+          value: Number(odometerKm),
+        };
+      }
+
       // Update database and wait for completion
       const { error } = await supabase
         .from('time_tracking')
@@ -881,6 +929,46 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         );
       }
 
+      if (odometerUpload && user.agencyId) {
+        const { data: odometerData, error: odometerError } = await supabase
+          .from('time_tracking_odometer_entries')
+          .insert([
+            {
+              time_tracking_id: todayRecord.id,
+              agency_id: user.agencyId,
+              user_id: user.id,
+              odometer_km: odometerUpload.value,
+              photo_url: odometerUpload.url,
+              photo_path: odometerUpload.path,
+            },
+          ])
+          .select()
+          .single();
+
+        if (odometerError) {
+          console.error('Error saving odometer entry:', odometerError);
+        } else if (odometerData) {
+          const newOdometerEntry: TimeTrackingOdometerEntry = {
+            id: odometerData.id,
+            timeTrackingId: odometerData.time_tracking_id,
+            agencyId: odometerData.agency_id,
+            userId: odometerData.user_id,
+            odometerKm: Number(odometerData.odometer_km),
+            photoUrl: odometerData.photo_url,
+            photoPath: odometerData.photo_path,
+            createdAt: new Date(odometerData.created_at),
+          };
+
+          setTimeRecords((prev) =>
+            prev.map((record) =>
+              record.id === todayRecord.id
+                ? { ...record, odometerEntry: newOdometerEntry }
+                : record
+            )
+          );
+        }
+      }
+
       stopLocationWatch();
       lastRecordedPointRef.current = null;
       lastRoutePersistRef.current = 0;
@@ -888,6 +976,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
       // Update UI state after successful database update
       setTodayRecord(null);
       setIsClockedIn(false);
+      setOdometerKm('');
+      setOdometerPhoto(null);
       
       // Refresh the records list to show updated data
       await fetchTimeRecords();
@@ -908,6 +998,8 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
         description: "Failed to clock out. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setOdometerUploading(false);
     }
   };
 
@@ -1044,6 +1136,27 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                         </div>
                       </div>
                     )}
+                    {requiresOdometer && (
+                      <div className="bg-white/80 rounded-2xl p-4 border border-slate-200 text-left space-y-4">
+                        <div>
+                          <Label>Clock-out Odometer (km)</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={odometerKm}
+                            onChange={(e) => setOdometerKm(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <Label>Clock-out Odometer Photo</Label>
+                          <Input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => setOdometerPhoto(e.target.files?.[0] || null)}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="bg-slate-50 rounded-2xl p-8 text-center border border-slate-200 space-y-6">
@@ -1094,11 +1207,12 @@ const TimeTracking = ({ user }: TimeTrackingProps) => {
                 ) : user.role !== 'superuser' ? (
                   <Button 
                     onClick={handleClockOut} 
-                    className="group h-16 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white font-semibold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
+                    disabled={clockOutDisabled || odometerUploading}
+                    className="group h-16 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white font-semibold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <div className="flex flex-col items-center gap-1 group-hover:scale-105 transition-transform duration-200">
                       <Square className="h-6 w-6" />
-                      <span>Clock Out</span>
+                      <span>{odometerUploading ? 'Uploading...' : 'Clock Out'}</span>
                     </div>
                   </Button>
                 ) : null}

@@ -22,10 +22,13 @@ import { useToast } from '@/hooks/use-toast';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import AgencySelector from '@/components/common/AgencySelector';
+import { chunkArray, fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface SalesOrdersProps {
   user: User;
 }
+
+const INVOICES_PAGE_SIZE = 50;
 
 const SalesOrders = ({ user }: SalesOrdersProps) => {
   const [orders, setOrders] = useState<SalesOrder[]>([]);
@@ -44,6 +47,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('orders');
   const [showAllOrders, setShowAllOrders] = useState(false);
+  const [invoicePage, setInvoicePage] = useState(1);
+  const [invoiceTotalCount, setInvoiceTotalCount] = useState(0);
   const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
     user.role === 'superuser' ? null : user.agencyId
   );
@@ -51,16 +56,13 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
   useEffect(() => {
     fetchData();
-  }, [user.id, user.role, user.agencyId, selectedAgencyId]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage]);
 
   const fetchData = useCallback(async () => {
     try {
       setIsLoading(true);
       console.log('Fetching sales data for user:', user.id);
 
-      // Optimize with parallel queries and specific field selection
-      const queries = [];
-      
       // Build optimized sales orders query
       let ordersQuery = supabase
         .from('sales_orders')
@@ -68,7 +70,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           id, customer_id, customer_name, agency_id, subtotal, 
           discount_percentage, discount_amount, total, total_invoiced,
           status, requires_approval, approved_by, approved_at,
-          latitude, longitude, created_at, created_by
+          latitude, longitude, order_number, created_at, created_by
         `);
       
       if (user.role === 'agent') {
@@ -79,21 +81,33 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         ordersQuery = ordersQuery.eq('agency_id', selectedAgencyId);
       }
       
-      queries.push(ordersQuery.order('created_at', { ascending: false }).limit(100));
-      
-      // Fetch sales order items with specific fields
-      const itemsQuery = supabase
-        .from('sales_order_items')
-        .select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total');
-      queries.push(itemsQuery);
-
-      const [ordersResult, itemsResult] = await Promise.all(queries);
+      const ordersResult = await ordersQuery.order('created_at', { ascending: false }).limit(100);
       
       if (ordersResult.error) throw ordersResult.error;
-      if (itemsResult.error) throw itemsResult.error;
       
-      const ordersData = ordersResult.data;
-      const itemsData = itemsResult.data;
+      const ordersData = ordersResult.data || [];
+      const orderIds = ordersData.map(order => order.id);
+      let itemsData: Array<{
+        id: string;
+        sales_order_id: string | null;
+        product_id: string | null;
+        product_name: string;
+        color: string;
+        size: string;
+        quantity: number;
+        unit_price: number;
+        total: number;
+      }> = [];
+
+      if (orderIds.length > 0) {
+        const itemsResult = await supabase
+          .from('sales_order_items')
+          .select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total')
+          .in('sales_order_id', orderIds);
+
+        if (itemsResult.error) throw itemsResult.error;
+        itemsData = itemsResult.data || [];
+      }
 
       // Helper: pick subset of items whose total is closest to the target subtotal.
       // This mitigates duplicate legacy rows (we lack delete perms on sales_order_items).
@@ -146,7 +160,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         
         return {
           id: order.id,
-          orderNumber: order.id,
+          orderNumber: order.order_number || order.id,
           customerId: order.customer_id,
           customerName: order.customer_name,
           agencyId: order.agency_id,
@@ -184,13 +198,15 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       const additionalQueries = [];
       
       // Build optimized invoices query
+      const invoiceFrom = (invoicePage - 1) * INVOICES_PAGE_SIZE;
+      const invoiceTo = invoiceFrom + INVOICES_PAGE_SIZE - 1;
       let invoicesQuery = supabase
         .from('invoices')
         .select(`
           id, sales_order_id, customer_id, customer_name, agency_id,
           subtotal, discount_amount, total, latitude, longitude,
           signature, created_at, created_by
-        `);
+        `, { count: 'exact' });
       
       if (user.role === 'agent') {
         invoicesQuery = invoicesQuery.eq('created_by', user.id);
@@ -200,13 +216,11 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
       }
       
-      additionalQueries.push(invoicesQuery.order('created_at', { ascending: false }).limit(100));
-      
-      // Fetch invoice items with specific fields
-      const invoiceItemsQuery = supabase
-        .from('invoice_items')
-        .select('id, invoice_id, product_id, product_name, color, size, quantity, unit_price, total');
-      additionalQueries.push(invoiceItemsQuery);
+      additionalQueries.push(
+        invoicesQuery
+          .order('created_at', { ascending: false })
+          .range(invoiceFrom, invoiceTo)
+      );
 
       // Fetch agencies for agency name lookup
       const agenciesQuery = supabase
@@ -241,26 +255,6 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         `);
       additionalQueries.push(productsQuery);
       
-      // Build optimized deliveries query
-      let deliveriesQuery = supabase
-        .from('deliveries')
-        .select(`
-          id, invoice_id, delivery_agent_id, agency_id, status,
-          scheduled_date, delivered_at, delivery_latitude, delivery_longitude,
-          delivery_signature, delivery_notes, received_by_name, received_by_phone,
-          created_at, created_by, updated_at
-        `);
-      
-      if (user.role === 'agent') {
-        deliveriesQuery = deliveriesQuery.or(`created_by.eq.${user.id},delivery_agent_id.eq.${user.id}`);
-      } else if (user.role === 'agency') {
-        deliveriesQuery = deliveriesQuery.eq('agency_id', user.agencyId);
-      } else if (user.role === 'superuser' && selectedAgencyId) {
-        deliveriesQuery = deliveriesQuery.eq('agency_id', selectedAgencyId);
-      }
-      
-      additionalQueries.push(deliveriesQuery.order('created_at', { ascending: false }).limit(100));
-      
       // Returns and return items
       let returnsQuery = supabase
         .from('returns')
@@ -285,28 +279,58 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         .select('id, return_id, invoice_item_id, product_id, product_name, color, size, quantity_returned, original_quantity, unit_price, total, reason');
       additionalQueries.push(returnItemsQuery);
 
-      const [invoicesResult, invoiceItemsResult, agenciesResult, customersResult, productsResult, deliveriesResult, returnsResult, returnItemsResult] = await Promise.all(additionalQueries);
+      const [invoicesResult, agenciesResult, customersResult, productsResult, returnsResult, returnItemsResult] = await Promise.all(additionalQueries);
       
       if (invoicesResult.error) throw invoicesResult.error;
-      if (invoiceItemsResult.error) throw invoiceItemsResult.error;
       if (agenciesResult.error) throw agenciesResult.error;
       if (customersResult.error) throw customersResult.error;
       if (productsResult.error) throw productsResult.error;
-      if (deliveriesResult.error) throw deliveriesResult.error;
       if (returnsResult.error) throw returnsResult.error;
       if (returnItemsResult.error) throw returnItemsResult.error;
       
-      const invoicesData = invoicesResult.data;
-      const invoiceItemsData = invoiceItemsResult.data;
+      const invoicesData = invoicesResult.data || [];
+      setInvoiceTotalCount(invoicesResult.count || 0);
       const agenciesData = agenciesResult.data;
       const customersData = customersResult.data;
       const productsData = productsResult.data;
-      const deliveriesData = deliveriesResult.data;
       const returnsData = returnsResult.data;
       const returnItemsData = returnItemsResult.data;
+      const invoiceIds = invoicesData.map((inv: any) => inv.id);
+
+      let invoiceItemsData: any[] = [];
+      let deliveriesData: any[] = [];
+
+      if (invoiceIds.length > 0) {
+        const [invoiceItemsResult, deliveriesResult] = await Promise.all([
+          Promise.all(
+            chunkArray(invoiceIds, 200).map((invoiceIdChunk) =>
+              fetchAllSupabaseRows<any>(() =>
+                supabase
+                  .from('invoice_items')
+                  .select('id, invoice_id, product_id, product_name, color, size, quantity, unit_price, total')
+                  .in('invoice_id', invoiceIdChunk)
+              )
+            )
+          ),
+          supabase
+            .from('deliveries')
+            .select(`
+              id, invoice_id, delivery_agent_id, agency_id, status,
+              scheduled_date, delivered_at, delivery_latitude, delivery_longitude,
+              delivery_signature, delivery_notes, received_by_name, received_by_phone,
+              created_at, created_by, updated_at
+            `)
+            .in('invoice_id', invoiceIds)
+            .order('created_at', { ascending: false })
+        ]);
+
+        if (deliveriesResult.error) throw deliveriesResult.error;
+
+        invoiceItemsData = invoiceItemsResult.flat();
+        deliveriesData = deliveriesResult.data || [];
+      }
 
       // Fetch collection allocations for invoices to compute outstanding
-      const invoiceIds = (invoicesData || []).map((inv: any) => inv.id);
       let allocationTotals: Record<string, number> = {};
       if (invoiceIds.length > 0) {
         const { data: allocationsData, error: allocationsError } = await supabase
@@ -504,7 +528,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     } finally {
       setIsLoading(false);
     }
-  }, [user.id, user.role, user.agencyId, selectedAgencyId]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage, toast]);
 
   // Memoized filtered orders to prevent unnecessary recalculations
   const filteredOrders = useMemo(() => {
@@ -560,6 +584,38 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     return order.status !== 'closed' && order.status !== 'cancelled' && order.status !== 'invoiced';
   }, []);
 
+  const handleViewOrder = async (order: SalesOrder) => {
+    try {
+      const { data, error } = await supabase
+        .from('sales_order_items')
+        .select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total')
+        .eq('sales_order_id', order.id);
+
+      if (error) throw error;
+
+      setSelectedOrder({
+        ...order,
+        items: (data || []).map((item) => ({
+          id: item.id,
+          productId: item.product_id || '',
+          productName: item.product_name,
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: Number(item.unit_price),
+          total: Number(item.total)
+        }))
+      });
+    } catch (error) {
+      console.error('Error loading sales order items:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load sales order items',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handleCloseOrder = async (orderId: string) => {
     try {
       const { error } = await supabase
@@ -593,7 +649,40 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     setConvertingToInvoiceOrder(null);
   }, [fetchData]);
 
+  const requiresAgencySelection = user.role === 'superuser' && !selectedAgencyId;
+  const createDisabled = customers.length === 0 || products.length === 0 || requiresAgencySelection;
+
   if (showCreateForm) {
+    if (requiresAgencySelection) {
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" onClick={() => setShowCreateForm(false)}>
+              Back
+            </Button>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">Create Sales Order</h2>
+              <p className="text-gray-600">Select an agency before creating a sales order</p>
+            </div>
+          </div>
+
+          <AgencySelector
+            user={user}
+            selectedAgencyId={selectedAgencyId}
+            onAgencyChange={(agencyId) => {
+              setSelectedAgencyId(agencyId);
+              setInvoicePage(1);
+              setSelectedOrder(null);
+              setEditingOrder(null);
+              setSearchTerm('');
+            }}
+            placeholder="Select agency for this sales order..."
+            showAllOption={false}
+          />
+        </div>
+      );
+    }
+
     if (customers.length === 0 || products.length === 0) {
       return (
         <div className="space-y-6">
@@ -645,6 +734,36 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   }
 
   if (showDirectInvoiceForm) {
+    if (requiresAgencySelection) {
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" onClick={() => setShowDirectInvoiceForm(false)}>
+              Back
+            </Button>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">Create Direct Invoice</h2>
+              <p className="text-gray-600">Select an agency before creating a direct invoice</p>
+            </div>
+          </div>
+
+          <AgencySelector
+            user={user}
+            selectedAgencyId={selectedAgencyId}
+            onAgencyChange={(agencyId) => {
+              setSelectedAgencyId(agencyId);
+              setInvoicePage(1);
+              setSelectedOrder(null);
+              setEditingOrder(null);
+              setSearchTerm('');
+            }}
+            placeholder="Select agency for this invoice..."
+            showAllOption={false}
+          />
+        </div>
+      );
+    }
+
     if (customers.length === 0 || products.length === 0) {
       return (
         <div className="space-y-6">
@@ -807,7 +926,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button 
-                      disabled={customers.length === 0 || products.length === 0}
+                      disabled={createDisabled}
                       className="group relative w-full lg:w-auto h-14 px-8 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
                     >
                       <Plus className="h-5 w-5 mr-3 group-hover:rotate-90 transition-transform duration-300" />
@@ -842,6 +961,11 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                {requiresAgencySelection && (
+                  <p className="mt-2 text-sm text-slate-600">
+                    Select an agency to create orders or invoices.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -853,6 +977,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           selectedAgencyId={selectedAgencyId}
           onAgencyChange={(agencyId) => {
             setSelectedAgencyId(agencyId);
+            setInvoicePage(1);
             setSelectedOrder(null);
             setEditingOrder(null);
             setSearchTerm('');
@@ -954,7 +1079,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
                 }
               </p>
               {!searchTerm && statusFilter === 'all' && (
-                <Button onClick={() => setShowCreateForm(true)} variant="outline" size="sm">
+                <Button onClick={() => setShowCreateForm(true)} variant="outline" size="sm" disabled={createDisabled}>
                   <Plus className="h-3 w-3 md:h-4 md:w-4 mr-1 md:mr-2" />
                   Create Order
                 </Button>
@@ -995,7 +1120,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
                           <Button 
                             size="sm" 
                             variant="outline"
-                            onClick={() => setSelectedOrder(order)}
+                            onClick={() => handleViewOrder(order)}
                             className="text-xs h-7 md:h-8"
                           >
                             <Eye className="h-3 w-3 md:h-4 md:w-4 mr-1" />
@@ -1052,6 +1177,10 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             invoices={invoices} 
             orders={orders}
             deliveries={deliveries}
+            currentPage={invoicePage}
+            pageSize={INVOICES_PAGE_SIZE}
+            totalCount={invoiceTotalCount}
+            onPageChange={setInvoicePage}
             onRefresh={fetchData}
           />
         </TabsContent>
