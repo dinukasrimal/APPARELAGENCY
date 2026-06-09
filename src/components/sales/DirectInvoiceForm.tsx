@@ -17,6 +17,7 @@ import { externalInventoryService, type ExternalInventoryItem } from '@/services
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 import CustomerSearch from '@/components/customers/CustomerSearch';
+import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
 
 interface DirectInvoiceFormProps {
   user: User;
@@ -505,6 +506,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
 
       const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
       const { subtotal, discountAmount, total, effectiveDiscountPercentage } = calculateTotals();
+      const invoiceNumber = await getNextInvoiceNumber(supabase, user.agencyId, user.agencyName);
 
       const discountValidation = validateDiscount(effectiveDiscountPercentage);
       if (discountValidation.requiresApproval) {
@@ -530,6 +532,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
           latitude: gpsCoordinates.latitude,
           longitude: gpsCoordinates.longitude,
           signature,
+          invoice_number: invoiceNumber,
           created_by: user.id
           // No sales_order_id - this is a direct invoice
         })

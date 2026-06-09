@@ -2,18 +2,19 @@ import { useState } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, BarChart3, Calendar, TrendingUp, FileText, Users } from 'lucide-react';
+import { ArrowLeft, BarChart3, Calendar, TrendingUp, FileText, Users, WalletCards } from 'lucide-react';
 import EnhancedReports from './EnhancedReports';
 import DailyLogReport from './DailyLogReport';
 import CategorySizeInvoiceReport from './CategorySizeInvoiceReport';
 import CustomerEngagementReport from './CustomerEngagementReport';
+import AgingOutstandingReport from './AgingOutstandingReport';
 
 interface ReportsProps {
   user: User;
   onBack: () => void;
 }
 
-type ReportType = 'main' | 'enhanced' | 'daily-log' | 'category-size' | 'customer-engagement';
+type ReportType = 'main' | 'enhanced' | 'daily-log' | 'category-size' | 'customer-engagement' | 'aging-outstanding';
 
 const Reports = ({ user, onBack }: ReportsProps) => {
   const [activeReport, setActiveReport] = useState<ReportType>('main');
@@ -47,6 +48,13 @@ const Reports = ({ user, onBack }: ReportsProps) => {
       icon: Users,
       color: 'bg-orange-500',
     },
+    {
+      id: 'aging-outstanding',
+      title: 'Aging Outstanding Report',
+      description: 'Review outstanding invoices by 30, 60, 90, 120, and 120+ day aging buckets',
+      icon: WalletCards,
+      color: 'bg-cyan-500',
+    },
   ];
 
   const renderActiveReport = () => {
@@ -59,6 +67,8 @@ const Reports = ({ user, onBack }: ReportsProps) => {
         return <CategorySizeInvoiceReport user={user} onBack={() => setActiveReport('main')} />;
       case 'customer-engagement':
         return <CustomerEngagementReport user={user} onBack={() => setActiveReport('main')} />;
+      case 'aging-outstanding':
+        return <AgingOutstandingReport user={user} onBack={() => setActiveReport('main')} />;
       default:
         return null;
     }
@@ -131,6 +141,9 @@ const Reports = ({ user, onBack }: ReportsProps) => {
           </div>
           <div>
             <strong>Customer Engagement Analytics:</strong> Essential for analyzing lead conversion and sales team effectiveness.
+          </div>
+          <div>
+            <strong>Aging Outstanding Report:</strong> Track overdue invoice balances and cheque impact on outstanding amounts.
           </div>
         </div>
       </div>

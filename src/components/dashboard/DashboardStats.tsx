@@ -6,6 +6,7 @@ import { useAgency } from '@/hooks/useAgency';
 import { Badge } from '@/components/ui/badge';
 import { 
   Users, 
+  UserCheck,
   ShoppingCart, 
   Package, 
   MapPin,
@@ -14,16 +15,23 @@ import {
 } from 'lucide-react';
 import DashboardMap from './DashboardMap';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface DashboardStatsProps {
   user: User;
 }
+
+type ActiveCustomerInvoice = {
+  customer_id: string | null;
+  customer_name: string;
+};
 
 const DashboardStats = ({ user }: DashboardStatsProps) => {
   const { agency } = useAgency(user.agencyId);
   
   const [stats, setStats] = useState({
     totalCustomers: 0,
+    activeCustomers: 0,
     totalSalesOrders: 0,
     totalProducts: 0,
     todayVisits: 0
@@ -47,12 +55,39 @@ const DashboardStats = ({ user }: DashboardStatsProps) => {
     }
   };
 
+  const fetchActiveCustomersCount = async (agencyId?: string) => {
+    const activeWindowStart = new Date();
+    activeWindowStart.setDate(activeWindowStart.getDate() - 90);
+
+    const activeCustomerInvoices = await fetchAllSupabaseRows<ActiveCustomerInvoice>(() => {
+      let query = supabase
+        .from('invoices')
+        .select('customer_id, customer_name')
+        .gte('created_at', activeWindowStart.toISOString());
+
+      if (agencyId) {
+        query = query.eq('agency_id', agencyId);
+      }
+
+      return query;
+    });
+
+    return new Set(
+      activeCustomerInvoices
+        .map(invoice => invoice.customer_id || invoice.customer_name)
+        .filter(Boolean)
+    ).size;
+  };
+
   const fetchSuperuserStats = async () => {
     try {
       // Fetch customer count across all agencies
       const { count: customerCount } = await supabase
         .from('customers')
         .select('*', { count: 'exact', head: true });
+
+      // Customers with at least one invoice in the last 90 days are active
+      const activeCustomers = await fetchActiveCustomersCount();
 
       // Fetch sales orders count across all agencies
       const { count: salesCount } = await supabase
@@ -74,6 +109,7 @@ const DashboardStats = ({ user }: DashboardStatsProps) => {
 
       setStats({
         totalCustomers: customerCount || 0,
+        activeCustomers,
         totalSalesOrders: salesCount || 0,
         totalProducts: productCount || 0,
         todayVisits: visitCount || 0
@@ -90,6 +126,9 @@ const DashboardStats = ({ user }: DashboardStatsProps) => {
         .from('customers')
         .select('*', { count: 'exact', head: true })
         .eq('agency_id', user.agencyId);
+
+      // Customers with at least one invoice in the last 90 days are active
+      const activeCustomers = await fetchActiveCustomersCount(user.agencyId);
 
       // Fetch sales orders count for specific agency
       const { count: salesCount } = await supabase
@@ -113,6 +152,7 @@ const DashboardStats = ({ user }: DashboardStatsProps) => {
 
       setStats({
         totalCustomers: customerCount || 0,
+        activeCustomers,
         totalSalesOrders: salesCount || 0,
         totalProducts: productCount || 0,
         todayVisits: visitCount || 0
@@ -129,6 +169,13 @@ const DashboardStats = ({ user }: DashboardStatsProps) => {
       icon: Users,
       color: 'text-blue-600',
       bgColor: 'bg-blue-50'
+    },
+    {
+      title: user.role === 'superuser' ? 'Active Customers - 90 Days (All Agencies)' : 'Active Customers - 90 Days',
+      value: stats.activeCustomers,
+      icon: UserCheck,
+      color: 'text-emerald-600',
+      bgColor: 'bg-emerald-50'
     },
     {
       title: user.role === 'superuser' ? 'Sales Orders (All Agencies)' : 'Sales Orders',
@@ -169,7 +216,7 @@ const DashboardStats = ({ user }: DashboardStatsProps) => {
       </div>
 
       {/* Modern Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
         {statCards.map((stat, index) => {
           const Icon = stat.icon;
           return (

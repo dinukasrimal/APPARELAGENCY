@@ -23,6 +23,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import AgencySelector from '@/components/common/AgencySelector';
 import { chunkArray, fetchAllSupabaseRows } from '@/utils/supabasePagination';
+import { getDisplayInvoiceNumber } from '@/utils/invoiceNumber';
 
 interface SalesOrdersProps {
   user: User;
@@ -203,7 +204,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       let invoicesQuery = supabase
         .from('invoices')
         .select(`
-          id, sales_order_id, customer_id, customer_name, agency_id,
+          id, invoice_number, sales_order_id, customer_id, customer_name, agency_id,
           subtotal, discount_amount, total, latitude, longitude,
           signature, created_at, created_by
         `, { count: 'exact' });
@@ -375,7 +376,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       });
 
       // Transform invoices with items
-      const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => {
+      const transformedInvoices: Invoice[] = (invoicesData || []).map((invoice, index) => {
         const invoiceItems = (invoiceItemsData || []).filter(item => item.invoice_id === invoice.id);
         const agency = (agenciesData || []).find((ag: any) => ag.id === invoice.agency_id);
         const allocated = allocationTotals[invoice.id] || 0;
@@ -388,7 +389,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         
         return {
           id: invoice.id,
-          invoiceNumber: invoice.id,
+          invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, agency?.name, invoice.agency_id),
           salesOrderId: invoice.sales_order_id,
           customerId: invoice.customer_id,
           customerName: invoice.customer_name,

@@ -19,6 +19,30 @@ interface QuarterlyTargetsManagementProps {
   user: User;
 }
 
+const getCurrentQuarter = (): 'Q1' | 'Q2' | 'Q3' | 'Q4' => {
+  const month = new Date().getMonth() + 1;
+
+  if (month <= 3) return 'Q1';
+  if (month <= 6) return 'Q2';
+  if (month <= 9) return 'Q3';
+  return 'Q4';
+};
+
+const months = [
+  { value: '1', label: 'January' },
+  { value: '2', label: 'February' },
+  { value: '3', label: 'March' },
+  { value: '4', label: 'April' },
+  { value: '5', label: 'May' },
+  { value: '6', label: 'June' },
+  { value: '7', label: 'July' },
+  { value: '8', label: 'August' },
+  { value: '9', label: 'September' },
+  { value: '10', label: 'October' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'December' }
+];
+
 const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) => {
   const [currentUserName, setCurrentUserName] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
@@ -72,9 +96,11 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   // Tab state
   const [activeTab, setActiveTab] = useState('external');
   
-  // Filter states for external targets only
-  const [selectedQuarter, setSelectedQuarter] = useState('all');
-  const [selectedYear, setSelectedYear] = useState('all');
+  // Period filters for targets and comparisons
+  const [selectedQuarter, setSelectedQuarter] = useState<string>(getCurrentQuarter());
+  const [selectedYear, setSelectedYear] = useState<string>(new Date().getFullYear().toString());
+  const [comparisonMonth, setComparisonMonth] = useState<string>((new Date().getMonth() + 1).toString());
+  const [comparisonYear, setComparisonYear] = useState<string>(new Date().getFullYear().toString());
   
   // Expandable card states
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
@@ -285,11 +311,14 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
     try {
       console.log('🔄 Fetching comparison data for:', currentUserName);
       
-      const currentYear = selectedYear === 'all' ? new Date().getFullYear() : parseInt(selectedYear);
+      const currentYear = parseInt(comparisonYear);
+      const currentMonth = parseInt(comparisonMonth);
       const comparison = await ExternalDataService.getInstance().getTargetVsAchievementComparison(
         user,
         currentUserName,
-        currentYear
+        currentYear,
+        currentMonth,
+        user.role === 'superuser' ? selectedAgencyId : user.agencyId
       );
       
       setComparisonData(comparison);
@@ -317,7 +346,7 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
     if (activeTab === 'comparison' && currentUserName && user) {
       fetchComparisonData();
     }
-  }, [activeTab, currentUserName, selectedYear, user]);
+  }, [activeTab, currentUserName, comparisonMonth, comparisonYear, selectedAgencyId, user]);
 
 
   // Calculate summary for external targets only
@@ -332,7 +361,13 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   const achievementPercentage = totalTarget > 0 ? (totalAchieved / totalTarget) * 100 : 0;
 
   const quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
-  const years = [...new Set((externalTargets || []).map(t => t.target_year).filter(Boolean))].sort((a, b) => b - a);
+  const years = [
+    ...new Set([
+      new Date().getFullYear(),
+      ...(externalTargets || []).map(t => t.target_year).filter(Boolean)
+    ])
+  ].sort((a, b) => b - a);
+  const comparisonMonthLabel = months.find(month => month.value === comparisonMonth)?.label || 'Selected Month';
 
   if (profileLoading || externalLoading) {
     return (
@@ -481,10 +516,10 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
         </Select>
 
         <Button variant="outline" onClick={() => {
-          setSelectedQuarter('all');
-          setSelectedYear('all');
+          setSelectedQuarter(getCurrentQuarter());
+          setSelectedYear(new Date().getFullYear().toString());
         }}>
-          Clear Filters
+          Current Period
         </Button>
       </div>
 
@@ -652,6 +687,53 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
         </TabsContent>
 
         <TabsContent value="comparison" className="space-y-6 mt-6">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div className="flex items-center gap-2">
+              <GitCompare className="h-5 w-5 text-blue-600" />
+              <h3 className="font-medium text-blue-900">
+                Target vs Achievement - {comparisonMonthLabel} {comparisonYear}
+              </h3>
+            </div>
+            <p className="text-sm text-blue-700 mt-1">
+              Achievement is calculated from internal invoice totals for the selected period.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Select value={comparisonMonth} onValueChange={setComparisonMonth}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select Month" />
+              </SelectTrigger>
+              <SelectContent>
+                {months.map((month) => (
+                  <SelectItem key={month.value} value={month.value}>
+                    {month.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={comparisonYear} onValueChange={setComparisonYear}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select Year" />
+              </SelectTrigger>
+              <SelectContent>
+                {years.map((year) => (
+                  <SelectItem key={year} value={year.toString()}>
+                    {year}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Button variant="outline" onClick={() => {
+              setComparisonMonth((new Date().getMonth() + 1).toString());
+              setComparisonYear(new Date().getFullYear().toString());
+            }}>
+              Current Month
+            </Button>
+          </div>
+
           {comparisonLoading ? (
             <div className="text-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>

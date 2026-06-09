@@ -10,6 +10,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { Calendar, Users, ShoppingCart, AlertTriangle, Download, TrendingUp, Percent, ArrowLeft, MapPin, Receipt, DollarSign } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
+import { getDisplayInvoiceNumber } from '@/utils/invoiceNumber';
 
 interface Agency {
   id: string;
@@ -73,16 +75,29 @@ interface SalesOrderDetail {
   createdByName: string;
 }
 
+interface InternalInvoiceDetail {
+  id: string;
+  invoiceNumber: string | null;
+  customerName: string;
+  total: number;
+  createdAt: string;
+  createdBy: string | null;
+  createdByName: string;
+}
+
 interface DailySummary {
   date: string;
   totalKm: number;
   totalExpenses: number;
   totalSales: number;
+  internalInvoiceValue: number;
+  internalInvoiceCount: number;
   customersOnboardedDetails: CustomerOnboardedDetail[];
   nonProductiveDetails: NonProductiveDetail[];
   odometerDetails: OdometerDetail[];
   expenseDetails: ExpenseDetail[];
   salesOrderDetails: SalesOrderDetail[];
+  internalInvoiceDetails: InternalInvoiceDetail[];
 }
 
 interface EnhancedReportsProps {
@@ -108,6 +123,8 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
     totalKm: 0,
     totalExpenses: 0,
     totalSales: 0,
+    internalInvoiceValue: 0,
+    internalInvoiceCount: 0,
   });
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
@@ -125,7 +142,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       fetchReportData();
     } else {
       setDailySummaries([]);
-      setSummaryTotals({ totalKm: 0, totalExpenses: 0, totalSales: 0 });
+      setSummaryTotals({ totalKm: 0, totalExpenses: 0, totalSales: 0, internalInvoiceValue: 0, internalInvoiceCount: 0 });
     }
   }, [selectedAgency, startDate, endDate]);
 
@@ -247,6 +264,22 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       if (customersDetailRes.error) throw customersDetailRes.error;
       if (nonProductiveDetailRes.error) throw nonProductiveDetailRes.error;
 
+      const internalInvoices = await fetchAllSupabaseRows<{
+        id: string;
+        invoice_number: string | null;
+        customer_name: string;
+        total: number | null;
+        created_at: string;
+        created_by: string | null;
+      }>(() =>
+        supabase
+          .from('invoices')
+          .select('id, invoice_number, customer_name, total, created_at, created_by')
+          .eq('agency_id', selectedAgency)
+          .gte('created_at', startDateTime)
+          .lte('created_at', endDateTime)
+      );
+
       const timeTracking = timeTrackingRes.data || [];
       const expenses = expensesRes.data || [];
       const salesOrders = salesOrdersRes.data || [];
@@ -274,6 +307,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       timeTracking.forEach((record) => record.user_id && userIds.add(record.user_id));
       expenses.forEach((expense) => expense.user_id && userIds.add(expense.user_id));
       salesOrders.forEach((order) => order.created_by && userIds.add(order.created_by));
+      internalInvoices.forEach((invoice) => invoice.created_by && userIds.add(invoice.created_by));
       customersDetail.forEach((customer) => customer.created_by && userIds.add(customer.created_by));
       nonProductiveDetail.forEach((visit) => visit.user_id && userIds.add(visit.user_id));
 
@@ -295,11 +329,14 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
             totalKm: 0,
             totalExpenses: 0,
             totalSales: 0,
+            internalInvoiceValue: 0,
+            internalInvoiceCount: 0,
             customersOnboardedDetails: [],
             nonProductiveDetails: [],
             odometerDetails: [],
             expenseDetails: [],
             salesOrderDetails: [],
+            internalInvoiceDetails: [],
           });
         }
         return summaryMap.get(date)!;
@@ -413,6 +450,25 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
         });
       });
 
+      const selectedAgencyName = agencies.find((agency) => agency.id === selectedAgency)?.name || user.agencyName || '';
+      internalInvoices.forEach((invoice, index) => {
+        const dateKey = toDateKey(invoice.created_at);
+        if (!dateKey) return;
+        const summary = getSummary(dateKey);
+        const total = Number(invoice.total || 0);
+        summary.internalInvoiceValue += total;
+        summary.internalInvoiceCount += 1;
+        summary.internalInvoiceDetails.push({
+          id: invoice.id,
+          invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, selectedAgencyName, selectedAgency),
+          customerName: invoice.customer_name,
+          total,
+          createdAt: invoice.created_at,
+          createdBy: invoice.created_by,
+          createdByName: invoice.created_by ? (userNameById.get(invoice.created_by) || 'Unknown') : 'Unknown',
+        });
+      });
+
       const dailySummariesList = Array.from(summaryMap.values()).sort((a, b) =>
         b.date.localeCompare(a.date)
       );
@@ -422,9 +478,11 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           acc.totalKm += day.totalKm;
           acc.totalExpenses += day.totalExpenses;
           acc.totalSales += day.totalSales;
+          acc.internalInvoiceValue += day.internalInvoiceValue;
+          acc.internalInvoiceCount += day.internalInvoiceCount;
           return acc;
         },
-        { totalKm: 0, totalExpenses: 0, totalSales: 0 }
+        { totalKm: 0, totalExpenses: 0, totalSales: 0, internalInvoiceValue: 0, internalInvoiceCount: 0 }
       );
 
       setDailySummaries(dailySummariesList);
@@ -575,6 +633,25 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           selectedAgencyName,
         ]);
       });
+
+      day.internalInvoiceDetails.forEach((detail) => {
+        rows.push([
+          day.date,
+          'Internal Invoice',
+          detail.createdByName,
+          detail.customerName,
+          '',
+          detail.invoiceNumber || '',
+          '',
+          '',
+          '',
+          '',
+          detail.total.toString(),
+          '',
+          detail.createdAt,
+          selectedAgencyName,
+        ]);
+      });
     });
 
     const csvContent = [headers, ...rows]
@@ -649,6 +726,14 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       icon: DollarSign,
       color: 'text-emerald-600',
       bgColor: 'bg-emerald-50'
+    },
+    {
+      title: 'Internal Invoice Value',
+      value: formatCurrency(summaryTotals.internalInvoiceValue),
+      subtitle: `${summaryTotals.internalInvoiceCount} invoice${summaryTotals.internalInvoiceCount === 1 ? '' : 's'}`,
+      icon: Receipt,
+      color: 'text-cyan-600',
+      bgColor: 'bg-cyan-50'
     }
   ];
 
@@ -773,7 +858,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
               })}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
               {summaryCards.map((metric, index) => {
                 const Icon = metric.icon;
                 return (
@@ -914,6 +999,9 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
                               </Badge>
                               <Badge className="bg-emerald-100 text-emerald-700 border border-emerald-200">
                                 {formatCurrency(day.totalSales)}
+                              </Badge>
+                              <Badge className="bg-teal-100 text-teal-700 border border-teal-200">
+                                Invoices {formatCurrency(day.internalInvoiceValue)}
                               </Badge>
                             </div>
                           </div>
@@ -1077,6 +1165,42 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
                                           {formatCurrency(detail.total)}
                                         </td>
                                         <td className="px-3 py-2 text-slate-600">{detail.createdByName}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <h4 className="text-sm font-semibold text-slate-700 mb-2">Internal Invoices</h4>
+                            {day.internalInvoiceDetails.length === 0 ? (
+                              <p className="text-sm text-slate-500">No internal invoices recorded for this day.</p>
+                            ) : (
+                              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                                <table className="min-w-full text-sm">
+                                  <thead className="bg-slate-50 text-slate-600">
+                                    <tr>
+                                      <th className="px-3 py-2 text-left font-medium">Customer</th>
+                                      <th className="px-3 py-2 text-left font-medium">Invoice #</th>
+                                      <th className="px-3 py-2 text-left font-medium">Total</th>
+                                      <th className="px-3 py-2 text-left font-medium">Created By</th>
+                                      <th className="px-3 py-2 text-left font-medium">Created At</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {day.internalInvoiceDetails.map((detail) => (
+                                      <tr key={detail.id} className="border-t">
+                                        <td className="px-3 py-2 text-slate-700">{detail.customerName}</td>
+                                        <td className="px-3 py-2 text-slate-600 font-mono text-xs">{detail.invoiceNumber}</td>
+                                        <td className="px-3 py-2 text-slate-700 font-semibold">
+                                          {formatCurrency(detail.total)}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-600">{detail.createdByName}</td>
+                                        <td className="px-3 py-2 text-slate-500">
+                                          {new Date(detail.createdAt).toLocaleString()}
+                                        </td>
                                       </tr>
                                     ))}
                                   </tbody>

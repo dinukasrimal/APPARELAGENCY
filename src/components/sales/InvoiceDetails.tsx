@@ -80,7 +80,7 @@ const InvoiceDetails = ({ invoice, salesOrder, onBack, onPrint }: InvoiceDetails
           </Button>
           <div>
             <h2 className="text-2xl font-bold text-gray-900">Invoice Details</h2>
-            <p className="text-gray-600">{invoice.id}</p>
+            <p className="text-gray-600 font-mono text-sm">{invoice.invoiceNumber}</p>
           </div>
         </div>
         <Button onClick={onPrint} className="bg-blue-600 hover:bg-blue-700">

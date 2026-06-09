@@ -1,6 +1,7 @@
 import { supabase } from '@/integrations/supabase/client';
 import { performanceService } from './performance.service';
 import { User } from '@/types/auth';
+import { getDisplayInvoiceNumber } from '@/utils/invoiceNumber';
 
 interface QueryOptions {
   cacheKey?: string;
@@ -146,7 +147,7 @@ class OptimizedDataService {
       let invoicesQuery = supabase
         .from('invoices')
         .select(`
-          id, sales_order_id, customer_id, customer_name, agency_id,
+          id, invoice_number, sales_order_id, customer_id, customer_name, agency_id,
           subtotal, discount_amount, total, latitude, longitude,
           signature, created_at, created_by
         `);
@@ -213,12 +214,12 @@ class OptimizedDataService {
       });
 
       // Transform invoices with items
-      const transformedInvoices = (invoicesResult.data || []).map(invoice => {
+      const transformedInvoices = (invoicesResult.data || []).map((invoice, index) => {
         const invoiceItems = (invoiceItemsResult.data || []).filter(item => item.invoice_id === invoice.id);
         
         return {
           id: invoice.id,
-          invoiceNumber: invoice.id,
+          invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, user.agencyName, invoice.agency_id),
           salesOrderId: invoice.sales_order_id,
           customerId: invoice.customer_id,
           customerName: invoice.customer_name,

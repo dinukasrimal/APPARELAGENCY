@@ -13,6 +13,7 @@ import { CollectionForm } from '../collections/CollectionForm';
 import { CollectionDetails } from '../collections/CollectionDetails';
 import InvoiceDetails from '../sales/InvoiceDetails';
 import { roundMoney } from '@/utils/money';
+import { getDisplayInvoiceNumber } from '@/utils/invoiceNumber';
 
 interface CustomerInvoiceDetailsProps {
   user: User;
@@ -52,13 +53,14 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
       }
 
       // Transform invoices data
-      const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => ({
+      const transformedInvoices: Invoice[] = (invoicesData || []).map((invoice, index) => ({
         id: invoice.id,
-        invoiceNumber: invoice.invoice_number || invoice.id,
+        invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, customer.agencyId, invoice.agency_id),
         salesOrderId: invoice.sales_order_id,
         customerId: invoice.customer_id,
         customerName: invoice.customer_name,
         agencyId: invoice.agency_id,
+        agencyName: customer.agencyId,
         items: [],
         subtotal: invoice.subtotal,
         discountAmount: invoice.discount_amount,
@@ -174,14 +176,14 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         const chequeDate = new Date(cheque.chequeDate);
         chequeDate.setHours(23, 59, 59, 999); // Set to end of cheque date
         
-        if (cheque.status === 'returned') {
+        if (cheque.status === 'returned' || cheque.status === 'held') {
           // Returned cheques add back to outstanding
           returnedChequesAmount += cheque.amount;
           returnedChequesCount++;
-        } else if (chequeDate <= today) {
+        } else if (cheque.status !== 'resolved' && chequeDate <= today) {
           // Only count cheques whose date has arrived as realized payments
           totalRealizedChequePayments += cheque.amount;
-        } else {
+        } else if (cheque.status !== 'resolved') {
           // Future-dated cheques are unrealized payments
           totalUnrealizedChequePayments += cheque.amount;
         }

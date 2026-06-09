@@ -9,6 +9,8 @@ import SignatureCapture from './SignatureCapture';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { externalInventoryService } from '@/services/external-inventory.service';
+import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
+import { Database } from '@/integrations/supabase/types';
 
 interface CreateInvoiceFormProps {
   user: User;
@@ -135,6 +137,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
 
       const coords = await captureGPS();
       setGpsCoordinates(coords);
+      const invoiceNumber = await getNextInvoiceNumber(supabase, salesOrder.agencyId, user.agencyName);
 
       console.log('Creating invoice with data:', {
         salesOrder,
@@ -143,7 +146,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
       });
 
       // Insert invoice
-      const invoiceData: any = {
+      const invoiceData: Database['public']['Tables']['invoices']['Insert'] = {
         customer_id: salesOrder.customerId,
         customer_name: salesOrder.customerName,
         agency_id: salesOrder.agencyId,
@@ -153,6 +156,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
         latitude: coords.latitude,
         longitude: coords.longitude,
         signature,
+        invoice_number: invoiceNumber,
         created_by: user.id
       };
 
@@ -260,7 +264,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
 
       const invoiceResponseData = {
         salesOrderId: salesOrder.id,
-        invoiceNumber: invoice.id,
+        invoiceNumber: invoice.invoice_number || invoiceNumber,
         customerId: salesOrder.customerId,
         customerName: salesOrder.customerName,
         agencyId: salesOrder.agencyId,

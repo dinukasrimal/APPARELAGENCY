@@ -15,6 +15,7 @@ import { CollectionDetails } from './CollectionDetails';
 import AgencySelector from '@/components/common/AgencySelector';
 import { useAgencies } from '@/hooks/useAgency';
 import { roundMoney } from '@/utils/money';
+import { getDisplayInvoiceNumber } from '@/utils/invoiceNumber';
 
 interface CollectionsProps {
   user: User;
@@ -104,24 +105,30 @@ const Collections = ({ user }: CollectionsProps) => {
       }
 
       // Transform invoices data
-      const transformedInvoices: Invoice[] = (invoicesData || []).map(invoice => ({
-        id: invoice.id,
-        salesOrderId: invoice.sales_order_id,
-        customerId: invoice.customer_id,
-        customerName: invoice.customer_name,
-        agencyId: invoice.agency_id,
-        items: [], // We'll need to fetch items separately if needed
-        subtotal: invoice.subtotal,
-        discountAmount: invoice.discount_amount,
-        total: invoice.total,
-        gpsCoordinates: {
-          latitude: invoice.latitude,
-          longitude: invoice.longitude
-        },
-        signature: invoice.signature,
-        createdAt: new Date(invoice.created_at),
-        createdBy: invoice.created_by
-      }));
+      const transformedInvoices: Invoice[] = (invoicesData || []).map((invoice, index) => {
+        const agency = agencies.find((item) => item.id === invoice.agency_id);
+
+        return {
+          id: invoice.id,
+          invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, agency?.name, invoice.agency_id),
+          salesOrderId: invoice.sales_order_id,
+          customerId: invoice.customer_id,
+          customerName: invoice.customer_name,
+          agencyId: invoice.agency_id,
+          agencyName: agency?.name || '',
+          items: [], // We'll need to fetch items separately if needed
+          subtotal: invoice.subtotal,
+          discountAmount: invoice.discount_amount,
+          total: invoice.total,
+          gpsCoordinates: {
+            latitude: invoice.latitude,
+            longitude: invoice.longitude
+          },
+          signature: invoice.signature,
+          createdAt: new Date(invoice.created_at),
+          createdBy: invoice.created_by
+        };
+      });
 
       // Fetch collections for the agency
       let transformedCollections: Collection[] = [];
@@ -249,14 +256,14 @@ const Collections = ({ user }: CollectionsProps) => {
           const chequeDate = new Date(cheque.chequeDate);
           chequeDate.setHours(23, 59, 59, 999); // Set to end of cheque date
           
-          if (cheque.status === 'returned') {
+          if (cheque.status === 'returned' || cheque.status === 'held') {
             // Returned cheques add back to outstanding
             returnedChequesAmount += cheque.amount;
             returnedChequesCount++;
-          } else if (chequeDate <= today) {
+          } else if (cheque.status !== 'resolved' && chequeDate <= today) {
             // Only count cheques whose date has arrived as realized payments
             totalRealizedChequePayments += cheque.amount;
-          } else {
+          } else if (cheque.status !== 'resolved') {
             // Future-dated cheques are unrealized payments
             totalUnrealizedChequePayments += cheque.amount;
           }
@@ -298,7 +305,7 @@ const Collections = ({ user }: CollectionsProps) => {
           
           return {
             id: invoice.id,
-            invoiceNumber: invoice.id, // Using ID as invoice number for now
+            invoiceNumber: invoice.invoiceNumber,
             total: invoice.total,
             collectedAmount,
             outstandingAmount,

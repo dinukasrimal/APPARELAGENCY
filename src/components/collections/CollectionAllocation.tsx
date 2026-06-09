@@ -89,7 +89,7 @@ export const CollectionAllocation: React.FC<CollectionAllocationProps> = ({
                   return (
                   <div key={invoice.id} className="flex items-center justify-between p-4 border rounded-lg">
                     <div className="flex-1">
-                      <div className="font-medium">Invoice #{invoice.id}</div>
+                      <div className="font-medium">Invoice #{invoice.invoiceNumber}</div>
                       <div className="text-sm text-muted-foreground">
                         Outstanding: LKR {outstandingAmount.toFixed(2)} • 
                         Total: LKR {invoice.total.toFixed(2)} • 

@@ -158,7 +158,18 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
       console.log('🆕 UPDATED CODE: Adding customer:', customerData);
       console.log('🖼️ Photo data:', customerData.storefrontPhoto?.substring(0, 50));
       
-      const agencyId = user.agencyId || '00000000-0000-0000-0000-000000000000';
+      const agencyId = user.role === 'superuser' && selectedAgencyFilter !== 'all'
+        ? selectedAgencyFilter
+        : user.agencyId;
+
+      if (!agencyId) {
+        toast({
+          title: "Agency required",
+          description: "Select an agency before adding a customer.",
+          variant: "destructive",
+        });
+        return;
+      }
       
       // Check for duplicates before adding
       const isDuplicate = await checkForDuplicates(customerData.phone, agencyId);
@@ -428,7 +439,18 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
   const handleDuplicateCheck = async () => {
     if (!duplicateCheck.trim()) return;
     
-    const agencyId = user.agencyId || '00000000-0000-0000-0000-000000000000';
+    const agencyId = user.role === 'superuser' && selectedAgencyFilter !== 'all'
+      ? selectedAgencyFilter
+      : user.agencyId;
+
+    if (!agencyId) {
+      toast({
+        title: "Agency required",
+        description: "Select an agency before checking duplicates.",
+        variant: "destructive",
+      });
+      return;
+    }
     const isDuplicate = await checkForDuplicates(duplicateCheck, agencyId);
     
     if (isDuplicate) {

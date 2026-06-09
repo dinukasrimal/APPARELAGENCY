@@ -114,8 +114,18 @@ const CustomerManagement = ({ user }: CustomerManagementProps) => {
     try {
       console.log('Adding customer:', customerData);
       
-      // Use the user's agency ID or a default one
-      const agencyId = user.agencyId || '00000000-0000-0000-0000-000000000000';
+      const agencyId = user.role === 'superuser' && selectedAgencyFilter !== 'all'
+        ? selectedAgencyFilter
+        : user.agencyId;
+
+      if (!agencyId) {
+        toast({
+          title: "Agency required",
+          description: "Select an agency before adding a customer.",
+          variant: "destructive",
+        });
+        return;
+      }
       
       const { data, error } = await supabase
         .from('customers')

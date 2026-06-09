@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { ArrowLeft, Search, FileX, AlertTriangle, Calendar } from 'lucide-react';
+import { ArrowLeft, Search, FileX, AlertTriangle, Banknote, CheckCircle2, Landmark, Pause, Play } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import AgencySelector from '@/components/common/AgencySelector';
@@ -27,21 +27,69 @@ interface ChequeInfo {
   customerId: string;
   collectionId: string;
   status: string;
+  returnReason?: string;
+  returnedAt?: Date;
+  resolutionMethod?: string;
+  resolvedAt?: Date;
 }
 
 const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
   const [cheques, setCheques] = useState<ChequeInfo[]>([]);
+  const [returnedCheques, setReturnedCheques] = useState<ChequeInfo[]>([]);
   const [filteredCheques, setFilteredCheques] = useState<ChequeInfo[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCheque, setSelectedCheque] = useState<ChequeInfo | null>(null);
   const [returnReason, setReturnReason] = useState('');
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
+  const [recoveryCheque, setRecoveryCheque] = useState<ChequeInfo | null>(null);
+  const [replacementCheque, setReplacementCheque] = useState({
+    chequeNumber: '',
+    bankName: '',
+    amount: 0,
+    chequeDate: new Date().toISOString().split('T')[0],
+  });
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
     user.role === 'superuser' ? null : user.agencyId
   );
   const { toast } = useToast();
+
+  const getLocalDateKey = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const getChequeDate = (dateValue: string) => new Date(`${dateValue}T00:00:00`);
+
+  const getAutoStatus = (status: string | null | undefined, chequeDateKey: string) => {
+    if (status === 'pending' && chequeDateKey <= getLocalDateKey(new Date())) return 'cleared';
+    return status || 'pending';
+  };
+
+  const updateCheque = async (
+    cheque: ChequeInfo,
+    values: Record<string, string | null>
+  ) => {
+    const { error } = await supabase
+      .from('collection_cheques')
+      .update(values)
+      .eq('id', cheque.id);
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: `Failed to update cheque: ${error.message}`,
+        variant: "destructive",
+      });
+      return false;
+    }
+
+    await fetchCheques();
+    return true;
+  };
 
   useEffect(() => {
     fetchCheques();
@@ -73,7 +121,11 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
             bank_name,
             amount,
             cheque_date,
-            status
+            status,
+            return_reason,
+            returned_at,
+            resolution_method,
+            resolved_at
           )
         `)
         .not('collection_cheques', 'is', null);
@@ -95,29 +147,66 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
         return;
       }
 
+      const duePendingChequeIds: string[] = [];
+
       // Transform the data into flat cheque list
-      const chequesList: ChequeInfo[] = [];
+      const outstandingChequesList: ChequeInfo[] = [];
+      const returnedChequesList: ChequeInfo[] = [];
       
       collections?.forEach(collection => {
         collection.collection_cheques?.forEach(cheque => {
-          // Only include cheques that are not already returned
-          if (cheque.status !== 'returned') {
-            chequesList.push({
-              id: cheque.id,
-              chequeNumber: cheque.cheque_number,
-              bankName: cheque.bank_name,
-              amount: cheque.amount,
-              chequeDate: new Date(cheque.cheque_date),
-              customerName: collection.customer_name,
-              customerId: collection.customer_id,
-              collectionId: collection.id,
-              status: cheque.status
-            });
+          const chequeDateKey = cheque.cheque_date;
+          const storedStatus = cheque.status || 'pending';
+          const effectiveStatus = getAutoStatus(storedStatus, chequeDateKey);
+
+          if (storedStatus === 'pending' && effectiveStatus === 'cleared') {
+            duePendingChequeIds.push(cheque.id);
+          }
+
+          const chequeInfo = {
+            id: cheque.id,
+            chequeNumber: cheque.cheque_number,
+            bankName: cheque.bank_name,
+            amount: cheque.amount,
+            chequeDate: getChequeDate(chequeDateKey),
+            customerName: collection.customer_name,
+            customerId: collection.customer_id,
+            collectionId: collection.id,
+            status: effectiveStatus,
+            returnReason: cheque.return_reason || undefined,
+            returnedAt: cheque.returned_at ? new Date(cheque.returned_at) : undefined,
+            resolutionMethod: cheque.resolution_method || undefined,
+            resolvedAt: cheque.resolved_at ? new Date(cheque.resolved_at) : undefined,
+          };
+
+          if (cheque.returned_at || cheque.return_reason || ['returned', 'resolved'].includes(storedStatus)) {
+            returnedChequesList.push(chequeInfo);
+          }
+
+          if (!cheque.returned_at && !cheque.return_reason && storedStatus !== 'resolved') {
+            outstandingChequesList.push(chequeInfo);
           }
         });
       });
 
-      setCheques(chequesList);
+      if (duePendingChequeIds.length > 0) {
+        const { error: clearError } = await supabase
+          .from('collection_cheques')
+          .update({
+            status: 'cleared',
+            cleared_at: new Date().toISOString(),
+          })
+          .in('id', duePendingChequeIds);
+
+        if (clearError) {
+          console.warn('Failed to auto-clear due cheques:', clearError);
+        }
+      }
+
+      setCheques(outstandingChequesList);
+      setReturnedCheques(
+        returnedChequesList.sort((a, b) => (b.returnedAt?.getTime() || 0) - (a.returnedAt?.getTime() || 0))
+      );
     } catch (error) {
       console.error('Error fetching cheques:', error);
       toast({
@@ -157,7 +246,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
         console.error('Error returning cheque:', error);
         toast({
           title: "Error",
-          description: "Failed to mark cheque as returned",
+          description: `Failed to mark cheque as returned: ${error.message}`,
           variant: "destructive",
         });
         return;
@@ -172,13 +261,168 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
       setSelectedCheque(null);
       setReturnReason('');
       setReturnDate(new Date().toISOString().split('T')[0]);
-      fetchCheques();
+      await fetchCheques();
 
     } catch (error) {
       console.error('Error returning cheque:', error);
       toast({
         title: "Error",
         description: "Failed to process cheque return",
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleClearWithMoney = async (cheque: ChequeInfo) => {
+    const success = await updateCheque(cheque, {
+      status: 'cleared',
+      cleared_at: new Date().toISOString(),
+      resolution_method: 'cash',
+      resolved_at: new Date().toISOString(),
+    });
+
+    if (success) {
+      toast({
+        title: "Cheque Cleared",
+        description: `Cheque ${cheque.chequeNumber} was cleared with money.`,
+      });
+    }
+  };
+
+  const handleHoldCheque = async (cheque: ChequeInfo) => {
+    const success = await updateCheque(cheque, {
+      status: 'held',
+      resolution_method: 'hold',
+      cleared_at: null,
+      resolved_at: null,
+    });
+
+    if (success) {
+      toast({
+        title: "Cheque Held",
+        description: `Cheque ${cheque.chequeNumber} will remain outstanding until manually passed.`,
+      });
+    }
+  };
+
+  const handleManualPass = async (cheque: ChequeInfo) => {
+    const success = await updateCheque(cheque, {
+      status: 'cleared',
+      cleared_at: new Date().toISOString(),
+      resolution_method: 'manual_pass',
+      resolved_at: new Date().toISOString(),
+    });
+
+    if (success) {
+      toast({
+        title: "Cheque Passed",
+        description: `Cheque ${cheque.chequeNumber} was manually passed.`,
+      });
+    }
+  };
+
+  const handleHoldOutstandingCheque = async (cheque: ChequeInfo) => {
+    const success = await updateCheque(cheque, {
+      status: 'held',
+      cleared_at: null,
+      resolution_method: 'hold',
+      resolved_at: null,
+    });
+
+    if (success) {
+      toast({
+        title: "Cheque Held",
+        description: `Cheque ${cheque.chequeNumber} will not clear until you unhold it.`,
+      });
+    }
+  };
+
+  const handleUnholdOutstandingCheque = async (cheque: ChequeInfo) => {
+    const chequeDateKey = getLocalDateKey(cheque.chequeDate);
+    const isDue = chequeDateKey <= getLocalDateKey(new Date());
+    const success = await updateCheque(cheque, {
+      status: isDue ? 'cleared' : 'pending',
+      cleared_at: isDue ? new Date().toISOString() : null,
+      resolution_method: null,
+      resolved_at: null,
+    });
+
+    if (success) {
+      toast({
+        title: "Cheque Unheld",
+        description: `Cheque ${cheque.chequeNumber} is now ${isDue ? 'cleared' : 'pending'}.`,
+      });
+    }
+  };
+
+  const openReplacementChequeForm = (cheque: ChequeInfo) => {
+    setRecoveryCheque(cheque);
+    setReplacementCheque({
+      chequeNumber: '',
+      bankName: '',
+      amount: cheque.amount,
+      chequeDate: new Date().toISOString().split('T')[0],
+    });
+  };
+
+  const handleClearWithReplacementCheque = async () => {
+    if (!recoveryCheque) return;
+    if (!replacementCheque.chequeNumber.trim() || !replacementCheque.bankName.trim() || replacementCheque.amount <= 0) {
+      toast({
+        title: "Validation Error",
+        description: "Enter cheque number, bank name, amount, and cheque date.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const { error: insertError } = await supabase
+        .from('collection_cheques')
+        .insert({
+          collection_id: recoveryCheque.collectionId,
+          cheque_number: replacementCheque.chequeNumber,
+          bank_name: replacementCheque.bankName,
+          amount: replacementCheque.amount,
+          cheque_date: replacementCheque.chequeDate,
+          status: 'pending',
+          replacement_for_cheque_id: recoveryCheque.id,
+        });
+
+      if (insertError) throw insertError;
+
+      const { error: updateError } = await supabase
+        .from('collection_cheques')
+        .update({
+          status: 'resolved',
+          resolution_method: 'replacement_cheque',
+          resolved_at: new Date().toISOString(),
+        })
+        .eq('id', recoveryCheque.id);
+
+      if (updateError) throw updateError;
+
+      toast({
+        title: "Replacement Cheque Added",
+        description: `Cheque ${recoveryCheque.chequeNumber} was cleared with a replacement cheque.`,
+      });
+
+      setRecoveryCheque(null);
+      setReplacementCheque({
+        chequeNumber: '',
+        bankName: '',
+        amount: 0,
+        chequeDate: new Date().toISOString().split('T')[0],
+      });
+      await fetchCheques();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to add replacement cheque';
+      toast({
+        title: "Error",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -268,13 +512,40 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
                           Date: {cheque.chequeDate.toLocaleDateString()}
                         </div>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right space-y-2">
                         <div className="font-bold text-green-600">
                           LKR {cheque.amount.toLocaleString()}
                         </div>
-                        <Badge variant={cheque.status === 'cleared' ? 'default' : 'secondary'}>
+                        <Badge variant={cheque.status === 'cleared' ? 'default' : cheque.status === 'held' ? 'destructive' : 'secondary'}>
                           {cheque.status}
                         </Badge>
+                        <div>
+                          {cheque.status === 'held' ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleUnholdOutstandingCheque(cheque);
+                              }}
+                            >
+                              <Play className="h-4 w-4 mr-1" />
+                              Unhold
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleHoldOutstandingCheque(cheque);
+                              }}
+                            >
+                              <Pause className="h-4 w-4 mr-1" />
+                              Hold
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -380,6 +651,142 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Returned Cheque Details</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {recoveryCheque && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-4">
+              <div>
+                <h4 className="font-medium text-blue-950">Replacement Cheque</h4>
+                <p className="text-sm text-blue-700">
+                  Clearing cheque {recoveryCheque.chequeNumber} with a new cheque. The replacement stays open until its cheque date.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                  <Label htmlFor="replacementChequeNumber">Cheque Number</Label>
+                  <Input
+                    id="replacementChequeNumber"
+                    value={replacementCheque.chequeNumber}
+                    onChange={(event) => setReplacementCheque((current) => ({ ...current, chequeNumber: event.target.value }))}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="replacementBank">Bank Name</Label>
+                  <Input
+                    id="replacementBank"
+                    value={replacementCheque.bankName}
+                    onChange={(event) => setReplacementCheque((current) => ({ ...current, bankName: event.target.value }))}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="replacementAmount">Amount</Label>
+                  <Input
+                    id="replacementAmount"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={replacementCheque.amount}
+                    onChange={(event) => setReplacementCheque((current) => ({ ...current, amount: parseFloat(event.target.value) || 0 }))}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="replacementDate">Cheque Date</Label>
+                  <Input
+                    id="replacementDate"
+                    type="date"
+                    value={replacementCheque.chequeDate}
+                    onChange={(event) => setReplacementCheque((current) => ({ ...current, chequeDate: event.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setRecoveryCheque(null)} disabled={submitting}>
+                  Cancel
+                </Button>
+                <Button onClick={handleClearWithReplacementCheque} disabled={submitting}>
+                  <Landmark className="h-4 w-4 mr-2" />
+                  Add Replacement Cheque
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {returnedCheques.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              No returned cheques found for the selected agency.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Cheque #</th>
+                    <th className="px-3 py-2 text-left font-medium">Customer</th>
+                    <th className="px-3 py-2 text-left font-medium">Bank</th>
+                    <th className="px-3 py-2 text-right font-medium">Amount</th>
+                    <th className="px-3 py-2 text-left font-medium">Cheque Date</th>
+                    <th className="px-3 py-2 text-left font-medium">Returned Date</th>
+                    <th className="px-3 py-2 text-left font-medium">Status</th>
+                    <th className="px-3 py-2 text-left font-medium">Reason</th>
+                    <th className="px-3 py-2 text-right font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {returnedCheques.map((cheque) => (
+                    <tr key={cheque.id} className="border-t">
+                      <td className="px-3 py-2 font-medium text-gray-900">{cheque.chequeNumber}</td>
+                      <td className="px-3 py-2 text-gray-700">{cheque.customerName}</td>
+                      <td className="px-3 py-2 text-gray-700">{cheque.bankName}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-red-600">
+                        LKR {cheque.amount.toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">{cheque.chequeDate.toLocaleDateString()}</td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {cheque.returnedAt ? cheque.returnedAt.toLocaleDateString() : '-'}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Badge variant={cheque.status === 'held' ? 'secondary' : 'destructive'}>
+                          {cheque.status}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">{cheque.returnReason || '-'}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex justify-end gap-2">
+                          {cheque.status === 'held' ? (
+                            <Button size="sm" variant="outline" onClick={() => handleManualPass(cheque)}>
+                              <CheckCircle2 className="h-4 w-4 mr-1" />
+                              Pass
+                            </Button>
+                          ) : (
+                            <>
+                              <Button size="sm" variant="outline" onClick={() => handleClearWithMoney(cheque)}>
+                                <Banknote className="h-4 w-4 mr-1" />
+                                Money
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => openReplacementChequeForm(cheque)}>
+                                <Landmark className="h-4 w-4 mr-1" />
+                                Cheque
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => handleHoldCheque(cheque)}>
+                                <Pause className="h-4 w-4 mr-1" />
+                                Hold
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 };

@@ -209,8 +209,8 @@ const ReturnDetails = ({ returnItem, invoice, onBack, onUpdate, user }: ReturnDe
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <span className="font-medium text-sm text-gray-700">Invoice ID:</span>
-                  <p className="text-sm">{invoice.id}</p>
+                  <span className="font-medium text-sm text-gray-700">Invoice Number:</span>
+                  <p className="text-sm font-mono">{invoice.invoiceNumber}</p>
                 </div>
                 <div>
                   <span className="font-medium text-sm text-gray-700">Invoice Date:</span>

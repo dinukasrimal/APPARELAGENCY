@@ -25,7 +25,7 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
     phone: customer?.phone || '',
     secondaryPhone: customer?.secondaryPhone || '',
     address: customer?.address || '',
-    agencyId: customer?.agencyId || user.agencyId || '00000000-0000-0000-0000-000000000000',
+    agencyId: customer?.agencyId || user.agencyId || '',
     shopOwnerName: customer?.shopOwnerName || '',
     shopOwnerBirthday: customer?.shopOwnerBirthday || ''
   });

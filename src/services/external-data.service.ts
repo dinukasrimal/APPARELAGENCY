@@ -2,6 +2,7 @@
 import { supabase } from '@/integrations/supabase/client';
 import { externalSupabase, isExternalClientConfigured } from '@/integrations/supabase/external-client';
 import { User } from '@/types/auth';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 // Types for external data (matching local external tables schema)
 export interface ExternalSalesTarget {
@@ -882,41 +883,36 @@ export class ExternalDataService {
   public async getInternalSalesData(
     user: User,
     startDate: string,
-    endDate: string
+    endDate: string,
+    agencyId?: string | null
   ): Promise<{
     data: Array<{totalAmount: number, invoiceCount: number}>;
     error: string | null;
   }> {
     try {
-      console.log('🏠 Fetching internal sales data for user:', user.name, 'from', startDate, 'to', endDate);
+      console.log('🏠 Fetching internal sales data for user:', user.name, 'from', startDate, 'to', endDate, 'agency:', agencyId || 'role default');
       
-      let query = supabase
-        .from('invoices')
-        .select('total, created_at')
-        .gte('created_at', startDate + 'T00:00:00')
-        .lte('created_at', endDate + 'T23:59:59');
+      const data = await fetchAllSupabaseRows<{ total: number | null; created_at: string | null }>(() => {
+        let query = supabase
+          .from('invoices')
+          .select('total, created_at')
+          .gte('created_at', startDate + 'T00:00:00')
+          .lte('created_at', endDate + 'T23:59:59');
 
-      // Apply role-based filtering
-      if (user.role === 'agent') {
-        query = query.eq('created_by', user.id);
-      } else if (user.role === 'agency') {
-        query = query.eq('agency_id', user.agencyId);
-      }
-      // Superusers see all data (no additional filter)
+        if (agencyId) {
+          query = query.eq('agency_id', agencyId);
+        } else if (user.role === 'agent') {
+          query = query.eq('created_by', user.id);
+        } else if (user.role === 'agency') {
+          query = query.eq('agency_id', user.agencyId);
+        }
 
-      const { data, error } = await query;
-
-      if (error) {
-        console.error('Error fetching internal sales data:', error);
-        return {
-          data: [],
-          error: error.message
-        };
-      }
+        return query;
+      });
 
       // Calculate total amount and count
-      const totalAmount = data?.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0) || 0;
-      const invoiceCount = data?.length || 0;
+      const totalAmount = data.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
+      const invoiceCount = data.length;
 
       console.log(`🏠 Internal sales summary: Rs ${totalAmount.toLocaleString()} from ${invoiceCount} invoices`);
 
@@ -939,7 +935,9 @@ export class ExternalDataService {
   public async getTargetVsAchievementComparison(
     user: User,
     userName: string,
-    year: number
+    year: number,
+    month?: number | null,
+    agencyId?: string | null
   ): Promise<{
     data: Array<{
       period: string;
@@ -957,7 +955,7 @@ export class ExternalDataService {
     error: string | null;
   }> {
     try {
-      console.log('🔄 Starting target vs achievement comparison for:', userName, 'year:', year);
+      console.log('🔄 Starting target vs achievement comparison for:', userName, 'year:', year, 'month:', month || 'all');
       
       // Fetch external targets
       const { data: externalTargets, error: externalError } = await this.getSalesTargets({
@@ -978,12 +976,72 @@ export class ExternalDataService {
         };
       }
 
+      const targetsForPeriod = month
+        ? externalTargets.filter(target => {
+            const months = this.parseTargetMonths(target.target_months);
+            return months.length === 0 || months.includes(month);
+          })
+        : externalTargets;
+
+      if (month) {
+        const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+        const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+        const { data: internalSales, error: internalError } = await this.getInternalSalesData(
+          user,
+          startDate,
+          endDate,
+          agencyId
+        );
+
+        if (internalError) {
+          return {
+            data: [],
+            summary: {
+              totalExternalTarget: 0,
+              totalInternalAchievement: 0,
+              overallAchievementPercentage: 0,
+              totalGap: 0
+            },
+            error: internalError
+          };
+        }
+
+        const totalExternalTarget = targetsForPeriod.reduce((sum, target) => {
+          const targetMonths = this.parseTargetMonths(target.target_months);
+          const targetMonthCount = targetMonths.length > 0 ? targetMonths.length : 12;
+          const totalTargetAmount = target.adjusted_total_value || target.initial_total_value || 0;
+
+          return sum + (totalTargetAmount / targetMonthCount);
+        }, 0);
+        const totalInternalAchievement = internalSales[0]?.totalAmount || 0;
+        const overallAchievementPercentage = totalExternalTarget > 0 ? (totalInternalAchievement / totalExternalTarget) * 100 : 0;
+        const totalGap = totalInternalAchievement - totalExternalTarget;
+        const period = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+
+        return {
+          data: [{
+            period,
+            externalTarget: totalExternalTarget,
+            internalAchievement: totalInternalAchievement,
+            achievementPercentage: overallAchievementPercentage,
+            gap: totalGap
+          }],
+          summary: {
+            totalExternalTarget,
+            totalInternalAchievement,
+            overallAchievementPercentage,
+            totalGap
+          },
+          error: null
+        };
+      }
+
       // Process each external target and get corresponding internal sales
       const comparisonData = [];
       let totalExternalTarget = 0;
       let totalInternalAchievement = 0;
 
-      for (const target of externalTargets) {
+      for (const target of targetsForPeriod) {
         // Parse target months to get date range
         const months = this.parseTargetMonths(target.target_months);
         let startDate: string;
@@ -1003,7 +1061,8 @@ export class ExternalDataService {
         const { data: internalSales, error: internalError } = await this.getInternalSalesData(
           user,
           startDate,
-          endDate
+          endDate,
+          agencyId
         );
 
         if (internalError) {
