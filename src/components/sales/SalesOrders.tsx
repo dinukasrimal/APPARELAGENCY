@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -30,6 +30,14 @@ interface SalesOrdersProps {
 }
 
 const INVOICES_PAGE_SIZE = 50;
+const SALES_CACHE_TTL = 2 * 60 * 1000;
+const _salesCache: Record<string, {
+  // transformed (ready for state)
+  orders: SalesOrder[]; customers: Customer[]; products: Product[]; returns: Return[];
+  // raw (for refs used by fetchInvoicePage)
+  agencies: any[]; returnsRaw: any[]; returnItemsRaw: any[];
+  expiry: number;
+}> = {};
 
 const SalesOrders = ({ user }: SalesOrdersProps) => {
   const [orders, setOrders] = useState<SalesOrder[]>([]);
@@ -55,14 +63,34 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   );
   const { toast } = useToast();
 
+  // Refs shared between fetchData and fetchInvoicePage to avoid redundant fetches
+  const agenciesRef = useRef<any[]>([]);
+  const returnsDataRef = useRef<any[]>([]);
+  const returnItemsDataRef = useRef<any[]>([]);
+
   useEffect(() => {
     fetchData();
-  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId]);
 
   const fetchData = useCallback(async () => {
+    const cacheKey = `${user.id}:${user.agencyId}:${selectedAgencyId}`;
+    const cached = _salesCache[cacheKey];
+    if (cached && Date.now() < cached.expiry) {
+      agenciesRef.current = cached.agencies;
+      returnsDataRef.current = cached.returnsRaw;
+      returnItemsDataRef.current = cached.returnItemsRaw;
+      setOrders(cached.orders);
+      setCustomers(cached.customers);
+      setProducts(cached.products);
+      setReturns(cached.returns);
+      setIsLoading(false);
+      return;
+    }
+
     try {
       setIsLoading(true);
-      console.log('Fetching sales data for user:', user.id);
+      console.time('[Sales] total load');
+      console.time('[Sales] round-trip-1: orders+customers+products+returns+agencies');
 
       // Build optimized sales orders query
       let ordersQuery = supabase
@@ -82,12 +110,68 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         ordersQuery = ordersQuery.eq('agency_id', selectedAgencyId);
       }
       
-      const ordersResult = await ordersQuery.order('created_at', { ascending: false }).limit(100);
-      
+      // Build supporting queries to run in parallel with orders
+      let customersQuery = supabase
+        .from('customers')
+        .select(`
+          id, name, phone, address, agency_id, latitude, longitude,
+          storefront_photo, signature, created_at, created_by
+        `);
+      if (user.role === 'agent') {
+        customersQuery = customersQuery.eq('created_by', user.id);
+      } else if (user.role === 'agency') {
+        customersQuery = customersQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
+      }
+
+      const productsQuery = supabase
+        .from('products')
+        .select(`
+          id, name, category, sub_category, colors, sizes,
+          selling_price, billing_price, image, description
+        `);
+
+      let returnsQuery = supabase
+        .from('returns')
+        .select(`
+          id, invoice_id, customer_id, customer_name, agency_id,
+          subtotal, total, reason, status,
+          latitude, longitude, created_at, created_by,
+          processed_at, processed_by
+        `);
+      if (user.role === 'agent') {
+        returnsQuery = returnsQuery.eq('created_by', user.id);
+      } else if (user.role === 'agency') {
+        returnsQuery = returnsQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        returnsQuery = returnsQuery.eq('agency_id', selectedAgencyId);
+      }
+
+      // Round trip 1: orders + agencies + customers + products + returns in parallel
+      // (return_items excluded here — must be filtered by return IDs, added in round trip 2)
+      const [ordersResult, agenciesResult, customersResult, productsResult, returnsResult] = await Promise.all([
+        ordersQuery.order('created_at', { ascending: false }).limit(100),
+        supabase.from('agencies').select('id, name'),
+        customersQuery.order('name'),
+        productsQuery,
+        returnsQuery.order('created_at', { ascending: false }).limit(100),
+      ]);
+      console.timeEnd('[Sales] round-trip-1: orders+customers+products+returns+agencies');
+
       if (ordersResult.error) throw ordersResult.error;
-      
+      if (agenciesResult.error) throw agenciesResult.error;
+      if (customersResult.error) throw customersResult.error;
+      if (productsResult.error) throw productsResult.error;
+      if (returnsResult.error) throw returnsResult.error;
+
       const ordersData = ordersResult.data || [];
       const orderIds = ordersData.map(order => order.id);
+      const returnsData0 = returnsResult.data || [];
+      const returnIds0 = returnsData0.map((r: any) => r.id);
+
+      console.time('[Sales] round-trip-2: order-items+return-items');
+      // Round trip 2: order items (needs order IDs) + return items (filtered by return IDs) in parallel
       let itemsData: Array<{
         id: string;
         sales_order_id: string | null;
@@ -100,16 +184,20 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         total: number;
       }> = [];
 
-      if (orderIds.length > 0) {
-        const itemsResult = await supabase
-          .from('sales_order_items')
-          .select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total')
-          .in('sales_order_id', orderIds);
+      const [itemsResult, returnItemsResult] = await Promise.all([
+        orderIds.length > 0
+          ? supabase.from('sales_order_items').select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total').in('sales_order_id', orderIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        returnIds0.length > 0
+          ? supabase.from('return_items').select('id, return_id, invoice_item_id, product_id, product_name, color, size, quantity_returned, original_quantity, unit_price, total, reason').in('return_id', returnIds0)
+          : Promise.resolve({ data: [] as any[], error: null }),
+      ]);
 
-        if (itemsResult.error) throw itemsResult.error;
-        itemsData = itemsResult.data || [];
-      }
+      if (itemsResult.error) throw itemsResult.error;
+      itemsData = itemsResult.data || [];
+      console.timeEnd('[Sales] round-trip-2: order-items+return-items');
 
+      console.time('[Sales] JS transform + DFS');
       // Helper: pick subset of items whose total is closest to the target subtotal.
       // This mitigates duplicate legacy rows (we lack delete perms on sales_order_items).
       const selectItemsClosestToSubtotal = (items: any[], targetSubtotal: number) => {
@@ -195,231 +283,16 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       setOrders(transformedOrders);
 
-      // Optimize invoice and customer/product fetching with parallel queries
-      const additionalQueries = [];
-      
-      // Build optimized invoices query
-      const invoiceFrom = (invoicePage - 1) * INVOICES_PAGE_SIZE;
-      const invoiceTo = invoiceFrom + INVOICES_PAGE_SIZE - 1;
-      let invoicesQuery = supabase
-        .from('invoices')
-        .select(`
-          id, invoice_number, sales_order_id, customer_id, customer_name, agency_id,
-          subtotal, discount_amount, total, latitude, longitude,
-          signature, created_at, created_by
-        `, { count: 'exact' });
-      
-      if (user.role === 'agent') {
-        invoicesQuery = invoicesQuery.eq('created_by', user.id);
-      } else if (user.role === 'agency') {
-        invoicesQuery = invoicesQuery.eq('agency_id', user.agencyId);
-      } else if (user.role === 'superuser' && selectedAgencyId) {
-        invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
-      }
-      
-      additionalQueries.push(
-        invoicesQuery
-          .order('created_at', { ascending: false })
-          .range(invoiceFrom, invoiceTo)
-      );
+      const agenciesData = agenciesResult.data || [];
+      const customersData = customersResult.data || [];
+      const productsData = productsResult.data || [];
+      const returnsData = returnsData0;
+      const returnItemsData = returnItemsResult.data || [];
 
-      // Fetch agencies for agency name lookup
-      const agenciesQuery = supabase
-        .from('agencies')
-        .select('id, name');
-      additionalQueries.push(agenciesQuery);
-
-      // Build optimized customers query
-      let customersQuery = supabase
-        .from('customers')
-        .select(`
-          id, name, phone, address, agency_id, latitude, longitude,
-          storefront_photo, signature, created_at, created_by
-        `);
-      
-      if (user.role === 'agent') {
-        customersQuery = customersQuery.eq('created_by', user.id);
-      } else if (user.role === 'agency') {
-        customersQuery = customersQuery.eq('agency_id', user.agencyId);
-      } else if (user.role === 'superuser' && selectedAgencyId) {
-        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
-      }
-      
-      additionalQueries.push(customersQuery.order('name'));
-      
-      // Fetch products with specific fields
-      const productsQuery = supabase
-        .from('products')
-        .select(`
-          id, name, category, sub_category, colors, sizes,
-          selling_price, billing_price, image, description
-        `);
-      additionalQueries.push(productsQuery);
-      
-      // Returns and return items
-      let returnsQuery = supabase
-        .from('returns')
-        .select(`
-          id, invoice_id, customer_id, customer_name, agency_id,
-          subtotal, total, reason, status,
-          latitude, longitude, created_at, created_by,
-          processed_at, processed_by
-        `);
-
-      if (user.role === 'agent') {
-        returnsQuery = returnsQuery.eq('created_by', user.id);
-      } else if (user.role === 'agency') {
-        returnsQuery = returnsQuery.eq('agency_id', user.agencyId);
-      } else if (user.role === 'superuser' && selectedAgencyId) {
-        returnsQuery = returnsQuery.eq('agency_id', selectedAgencyId);
-      }
-      additionalQueries.push(returnsQuery.order('created_at', { ascending: false }).limit(100));
-
-      const returnItemsQuery = supabase
-        .from('return_items')
-        .select('id, return_id, invoice_item_id, product_id, product_name, color, size, quantity_returned, original_quantity, unit_price, total, reason');
-      additionalQueries.push(returnItemsQuery);
-
-      const [invoicesResult, agenciesResult, customersResult, productsResult, returnsResult, returnItemsResult] = await Promise.all(additionalQueries);
-      
-      if (invoicesResult.error) throw invoicesResult.error;
-      if (agenciesResult.error) throw agenciesResult.error;
-      if (customersResult.error) throw customersResult.error;
-      if (productsResult.error) throw productsResult.error;
-      if (returnsResult.error) throw returnsResult.error;
-      if (returnItemsResult.error) throw returnItemsResult.error;
-      
-      const invoicesData = invoicesResult.data || [];
-      setInvoiceTotalCount(invoicesResult.count || 0);
-      const agenciesData = agenciesResult.data;
-      const customersData = customersResult.data;
-      const productsData = productsResult.data;
-      const returnsData = returnsResult.data;
-      const returnItemsData = returnItemsResult.data;
-      const invoiceIds = invoicesData.map((inv: any) => inv.id);
-
-      let invoiceItemsData: any[] = [];
-      let deliveriesData: any[] = [];
-
-      if (invoiceIds.length > 0) {
-        const [invoiceItemsResult, deliveriesResult] = await Promise.all([
-          Promise.all(
-            chunkArray(invoiceIds, 200).map((invoiceIdChunk) =>
-              fetchAllSupabaseRows<any>(() =>
-                supabase
-                  .from('invoice_items')
-                  .select('id, invoice_id, product_id, product_name, color, size, quantity, unit_price, total')
-                  .in('invoice_id', invoiceIdChunk)
-              )
-            )
-          ),
-          supabase
-            .from('deliveries')
-            .select(`
-              id, invoice_id, delivery_agent_id, agency_id, status,
-              scheduled_date, delivered_at, delivery_latitude, delivery_longitude,
-              delivery_signature, delivery_notes, received_by_name, received_by_phone,
-              created_at, created_by, updated_at
-            `)
-            .in('invoice_id', invoiceIds)
-            .order('created_at', { ascending: false })
-        ]);
-
-        if (deliveriesResult.error) throw deliveriesResult.error;
-
-        invoiceItemsData = invoiceItemsResult.flat();
-        deliveriesData = deliveriesResult.data || [];
-      }
-
-      // Fetch collection allocations for invoices to compute outstanding
-      let allocationTotals: Record<string, number> = {};
-      if (invoiceIds.length > 0) {
-        const { data: allocationsData, error: allocationsError } = await supabase
-          .from('collection_allocations')
-          .select('invoice_id, allocated_amount')
-          .in('invoice_id', invoiceIds);
-        if (allocationsError) {
-          console.warn('Allocations fetch issue:', allocationsError);
-        } else {
-          allocationTotals = (allocationsData || []).reduce((acc: Record<string, number>, row: any) => {
-            if (row.invoice_id) {
-              acc[row.invoice_id] = (acc[row.invoice_id] || 0) + Number(row.allocated_amount || 0);
-            }
-            return acc;
-          }, {});
-        }
-      }
-
-      // Map invoice_item_id -> invoice_id for return allocation
-      const invoiceItemToInvoice: Record<string, string> = {};
-      (invoiceItemsData || []).forEach((item: any) => {
-        if (item.id && item.invoice_id) {
-          invoiceItemToInvoice[item.id] = item.invoice_id;
-        }
-      });
-
-      // Sum returns by invoice via header and item linking
-      const returnsByInvoiceFromHeader: Record<string, number> = {};
-      (returnsData || []).forEach((ret: any) => {
-        if (ret.invoice_id) {
-          returnsByInvoiceFromHeader[ret.invoice_id] =
-            (returnsByInvoiceFromHeader[ret.invoice_id] || 0) + Number(ret.total || 0);
-        }
-      });
-      const returnsByInvoiceFromItems: Record<string, number> = {};
-      (returnItemsData || []).forEach((ri: any) => {
-        const invId = ri.invoice_item_id ? invoiceItemToInvoice[ri.invoice_item_id] : null;
-        if (invId) {
-          returnsByInvoiceFromItems[invId] =
-            (returnsByInvoiceFromItems[invId] || 0) + Number(ri.total || 0);
-        }
-      });
-
-      // Transform invoices with items
-      const transformedInvoices: Invoice[] = (invoicesData || []).map((invoice, index) => {
-        const invoiceItems = (invoiceItemsData || []).filter(item => item.invoice_id === invoice.id);
-        const agency = (agenciesData || []).find((ag: any) => ag.id === invoice.agency_id);
-        const allocated = allocationTotals[invoice.id] || 0;
-        const returnsFromHeader = returnsByInvoiceFromHeader[invoice.id] || 0;
-        const returnsFromItems = returnsByInvoiceFromItems[invoice.id] || 0;
-        const outstanding = Math.max(
-          0,
-          Number(invoice.total) - allocated - returnsFromHeader - returnsFromItems
-        );
-        
-        return {
-          id: invoice.id,
-          invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, agency?.name, invoice.agency_id),
-          salesOrderId: invoice.sales_order_id,
-          customerId: invoice.customer_id,
-          customerName: invoice.customer_name,
-          agencyId: invoice.agency_id,
-          agencyName: agency?.name || 'Unknown Agency',
-          items: invoiceItems.map((item: any) => ({
-            id: item.id,
-            productId: item.product_id,
-            productName: item.product_name,
-            color: item.color,
-            size: item.size,
-            quantity: item.quantity,
-            unitPrice: Number(item.unit_price),
-            total: Number(item.total)
-          })),
-          subtotal: Number(invoice.subtotal),
-          discountAmount: Number(invoice.discount_amount),
-          total: Number(invoice.total),
-          outstandingAmount: outstanding,
-          gpsCoordinates: {
-            latitude: invoice.latitude || 0,
-            longitude: invoice.longitude || 0
-          },
-          signature: invoice.signature,
-          createdAt: new Date(invoice.created_at),
-          createdBy: invoice.created_by
-        };
-      });
-
-      setInvoices(transformedInvoices);
+      // Populate refs so fetchInvoicePage can compute invoice outstanding without re-fetching
+      agenciesRef.current = agenciesData;
+      returnsDataRef.current = returnsData;
+      returnItemsDataRef.current = returnItemsData;
 
       const transformedCustomers: Customer[] = (customersData || []).map(customer => ({
         id: customer.id,
@@ -452,28 +325,6 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       setCustomers(transformedCustomers);
       setProducts(transformedProducts);
-
-      // Transform deliveries
-      const transformedDeliveries: Delivery[] = (deliveriesData || []).map(delivery => ({
-        id: delivery.id,
-        invoiceId: delivery.invoice_id,
-        deliveryAgentId: delivery.delivery_agent_id,
-        agencyId: delivery.agency_id,
-        status: delivery.status,
-        scheduledDate: delivery.scheduled_date ? new Date(delivery.scheduled_date) : undefined,
-        deliveredAt: delivery.delivered_at ? new Date(delivery.delivered_at) : undefined,
-        deliveryLatitude: delivery.delivery_latitude,
-        deliveryLongitude: delivery.delivery_longitude,
-        deliverySignature: delivery.delivery_signature,
-        deliveryNotes: delivery.delivery_notes,
-        receivedByName: delivery.received_by_name,
-        receivedByPhone: delivery.received_by_phone,
-        createdAt: new Date(delivery.created_at),
-        createdBy: delivery.created_by,
-        updatedAt: new Date(delivery.updated_at)
-      }));
-
-      setDeliveries(transformedDeliveries);
 
       // Transform returns with items (show even if no invoice is linked yet)
       const customerReturns = (returnsData || []).filter(ret => ret.customer_id);
@@ -518,6 +369,20 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       });
 
       setReturns(transformedReturns);
+      console.timeEnd('[Sales] JS transform + DFS');
+      console.timeEnd('[Sales] total load');
+
+      // Cache transformed data (for state) + raw data (for fetchInvoicePage refs)
+      _salesCache[cacheKey] = {
+        orders: transformedOrders,
+        customers: transformedCustomers,
+        products: transformedProducts,
+        returns: transformedReturns,
+        agencies: agenciesData,
+        returnsRaw: returnsData,
+        returnItemsRaw: returnItemsData,
+        expiry: Date.now() + SALES_CACHE_TTL,
+      };
 
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -529,7 +394,185 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     } finally {
       setIsLoading(false);
     }
+  }, [user.id, user.role, user.agencyId, selectedAgencyId, toast]);
+
+  const fetchInvoicePage = useCallback(async () => {
+    try {
+      console.time('[Sales] fetchInvoicePage');
+      const invoiceFrom = (invoicePage - 1) * INVOICES_PAGE_SIZE;
+      const invoiceTo = invoiceFrom + INVOICES_PAGE_SIZE - 1;
+
+      let invoicesQuery = supabase
+        .from('invoices')
+        .select(`
+          id, invoice_number, sales_order_id, customer_id, customer_name, agency_id,
+          subtotal, discount_amount, total, latitude, longitude,
+          signature, created_at, created_by
+        `, { count: 'exact' });
+      if (user.role === 'agent') {
+        invoicesQuery = invoicesQuery.eq('created_by', user.id);
+      } else if (user.role === 'agency') {
+        invoicesQuery = invoicesQuery.eq('agency_id', user.agencyId);
+      } else if (user.role === 'superuser' && selectedAgencyId) {
+        invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
+      }
+
+      const invoicesResult = await invoicesQuery
+        .order('created_at', { ascending: false })
+        .range(invoiceFrom, invoiceTo);
+
+      if (invoicesResult.error) throw invoicesResult.error;
+
+      const invoicesData = invoicesResult.data || [];
+      setInvoiceTotalCount(invoicesResult.count || 0);
+      const invoiceIds = invoicesData.map((inv: any) => inv.id);
+
+      let invoiceItemsData: any[] = [];
+      let deliveriesData: any[] = [];
+
+      if (invoiceIds.length > 0) {
+        const [chunkedItems, deliveriesResult, allocationsResult] = await Promise.all([
+          Promise.all(
+            chunkArray(invoiceIds, 200).map((chunk) =>
+              fetchAllSupabaseRows<any>(() =>
+                supabase
+                  .from('invoice_items')
+                  .select('id, invoice_id, product_id, product_name, color, size, quantity, unit_price, total')
+                  .in('invoice_id', chunk)
+              )
+            )
+          ),
+          supabase
+            .from('deliveries')
+            .select(`
+              id, invoice_id, delivery_agent_id, agency_id, status,
+              scheduled_date, delivered_at, delivery_latitude, delivery_longitude,
+              delivery_signature, delivery_notes, received_by_name, received_by_phone,
+              created_at, created_by, updated_at
+            `)
+            .in('invoice_id', invoiceIds)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('collection_allocations')
+            .select('invoice_id, allocated_amount')
+            .in('invoice_id', invoiceIds)
+        ]);
+
+        if (deliveriesResult.error) throw deliveriesResult.error;
+
+        invoiceItemsData = chunkedItems.flat();
+        deliveriesData = deliveriesResult.data || [];
+
+        const allocationTotals: Record<string, number> = {};
+        (allocationsResult.data || []).forEach((row: any) => {
+          if (row.invoice_id) {
+            allocationTotals[row.invoice_id] = (allocationTotals[row.invoice_id] || 0) + Number(row.allocated_amount || 0);
+          }
+        });
+
+        const invoiceItemToInvoice: Record<string, string> = {};
+        invoiceItemsData.forEach((item: any) => {
+          if (item.id && item.invoice_id) invoiceItemToInvoice[item.id] = item.invoice_id;
+        });
+
+        const returnsData = returnsDataRef.current;
+        const returnItemsData = returnItemsDataRef.current;
+        const agenciesData = agenciesRef.current;
+
+        const returnsByInvoiceFromHeader: Record<string, number> = {};
+        returnsData.forEach((ret: any) => {
+          if (ret.invoice_id) {
+            returnsByInvoiceFromHeader[ret.invoice_id] =
+              (returnsByInvoiceFromHeader[ret.invoice_id] || 0) + Number(ret.total || 0);
+          }
+        });
+        const returnsByInvoiceFromItems: Record<string, number> = {};
+        returnItemsData.forEach((ri: any) => {
+          const invId = ri.invoice_item_id ? invoiceItemToInvoice[ri.invoice_item_id] : null;
+          if (invId) {
+            returnsByInvoiceFromItems[invId] =
+              (returnsByInvoiceFromItems[invId] || 0) + Number(ri.total || 0);
+          }
+        });
+
+        const transformedInvoices: Invoice[] = invoicesData.map((invoice: any, index: number) => {
+          const invoiceItems = invoiceItemsData.filter((item: any) => item.invoice_id === invoice.id);
+          const agency = agenciesData.find((ag: any) => ag.id === invoice.agency_id);
+          const allocated = allocationTotals[invoice.id] || 0;
+          const outstanding = Math.max(
+            0,
+            Number(invoice.total) - allocated -
+            (returnsByInvoiceFromHeader[invoice.id] || 0) -
+            (returnsByInvoiceFromItems[invoice.id] || 0)
+          );
+          return {
+            id: invoice.id,
+            invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, agency?.name, invoice.agency_id),
+            salesOrderId: invoice.sales_order_id,
+            customerId: invoice.customer_id,
+            customerName: invoice.customer_name,
+            agencyId: invoice.agency_id,
+            agencyName: agency?.name || 'Unknown Agency',
+            items: invoiceItems.map((item: any) => ({
+              id: item.id,
+              productId: item.product_id,
+              productName: item.product_name,
+              color: item.color,
+              size: item.size,
+              quantity: item.quantity,
+              unitPrice: Number(item.unit_price),
+              total: Number(item.total)
+            })),
+            subtotal: Number(invoice.subtotal),
+            discountAmount: Number(invoice.discount_amount),
+            total: Number(invoice.total),
+            outstandingAmount: outstanding,
+            gpsCoordinates: { latitude: invoice.latitude || 0, longitude: invoice.longitude || 0 },
+            signature: invoice.signature,
+            createdAt: new Date(invoice.created_at),
+            createdBy: invoice.created_by
+          };
+        });
+
+        setInvoices(transformedInvoices);
+
+        const transformedDeliveries: Delivery[] = deliveriesData.map((delivery: any) => ({
+          id: delivery.id,
+          invoiceId: delivery.invoice_id,
+          deliveryAgentId: delivery.delivery_agent_id,
+          agencyId: delivery.agency_id,
+          status: delivery.status,
+          scheduledDate: delivery.scheduled_date ? new Date(delivery.scheduled_date) : undefined,
+          deliveredAt: delivery.delivered_at ? new Date(delivery.delivered_at) : undefined,
+          deliveryLatitude: delivery.delivery_latitude,
+          deliveryLongitude: delivery.delivery_longitude,
+          deliverySignature: delivery.delivery_signature,
+          deliveryNotes: delivery.delivery_notes,
+          receivedByName: delivery.received_by_name,
+          receivedByPhone: delivery.received_by_phone,
+          createdAt: new Date(delivery.created_at),
+          createdBy: delivery.created_by,
+          updatedAt: new Date(delivery.updated_at)
+        }));
+        setDeliveries(transformedDeliveries);
+      } else {
+        setInvoices([]);
+        setDeliveries([]);
+      }
+      console.timeEnd('[Sales] fetchInvoicePage');
+    } catch (error) {
+      console.error('Error fetching invoices:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load invoices',
+        variant: 'destructive'
+      });
+    }
   }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage, toast]);
+
+  useEffect(() => {
+    fetchInvoicePage();
+  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage]);
 
   // Memoized filtered orders to prevent unnecessary recalculations
   const filteredOrders = useMemo(() => {
@@ -617,6 +660,11 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     }
   };
 
+  const invalidateSalesCache = () => {
+    const cacheKey = `${user.id}:${user.agencyId}:${selectedAgencyId}`;
+    delete _salesCache[cacheKey];
+  };
+
   const handleCloseOrder = async (orderId: string) => {
     try {
       const { error } = await supabase
@@ -631,7 +679,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         description: "Sales order has been closed",
       });
 
-      await fetchData();
+      invalidateSalesCache();
+      await Promise.all([fetchData(), fetchInvoicePage()]);
     } catch (error) {
       console.error('Error closing order:', error);
       toast({
@@ -643,12 +692,13 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   };
 
   const handleOrderSuccess = useCallback(async () => {
-    await fetchData();
+    invalidateSalesCache();
+    await Promise.all([fetchData(), fetchInvoicePage()]);
     setShowCreateForm(false);
     setShowDirectInvoiceForm(false);
     setEditingOrder(null);
     setConvertingToInvoiceOrder(null);
-  }, [fetchData]);
+  }, [fetchData, fetchInvoicePage]);
 
   const requiresAgencySelection = user.role === 'superuser' && !selectedAgencyId;
   const createDisabled = customers.length === 0 || products.length === 0 || requiresAgencySelection;

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { sendSMS, SmsTemplates } from '@/services/sms.service';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { useAgencies } from '@/hooks/useAgency';
@@ -14,6 +15,9 @@ import CustomerForm from './CustomerForm';
 import CustomerInvoiceDetails from './CustomerInvoiceDetails';
 import { uploadCustomerPhoto, base64ToBlob } from '@/utils/storage';
 import ImageModal from '@/components/ui/image-modal';
+
+const CUSTOMER_CACHE_TTL = 2 * 60 * 1000;
+const _customerCache: Record<string, { customers: Customer[]; expiry: number }> = {};
 
 interface CustomerManagementProps {
   user: User;
@@ -56,17 +60,28 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
     loadCustomers();
   }, [user]);
 
+  const getCacheKey = () => `${user.id}:${user.agencyId}`;
+
+  const invalidateCustomerCache = () => { delete _customerCache[getCacheKey()]; };
+
   const loadCustomers = async () => {
+    const cacheKey = getCacheKey();
+    const cached = _customerCache[cacheKey];
+    if (cached && Date.now() < cached.expiry) {
+      setCustomers(cached.customers);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
-      console.log('Loading customers for user:', user);
-      
+      console.time('[Customers] load');
+
       let query = supabase
         .from('customers')
         .select('*')
         .order('created_at', { ascending: false });
 
-      // Only filter by agency if not superuser
       if (user.role !== 'superuser' && user.agencyId) {
         query = query.eq('agency_id', user.agencyId);
       }
@@ -83,9 +98,6 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         return;
       }
 
-      console.log('Loaded customers from database:', data);
-      
-      // Transform database data to match Customer interface
       const transformedCustomers: Customer[] = (data || []).map(customer => ({
         id: customer.id,
         name: customer.name,
@@ -103,8 +115,9 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         createdBy: customer.created_by || ''
       }));
 
-      console.log('Transformed customers:', transformedCustomers);
       setCustomers(transformedCustomers);
+      console.timeEnd('[Customers] load');
+      _customerCache[cacheKey] = { customers: transformedCustomers, expiry: Date.now() + CUSTOMER_CACHE_TTL };
     } catch (error) {
       console.error('Error loading customers:', error);
       toast({
@@ -255,6 +268,8 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         description: "Customer added successfully!",
       });
 
+      sendSMS(customerData.phone, SmsTemplates.customerWelcome(customerData.name));
+      invalidateCustomerCache();
       await loadCustomers();
       setShowForm(false);
     } catch (error) {
@@ -359,6 +374,7 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
         description: "Customer updated successfully!",
       });
 
+      invalidateCustomerCache();
       await loadCustomers();
       setShowForm(false);
       setEditingCustomer(null);

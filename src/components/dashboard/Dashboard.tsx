@@ -27,6 +27,7 @@ const Collections = lazy(() => import('@/components/collections/Collections'));
 const Assets = lazy(() => import('@/components/assets/Assets'));
 const ReturnChequesLodge = lazy(() => import('@/components/cheques/ReturnChequesLodge'));
 const FuelExpenses = lazy(() => import('@/components/visits/FuelExpenses'));
+const PONotificationSettings = lazy(() => import('@/components/admin/PONotificationSettings'));
 
 interface DashboardProps {
   user: User;
@@ -135,6 +136,12 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
         return (
           <Suspense fallback={<ModuleLoader />}>
             <AgencyPricingConfiguration user={user} onBack={() => setActiveModule('dashboard')} />
+          </Suspense>
+        );
+      case 'po-notification-settings':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <PONotificationSettings user={user} onBack={() => setActiveModule('dashboard')} />
           </Suspense>
         );
       case 'reports':

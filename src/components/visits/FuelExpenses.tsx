@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { User } from '@/types/auth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -65,6 +65,8 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
   const [fuelLogs, setFuelLogs] = useState<FuelRechargeRow[]>([]);
   const [expenseLogs, setExpenseLogs] = useState<AgencyExpenseRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const [imageModalUrl, setImageModalUrl] = useState<string | null>(null);
   const [imageModalTitle, setImageModalTitle] = useState<string>('');
 
@@ -171,6 +173,10 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
       return;
     }
 
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+
     try {
       const path = `agency-${activeAgencyId}/fuel`;
       const receipt = await uploadReceipt(fuelBillFile, path);
@@ -210,6 +216,9 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
         description: error instanceof Error ? error.message : 'Failed to log fuel recharge.',
         variant: 'destructive',
       });
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -250,6 +259,10 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
       });
       return;
     }
+
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
 
     try {
       const path = `agency-${activeAgencyId}/expenses`;
@@ -292,6 +305,9 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
         description: error instanceof Error ? error.message : 'Failed to log expense.',
         variant: 'destructive',
       });
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -372,8 +388,8 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
               <Label>Notes</Label>
               <Textarea value={fuelNotes} onChange={(e) => setFuelNotes(e.target.value)} />
             </div>
-            <Button onClick={handleFuelSubmit} className="w-full" disabled={disableActions}>
-              Log Fuel
+            <Button onClick={handleFuelSubmit} className="w-full" disabled={disableActions || isSubmitting}>
+              {isSubmitting ? 'Saving...' : 'Log Fuel'}
             </Button>
           </CardContent>
         </Card>
@@ -430,8 +446,8 @@ const FuelExpenses = ({ user }: FuelExpensesProps) => {
               <Label>Notes</Label>
               <Textarea value={expenseNotes} onChange={(e) => setExpenseNotes(e.target.value)} />
             </div>
-            <Button onClick={handleExpenseSubmit} className="w-full" disabled={disableActions}>
-              Log Expense
+            <Button onClick={handleExpenseSubmit} className="w-full" disabled={disableActions || isSubmitting}>
+              {isSubmitting ? 'Saving...' : 'Log Expense'}
             </Button>
           </CardContent>
         </Card>

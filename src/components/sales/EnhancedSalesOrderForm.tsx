@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { sendSMS, SmsTemplates } from '@/services/sms.service';
+import { generateAndUploadSalesOrderPdf } from '@/services/invoice-pdf.service';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -17,6 +19,10 @@ import { useDraftSalesOrder } from '@/hooks/useDraftSalesOrder';
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 import { externalInventoryService, type ExternalInventoryItem } from '@/services/external-inventory.service';
+
+// Module-level inventory cache — survives re-mounts (e.g. navigating away and back) for 5 minutes
+const _inventoryCache: Record<string, { data: ExternalInventoryItem[]; expiry: number }> = {};
+const INVENTORY_CACHE_TTL = 5 * 60 * 1000;
 
 interface EnhancedSalesOrderFormProps {
   user: User;
@@ -179,11 +185,11 @@ const EnhancedSalesOrderForm = ({
       const nameA = a.name || '';
       const nameB = b.name || '';
 
-      // Macbell grouping: standard MACBELL- variants before MAC BELL LONG LEG, both sorted by size
+      // Macbell grouping: Long Leg first (S–2XL), then regular MACBELL- variants
       const macbellPriority = (name: string) => {
-        if (/^macbell-\s*/i.test(name)) return 0; // MACBELL- S/M/L...
-        if (/^mac bell long leg/i.test(name)) return 1; // Long leg variants
-        return 2; // everything else
+        if (/mac\s*bell\s*long\s*leg/i.test(name)) return 0; // Long leg first
+        if (/^macbell[-\s]/i.test(name)) return 1;            // Regular macbell second
+        return 2;
       };
 
       const macbellA = macbellPriority(nameA);
@@ -213,10 +219,11 @@ const EnhancedSalesOrderForm = ({
       };
 
       const extractSizeFromName = (name: string) => {
+        const normalizedName = name.replace(/\s*\([^)]*\)\s*$/, '').trim();
         // Check for size patterns at the end of product name
         const sizePatterns = [
-          // Clothing sizes: S, M, L, XL, 2XL, 3XL, 4XL
-          /\b(S|M|L|XL|2XL|3XL|4XL)$/i,
+          // Clothing sizes: XS, S, M, L, XL, 2XL, 3XL, 4XL
+          /\b(XS|S|M|L|XL|2XL|3XL|4XL)$/i,
           // Numeric sizes: 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42
           /\b(20|22|24|26|28|30|32|34|36|38|40|42)$/,
           // Larger numeric sizes: 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100
@@ -226,7 +233,7 @@ const EnhancedSalesOrderForm = ({
         ];
 
         for (const pattern of sizePatterns) {
-          const match = name.match(pattern);
+          const match = normalizedName.match(pattern);
           if (match) {
             return match[1];
           }
@@ -238,7 +245,7 @@ const EnhancedSalesOrderForm = ({
         if (!size) return 999; // No size pattern found, put at end
 
         // Clothing sizes order
-        const clothingSizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+        const clothingSizes = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
         const clothingIndex = clothingSizes.indexOf(size.toUpperCase());
         if (clothingIndex !== -1) return clothingIndex;
 
@@ -296,10 +303,23 @@ const EnhancedSalesOrderForm = ({
       // Sort products using custom sorting logic
       const sortedProducts = sortProductsByName(filteredProducts);
 
+      const sortSizes = (sizes: string[]) => {
+        const preferredOrder = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+        return [...sizes].sort((a, b) => {
+          const orderA = preferredOrder.indexOf(a.toUpperCase());
+          const orderB = preferredOrder.indexOf(b.toUpperCase());
+          if (orderA !== -1 || orderB !== -1) {
+            return (orderA === -1 ? preferredOrder.length : orderA) -
+              (orderB === -1 ? preferredOrder.length : orderB);
+          }
+          return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+        });
+      };
+
       setProductGridItems(sortedProducts.map(product => ({
         product,
         color: selectedColor,
-        sizes: product.sizes.map(size => ({ size, quantity: 0 }))
+        sizes: sortSizes(product.sizes).map(size => ({ size, quantity: 0 }))
       })));
     } else {
       setProductGridItems([]);
@@ -346,9 +366,88 @@ const EnhancedSalesOrderForm = ({
 
     try {
       setInventoryLoading(true);
+
+      // Return cached data if still fresh (avoids re-fetching thousands of transactions on every form open)
+      const cached = _inventoryCache[user.agencyId];
+      if (cached && Date.now() < cached.expiry) {
+        const summary = cached.data;
+        // fall through to the map-building logic below with the cached summary
+        const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
+        const getBaseName = (name: string) => {
+          let base = name;
+          base = base.replace(/^\[[^\]]+\]\s*/, '');
+          base = base.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+          base = base.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+          base = base.replace(/-[A-Z]+$/i, '');
+          return normalize(base);
+        };
+        const productsByName = new Map<string, string[]>();
+        const productsByBaseName = new Map<string, string[]>();
+        products.forEach((p) => {
+          const idsFor = (map: Map<string, string[]>, key: string | null | undefined) => {
+            const k = normalize(key);
+            if (!k) return;
+            const existing = map.get(k) || [];
+            if (!existing.includes(p.id)) map.set(k, [...existing, p.id]);
+          };
+          idsFor(productsByName, p.name);
+          idsFor(productsByName, p.description);
+          const baseFromName = p.name ? getBaseName(p.name) : '';
+          if (baseFromName) {
+            const existing = productsByBaseName.get(baseFromName) || [];
+            if (!existing.includes(p.id)) productsByBaseName.set(baseFromName, [...existing, p.id]);
+          }
+          if (p.description) {
+            const baseFromDescription = getBaseName(p.description);
+            if (baseFromDescription) {
+              const existing = productsByBaseName.get(baseFromDescription) || [];
+              if (!existing.includes(p.id)) productsByBaseName.set(baseFromDescription, [...existing, p.id]);
+            }
+          }
+        });
+        const nextMap: Record<string, number> = {};
+        const setStock = (key: string, value: number) => {
+          const current = nextMap[key];
+          if (current === undefined || Math.abs(value) > Math.abs(current)) nextMap[key] = value;
+        };
+        summary.forEach(item => {
+          const normalizedName = normalize(item.product_name);
+          const baseName = getBaseName(item.product_name);
+          const exactMatches = productsByName.get(normalizedName) || [];
+          const baseMatches = productsByBaseName.get(baseName) || [];
+          let candidateIds = Array.from(new Set([...exactMatches, ...baseMatches]));
+          if (candidateIds.length === 0) {
+            const looseMatches = products.filter(p => {
+              const n = normalize(p.name);
+              const d = normalize(p.description);
+              return (n && (normalizedName.includes(n) || n.includes(normalizedName))) ||
+                     (d && (normalizedName.includes(d) || d.includes(normalizedName)));
+            }).map(p => p.id);
+            candidateIds = Array.from(new Set(looseMatches));
+          }
+          if (candidateIds.length === 0) return;
+          const rawColor = (item.color || 'default').toString().toUpperCase();
+          const colorValue = (rawColor === 'MULTI' || rawColor === 'DEFAULT') ? 'default' : rawColor;
+          const sizeValue = (item.size || 'default').toString();
+          const stockValue = Number.isFinite(item.current_stock) ? Number(item.current_stock) : 0;
+          candidateIds.forEach(productId => {
+            setStock(getVariantKey(productId, colorValue, sizeValue), stockValue);
+            setStock(getVariantKey(productId, 'default', sizeValue), stockValue);
+            if (sizeValue.toLowerCase() === 'default') {
+              setStock(getVariantKey(productId, colorValue, 'default'), stockValue);
+              setStock(getVariantKey(productId, 'default', 'default'), stockValue);
+            }
+          });
+        });
+        setInventoryMap(nextMap);
+        setInventoryLoading(false);
+        return;
+      }
+
       // Use the same aggregated external inventory summary that powers the inventory UI
       // For order entry we want agency-level stock, not per-user reference_name filtering
       const summary: ExternalInventoryItem[] = await externalInventoryService.getAgencyStockSummary(user.agencyId);
+      _inventoryCache[user.agencyId] = { data: summary, expiry: Date.now() + INVENTORY_CACHE_TTL };
 
       const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
 
@@ -559,6 +658,15 @@ const EnhancedSalesOrderForm = ({
 
   const removeFromOrderSummary = (tempId: string) => {
     setOrderSummary(prev => prev.filter(item => item.tempId !== tempId));
+  };
+
+  const updateOrderSummaryQuantity = (tempId: string, quantity: number) => {
+    const qty = Math.max(1, quantity || 1);
+    setOrderSummary(prev => prev.map(item =>
+      item.tempId === tempId
+        ? { ...item, quantity: qty, total: item.unitPrice * qty }
+        : item
+    ));
   };
 
   // ... keep existing code (captureGPS function)
@@ -825,6 +933,29 @@ const EnhancedSalesOrderForm = ({
         description: `Order ${orderData.id} has been ${requiresApproval ? 'submitted for approval' : 'approved'} ${discountPercentage > 0 ? `with ${discountPercentage}% discount` : ''}${discountValidation.message ? ` - ${discountValidation.message}` : ''}`
       });
 
+      generateAndUploadSalesOrderPdf({
+        orderId: orderData.id,
+        orderNumber: orderData.order_number ?? orderData.id,
+        customerName: selectedCustomer.name,
+        agencyName: user.agencyName ?? '',
+        date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
+        items: orderSummary.map(i => ({
+          productName: i.productName,
+          color: i.color,
+          size: i.size,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          total: i.total,
+        })),
+        subtotal,
+        discountAmount,
+        total,
+        gpsLat: coords.latitude || undefined,
+        gpsLng: coords.longitude || undefined,
+      }).then(pdfUrl => {
+        sendSMS(selectedCustomer.phone, SmsTemplates.salesOrderCreated(selectedCustomer.name, total, pdfUrl ?? undefined));
+      });
+
       // Clear draft if not editing
       if (!isEditing) {
         clearDraft();
@@ -1059,13 +1190,12 @@ const EnhancedSalesOrderForm = ({
                 <div className="space-y-3">
                   <div className="max-h-64 overflow-y-auto space-y-2">
                     {orderSummary.map((item) => (
-                      <div key={item.tempId} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                        <div className="flex-1">
-                          <p className="font-medium text-sm">{item.productName}</p>
-                          <p className="text-xs text-gray-600">{item.color}, {item.size} × {item.quantity}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">LKR {item.total.toLocaleString()}</span>
+                      <div key={item.tempId} className="p-2 bg-gray-50 rounded space-y-1">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <p className="font-medium text-sm">{item.productName}</p>
+                            <p className="text-xs text-gray-600">{item.color}, {item.size}</p>
+                          </div>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1073,6 +1203,19 @@ const EnhancedSalesOrderForm = ({
                           >
                             <Trash2 className="h-3 w-3" />
                           </Button>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1">
+                            <Label className="text-xs text-gray-500">Qty:</Label>
+                            <Input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => updateOrderSummaryQuantity(item.tempId, parseInt(e.target.value) || 1)}
+                              className="w-16 h-7 text-sm px-2"
+                            />
+                          </div>
+                          <span className="font-medium text-sm">LKR {item.total.toLocaleString()}</span>
                         </div>
                       </div>
                     ))}

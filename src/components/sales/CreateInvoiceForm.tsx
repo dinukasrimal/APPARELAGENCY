@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { sendSMS, SmsTemplates } from '@/services/sms.service';
+import { generateAndUploadInvoicePdf } from '@/services/invoice-pdf.service';
 import { User } from '@/types/auth';
 import { SalesOrder, Invoice, InvoiceItem } from '@/types/sales';
 import { Button } from '@/components/ui/button';
@@ -260,6 +262,34 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
       toast({
         title: "Success",
         description: "Invoice created successfully with GPS location captured and inventory updated",
+      });
+
+      // Fire-and-forget: generate PDF, upload, then send SMS
+      Promise.all([
+        supabase.from('customers').select('phone').eq('id', salesOrder.customerId).single(),
+        supabase.from('agencies').select('name').eq('id', salesOrder.agencyId).single(),
+      ]).then(async ([{ data: cust }, { data: ag }]) => {
+        const pdfUrl = await generateAndUploadInvoicePdf({
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoice_number || invoiceNumber,
+          customerName: salesOrder.customerName,
+          agencyName: ag?.name ?? 'Agency',
+          date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
+          items: invoiceItems.map(i => ({
+            productName: i.productName,
+            color: i.color,
+            size: i.size,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            total: i.total,
+          })),
+          subtotal,
+          discountAmount,
+          total,
+          gpsLat: coords.latitude || undefined,
+          gpsLng: coords.longitude || undefined,
+        });
+        sendSMS(cust?.phone, SmsTemplates.invoiceCreated(salesOrder.customerName, invoice.invoice_number || invoiceNumber, total, pdfUrl ?? undefined));
       });
 
       const invoiceResponseData = {

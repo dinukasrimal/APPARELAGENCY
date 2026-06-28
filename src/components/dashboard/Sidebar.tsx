@@ -27,6 +27,7 @@ import {
   Percent,
   CheckSquare,
   Droplet,
+  Bell,
 } from 'lucide-react';
 import { useAgencyFeatureAccess } from '@/hooks/useAgencyFeatureAccess';
 
@@ -64,6 +65,7 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'discount-management', label: 'Discount Management', icon: Percent, roles: ['superuser'] },
     { id: 'agency-feature-access', label: 'Agency Features', icon: Settings, roles: ['superuser'] },
     { id: 'agency-pricing-configuration', label: 'Agency Pricing', icon: Settings, roles: ['superuser'] },
+    { id: 'po-notification-settings', label: 'PO Notifications', icon: Bell, roles: ['superuser'] },
     {
       id: 'reports',
       label: 'Reports & Analytics',

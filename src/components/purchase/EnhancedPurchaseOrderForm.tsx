@@ -11,18 +11,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ArrowLeft, MapPin, Plus, Trash2, Package, Save } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { sendSMS, SmsTemplates } from '@/services/sms.service';
+import { generateAndUploadPurchaseOrderPdf } from '@/services/invoice-pdf.service';
 
 interface EnhancedPurchaseOrderFormProps {
   user: User;
   onSuccess: () => void;
   onCancel: () => void;
+  editingOrder?: import('@/types/purchase').PurchaseOrder;
 }
 
 interface OrderSummaryItem extends PurchaseOrderItem {
   tempId: string;
 }
 
-const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurchaseOrderFormProps) => {
+const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: EnhancedPurchaseOrderFormProps) => {
+  const isEditing = !!editingOrder;
   const [products, setProducts] = useState<Product[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedSubCategory, setSelectedSubCategory] = useState('');
@@ -41,6 +45,15 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurcha
 
   useEffect(() => {
     fetchProducts();
+    if (editingOrder) {
+      setNotes(editingOrder.notes || '');
+      setOrderSummary(
+        editingOrder.items.map((item, index) => ({
+          ...item,
+          tempId: item.id || `edit-${index}-${Date.now()}`,
+        }))
+      );
+    }
   }, []);
 
   const fetchProducts = async () => {
@@ -86,18 +99,94 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurcha
         .flatMap(p => p.colors))]
     : [];
 
+  const sortProductsByName = (prods: typeof products) => {
+    return [...prods].sort((a, b) => {
+      const nameA = a.name || '';
+      const nameB = b.name || '';
+
+      // Macbell grouping: Long Leg first (S–2XL), then regular MACBELL- variants
+      const macbellPriority = (name: string) => {
+        if (/mac\s*bell\s*long\s*leg/i.test(name)) return 0;
+        if (/^macbell[-\s]/i.test(name)) return 1;
+        return 2;
+      };
+      const macA = macbellPriority(nameA);
+      const macB = macbellPriority(nameB);
+      if (macA !== macB) return macA - macB;
+
+      const extractSizeFromName = (name: string) => {
+        const normalized = name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+        const patterns = [
+          /\b(XS|S|M|L|XL|2XL|3XL|4XL)$/i,
+          /\b(20|22|24|26|28|30|32|34|36|38|40|42)$/,
+          /\b(50|55|60|65|70|75|80|85|90|95|100)$/,
+          /\b(-50|-55|-60|-65|-70|-75|-80|-85|-90|-95|-100)$/,
+        ];
+        for (const p of patterns) {
+          const m = normalized.match(p);
+          if (m) return m[1];
+        }
+        return null;
+      };
+
+      const getSizeOrder = (size: string | null) => {
+        if (!size) return 999;
+        const clothing = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+        const ci = clothing.indexOf(size.toUpperCase());
+        if (ci !== -1) return ci;
+        const small = ['20','22','24','26','28','30','32','34','36','38','40','42'];
+        const si = small.indexOf(size);
+        if (si !== -1) return si + 100;
+        const large = ['50','55','60','65','70','75','80','85','90','95','100'];
+        const li = large.indexOf(size);
+        if (li !== -1) return li + 200;
+        const neg = ['-50','-55','-60','-65','-70','-75','-80','-85','-90','-95','-100'];
+        const ni = neg.indexOf(size);
+        if (ni !== -1) return ni + 300;
+        return 999;
+      };
+
+      const rangeA = nameA.match(/\b(\d+)\s*-\s*(\d+)\b\s*$/);
+      const rangeB = nameB.match(/\b(\d+)\s*-\s*(\d+)\b\s*$/);
+      if (rangeA && rangeB) {
+        const diff = Number(rangeA[1]) - Number(rangeB[1]);
+        if (diff !== 0) return diff;
+        return Number(rangeA[2]) - Number(rangeB[2]);
+      }
+      if (rangeA || rangeB) return rangeA ? -1 : 1;
+
+      const orderA = getSizeOrder(extractSizeFromName(nameA));
+      const orderB = getSizeOrder(extractSizeFromName(nameB));
+      if (orderA !== orderB) return orderA - orderB;
+
+      return nameA.localeCompare(nameB);
+    });
+  };
+
+  const sortSizes = (sizes: string[]) => {
+    const preferred = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+    return [...sizes].sort((a, b) => {
+      const ai = preferred.indexOf(a.toUpperCase());
+      const bi = preferred.indexOf(b.toUpperCase());
+      if (ai !== -1 || bi !== -1) {
+        return (ai === -1 ? preferred.length : ai) - (bi === -1 ? preferred.length : bi);
+      }
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  };
+
   useEffect(() => {
     if (selectedCategory && selectedSubCategory && selectedColor) {
-      const filteredProducts = products.filter(p => 
-        p.category === selectedCategory && 
-        p.subCategory === selectedSubCategory && 
+      const filtered = products.filter(p =>
+        p.category === selectedCategory &&
+        p.subCategory === selectedSubCategory &&
         p.colors.includes(selectedColor)
       );
-
-      setProductGridItems(filteredProducts.map(product => ({
+      const sorted = sortProductsByName(filtered);
+      setProductGridItems(sorted.map(product => ({
         product,
         color: selectedColor,
-        sizes: product.sizes.map(size => ({ size, quantity: 0 }))
+        sizes: sortSizes(product.sizes).map(size => ({ size, quantity: 0 })),
       })));
     } else {
       setProductGridItems([]);
@@ -163,6 +252,14 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurcha
 
   const removeFromOrderSummary = (tempId: string) => {
     setOrderSummary(prev => prev.filter(item => item.tempId !== tempId));
+  };
+
+  const updateSummaryQuantity = (tempId: string, qty: number) => {
+    setOrderSummary(prev => prev.map(item => {
+      if (item.tempId !== tempId) return item;
+      const quantity = Math.max(1, qty || 1);
+      return { ...item, quantity, total: item.unitPrice * quantity };
+    }));
   };
 
   const captureGPS = async () => {
@@ -238,47 +335,136 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurcha
       }
 
       const total = calculateTotal();
+      const agencyName = user.agencyName || 'Agency';
+      let orderId: string;
 
-      // Create purchase order
-      const { data: orderData, error: orderError } = await supabase
-        .from('purchase_orders')
-        .insert({
-          agency_id: user.agencyId,
-          agency_name: user.agencyName || '',
+      if (isEditing && editingOrder) {
+        // Update existing order
+        const { error: updateError } = await supabase
+          .from('purchase_orders')
+          .update({ total, notes, latitude: gpsCoordinates.latitude, longitude: gpsCoordinates.longitude })
+          .eq('id', editingOrder.id);
+        if (updateError) throw updateError;
+
+        // Replace items
+        const { error: deleteError } = await supabase
+          .from('purchase_order_items')
+          .delete()
+          .eq('purchase_order_id', editingOrder.id);
+        if (deleteError) throw deleteError;
+
+        const { error: itemsError } = await supabase
+          .from('purchase_order_items')
+          .insert(orderSummary.map(item => ({
+            purchase_order_id: editingOrder.id,
+            product_id: item.productId,
+            product_name: item.productName,
+            color: item.color,
+            size: item.size,
+            quantity: item.quantity,
+            unit_price: item.unitPrice,
+            total: item.total,
+          })));
+        if (itemsError) throw itemsError;
+
+        orderId = editingOrder.id;
+        toast({ title: "Purchase Order Updated", description: `Order has been updated successfully` });
+
+        // Generate PDF and notify team of change (fire-and-forget)
+        generateAndUploadPurchaseOrderPdf({
+          purchaseOrderId: orderId,
+          agencyName,
+          date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
+          items: orderSummary.map(i => ({
+            productName: i.productName,
+            color: i.color,
+            size: i.size,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            total: i.total,
+          })),
+          subtotal: total,
+          discountAmount: 0,
           total,
-          status: 'pending',
-          latitude: gpsCoordinates.latitude,
-          longitude: gpsCoordinates.longitude,
-          notes,
-          created_by: user.id
-        })
-        .select()
-        .single();
+          gpsLat: gpsCoordinates.latitude || undefined,
+          gpsLng: gpsCoordinates.longitude || undefined,
+        }).then(async pdfUrl => {
+          const { data: setting } = await supabase
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'po_notification_phones')
+            .single();
+          const phones = (setting?.value || '').split(',').map((p: string) => p.trim()).filter(Boolean);
+          phones.forEach((phone: string) => {
+            sendSMS(phone, SmsTemplates.purchaseOrderUpdated(agencyName, orderId.slice(0, 8).toUpperCase(), total, pdfUrl ?? undefined));
+          });
+        });
 
-      if (orderError) throw orderError;
+      } else {
+        // Create new order
+        const { data: orderData, error: orderError } = await supabase
+          .from('purchase_orders')
+          .insert({
+            agency_id: user.agencyId,
+            agency_name: agencyName,
+            total,
+            status: 'pending',
+            latitude: gpsCoordinates.latitude,
+            longitude: gpsCoordinates.longitude,
+            notes,
+            created_by: user.id,
+          })
+          .select()
+          .single();
+        if (orderError) throw orderError;
 
-      // Create order items
-      const orderItems = orderSummary.map(item => ({
-        purchase_order_id: orderData.id,
-        product_id: item.productId,
-        product_name: item.productName,
-        color: item.color,
-        size: item.size,
-        quantity: item.quantity,
-        unit_price: item.unitPrice,
-        total: item.total
-      }));
+        const { error: itemsError } = await supabase
+          .from('purchase_order_items')
+          .insert(orderSummary.map(item => ({
+            purchase_order_id: orderData.id,
+            product_id: item.productId,
+            product_name: item.productName,
+            color: item.color,
+            size: item.size,
+            quantity: item.quantity,
+            unit_price: item.unitPrice,
+            total: item.total,
+          })));
+        if (itemsError) throw itemsError;
 
-      const { error: itemsError } = await supabase
-        .from('purchase_order_items')
-        .insert(orderItems);
+        orderId = orderData.id;
+        toast({ title: "Purchase Order Created", description: `Order has been created successfully` });
 
-      if (itemsError) throw itemsError;
-
-      toast({
-        title: "Purchase Order Created",
-        description: `Order ${orderData.id} has been created successfully`
-      });
+        // Generate PDF and notify company contacts (fire-and-forget)
+        generateAndUploadPurchaseOrderPdf({
+          purchaseOrderId: orderId,
+          agencyName,
+          date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
+          items: orderSummary.map(i => ({
+            productName: i.productName,
+            color: i.color,
+            size: i.size,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            total: i.total,
+          })),
+          subtotal: total,
+          discountAmount: 0,
+          total,
+          gpsLat: gpsCoordinates.latitude || undefined,
+          gpsLng: gpsCoordinates.longitude || undefined,
+        }).then(async pdfUrl => {
+          const { data: setting } = await supabase
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'po_notification_phones')
+            .single();
+          const phones = (setting?.value || '').split(',').map((p: string) => p.trim()).filter(Boolean);
+          phones.forEach((phone: string) => {
+            sendSMS(phone, SmsTemplates.purchaseOrderCreated(agencyName, orderId.slice(0, 8).toUpperCase(), total, pdfUrl ?? undefined));
+          });
+        });
+      }
 
       onSuccess();
     } catch (error) {
@@ -302,7 +488,7 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurcha
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back
         </Button>
-        <h2 className="text-2xl font-bold text-gray-900">Create Purchase Order</h2>
+        <h2 className="text-2xl font-bold text-gray-900">{isEditing ? 'Edit Purchase Order' : 'Create Purchase Order'}</h2>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -469,17 +655,25 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel }: EnhancedPurcha
                 <div className="space-y-3">
                   <div className="max-h-64 overflow-y-auto space-y-2">
                     {orderSummary.map((item) => (
-                      <div key={item.tempId} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                        <div className="flex-1">
-                          <p className="font-medium text-sm">{item.productName}</p>
-                          <p className="text-xs text-gray-600">{item.color}, {item.size} × {item.quantity}</p>
+                      <div key={item.tempId} className="flex justify-between items-center p-2 bg-gray-50 rounded gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">{item.productName}</p>
+                          <p className="text-xs text-gray-600">{item.color}, {item.size}</p>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">LKR {item.total.toLocaleString()}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Input
+                            type="number"
+                            min={1}
+                            value={item.quantity}
+                            onChange={e => updateSummaryQuantity(item.tempId, parseInt(e.target.value) || 1)}
+                            className="w-16 h-7 text-center text-sm px-1"
+                          />
+                          <span className="font-medium text-sm w-24 text-right">LKR {item.total.toLocaleString()}</span>
                           <Button
                             size="sm"
                             variant="ghost"
                             onClick={() => removeFromOrderSummary(item.tempId)}
+                            className="h-7 w-7 p-0"
                           >
                             <Trash2 className="h-3 w-3" />
                           </Button>

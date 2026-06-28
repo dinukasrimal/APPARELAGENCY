@@ -39,21 +39,29 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
   const fetchCustomerData = async () => {
     try {
       setLoading(true);
-      
-      // Fetch invoices for this customer
-      const { data: invoicesData, error: invoicesError } = await supabase
-        .from('invoices')
-        .select('*')
-        .eq('customer_id', customer.id)
-        .order('created_at', { ascending: false });
 
-      if (invoicesError) {
-        console.error('Error fetching invoices:', invoicesError);
-        throw new Error(`Failed to fetch invoices: ${invoicesError.message}`);
-      }
+      // Fire all three queries in parallel
+      const [invoicesResult, collectionsResult, returnsResult] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('*')
+          .eq('customer_id', customer.id)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('collections')
+          .select('*, collection_cheques (*), collection_allocations (*)')
+          .eq('customer_id', customer.id)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('returns')
+          .select('id, invoice_id, total, status')
+          .eq('customer_id', customer.id)
+          .in('status', ['approved', 'processed']),
+      ]);
 
-      // Transform invoices data
-      const transformedInvoices: Invoice[] = (invoicesData || []).map((invoice, index) => ({
+      if (invoicesResult.error) throw new Error(`Failed to fetch invoices: ${invoicesResult.error.message}`);
+
+      const transformedInvoices: Invoice[] = (invoicesResult.data || []).map((invoice, index) => ({
         id: invoice.id,
         invoiceNumber: getDisplayInvoiceNumber(invoice.invoice_number, index + 1, customer.agencyId, invoice.agency_id),
         salesOrderId: invoice.sales_order_id,
@@ -65,84 +73,53 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
         subtotal: invoice.subtotal,
         discountAmount: invoice.discount_amount,
         total: invoice.total,
-        gpsCoordinates: {
-          latitude: invoice.latitude,
-          longitude: invoice.longitude
-        },
+        gpsCoordinates: { latitude: invoice.latitude, longitude: invoice.longitude },
         signature: invoice.signature,
         createdAt: new Date(invoice.created_at),
         createdBy: invoice.created_by
       }));
 
-      // Fetch collections for this customer
       let transformedCollections: Collection[] = [];
-      try {
-        const { data: collectionsData, error: collectionsError } = await supabase
-          .from('collections')
-          .select(`
-            *,
-            collection_cheques (*),
-            collection_allocations (*)
-          `)
-          .eq('customer_id', customer.id)
-          .order('created_at', { ascending: false });
-
-        if (collectionsError) {
-          console.warn('Collections table might not exist yet:', collectionsError);
-        } else {
-          transformedCollections = (collectionsData || []).map(collection => ({
-            id: collection.id,
-            customerId: collection.customer_id,
-            customerName: collection.customer_name,
-            agencyId: collection.agency_id,
-            totalAmount: collection.total_amount,
-            paymentMethod: collection.payment_method,
-            cashAmount: collection.cash_amount,
-            cashDiscount: collection.cash_discount || 0,
-            chequeAmount: collection.cheque_amount,
-            cashDate: new Date(collection.cash_date),
-            chequeDetails: (collection.collection_cheques || []).map(cheque => ({
-              id: cheque.id,
-              chequeNumber: cheque.cheque_number,
-              bankName: cheque.bank_name,
-              amount: cheque.amount,
-              chequeDate: new Date(cheque.cheque_date),
-              status: cheque.status,
-              clearedAt: cheque.cleared_at ? new Date(cheque.cleared_at) : undefined
-            })),
-            notes: collection.notes,
-            gpsCoordinates: {
-              latitude: collection.latitude,
-              longitude: collection.longitude
-            },
-            createdAt: new Date(collection.created_at),
-            createdBy: collection.created_by,
-            status: collection.status
-          }));
-        }
-      } catch (collectionsError) {
-        console.warn('Collections table not found:', collectionsError);
+      if (!collectionsResult.error) {
+        transformedCollections = (collectionsResult.data || []).map(collection => ({
+          id: collection.id,
+          customerId: collection.customer_id,
+          customerName: collection.customer_name,
+          agencyId: collection.agency_id,
+          totalAmount: collection.total_amount,
+          paymentMethod: collection.payment_method,
+          cashAmount: collection.cash_amount,
+          cashDiscount: collection.cash_discount || 0,
+          chequeAmount: collection.cheque_amount,
+          cashDate: new Date(collection.cash_date),
+          chequeDetails: (collection.collection_cheques || []).map(cheque => ({
+            id: cheque.id,
+            chequeNumber: cheque.cheque_number,
+            bankName: cheque.bank_name,
+            amount: cheque.amount,
+            chequeDate: new Date(cheque.cheque_date),
+            status: cheque.status,
+            clearedAt: cheque.cleared_at ? new Date(cheque.cleared_at) : undefined
+          })),
+          notes: collection.notes,
+          gpsCoordinates: { latitude: collection.latitude, longitude: collection.longitude },
+          createdAt: new Date(collection.created_at),
+          createdBy: collection.created_by,
+          status: collection.status
+        }));
+      } else {
+        console.warn('Collections fetch issue:', collectionsResult.error);
       }
+
+      const returnsData = returnsResult.error ? [] : (returnsResult.data || []);
+      if (returnsResult.error) console.warn('Returns fetch issue:', returnsResult.error);
 
       setInvoices(transformedInvoices);
       setCollections(transformedCollections);
-      
-      // Fetch returns for this customer (approved/processed)
-      const { data: returnsData, error: returnsError } = await supabase
-        .from('returns')
-        .select('id, invoice_id, total, status')
-        .eq('customer_id', customer.id)
-        .in('status', ['approved', 'processed']);
+      setCustomerReturns(returnsData);
 
-      if (returnsError) {
-        console.warn('Returns fetch issue:', returnsError);
-        setCustomerReturns([]);
-      } else {
-        setCustomerReturns(returnsData || []);
-      }
-      
       // Calculate summary
-      await calculateCustomerSummary(transformedInvoices, transformedCollections, returnsData || []);
+      await calculateCustomerSummary(transformedInvoices, transformedCollections, returnsData);
     } catch (error) {
       console.error('Error fetching customer data:', error);
       toast({
@@ -250,26 +227,28 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
       }
     });
 
-    const invoiceSummaries: InvoiceSummary[] = await Promise.all(
-      customerInvoices.map(async (invoice) => {
-        // Get allocations for this invoice
-        const { data: allocations, error } = await supabase
-          .from('collection_allocations')
-          .select('allocated_amount')
-          .eq('invoice_id', invoice.id);
+    // Batch-fetch all allocations for all invoices at once (avoid N+1)
+    const invoiceIds = customerInvoices.map(inv => inv.id);
+    const allocationsByInvoiceId: Record<string, number> = {};
+    if (invoiceIds.length > 0) {
+      const { data: allocationsData } = await supabase
+        .from('collection_allocations')
+        .select('invoice_id, allocated_amount')
+        .in('invoice_id', invoiceIds);
+      (allocationsData || []).forEach(a => {
+        allocationsByInvoiceId[a.invoice_id] = (allocationsByInvoiceId[a.invoice_id] || 0) + a.allocated_amount;
+      });
+    }
 
-        if (error) {
-          console.error('Error fetching allocations for invoice:', invoice.id, error);
-        }
-
-        const collectedAmount = roundMoney((allocations || []).reduce((sum, allocation) => sum + allocation.allocated_amount, 0));
+    const invoiceSummaries: InvoiceSummary[] = customerInvoices.map((invoice) => {
+        const collectedAmount = roundMoney(allocationsByInvoiceId[invoice.id] || 0);
         const invoiceReturnsFromHeader = customerReturnsList
           .filter((ret) => ret.invoice_id === invoice.id)
           .reduce((sum, ret) => sum + (ret.total || 0), 0);
         const invoiceReturnsFromItems = returnsByInvoiceId[invoice.id] || 0;
         const invoiceReturns = roundMoney(invoiceReturnsFromHeader + invoiceReturnsFromItems);
         const invoiceOutstandingAmount = Math.max(0, roundMoney(invoice.total - collectedAmount - invoiceReturns));
-        
+
         return {
           id: invoice.id,
           invoiceNumber: invoice.invoiceNumber || invoice.id,
@@ -277,11 +256,10 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
           collectedAmount,
           outstandingAmount: invoiceOutstandingAmount,
           createdAt: new Date(invoice.createdAt),
-          status: invoiceOutstandingAmount === 0 ? 'paid' : 
+          status: invoiceOutstandingAmount === 0 ? 'paid' :
                   collectedAmount > 0 ? 'partially_paid' : 'pending'
         };
-      })
-    );
+      });
 
     setCustomerInvoiceSummary({
       customerId: customer.id,

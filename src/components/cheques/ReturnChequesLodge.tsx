@@ -37,6 +37,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
   const [cheques, setCheques] = useState<ChequeInfo[]>([]);
   const [returnedCheques, setReturnedCheques] = useState<ChequeInfo[]>([]);
   const [filteredCheques, setFilteredCheques] = useState<ChequeInfo[]>([]);
+  const [returnedFilter, setReturnedFilter] = useState<'returned' | 'cleared'>('returned');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCheque, setSelectedCheque] = useState<ChequeInfo | null>(null);
   const [returnReason, setReturnReason] = useState('');
@@ -438,17 +439,23 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
     );
   }
 
+  const filteredReturnedCheques = returnedCheques.filter(c =>
+    returnedFilter === 'cleared'
+      ? c.status === 'resolved' || c.status === 'cleared'
+      : c.status === 'returned' || c.status === 'held'
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="p-4 md:p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
+      <div className="flex items-start gap-3">
+        <Button variant="ghost" size="sm" onClick={onBack} className="mt-0.5 shrink-0">
+          <ArrowLeft className="h-4 w-4 mr-1" />
           Back
         </Button>
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Return Cheques Lodge</h2>
-          <p className="text-gray-600">Mark cheques as returned and manage bounced payments</p>
+        <div className="min-w-0">
+          <h2 className="text-xl md:text-2xl font-bold text-gray-900 leading-tight">Return Cheques Lodge</h2>
+          <p className="text-sm text-gray-600 mt-0.5">Mark cheques as returned and manage bounced payments</p>
         </div>
       </div>
 
@@ -464,7 +471,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
         placeholder="Select agency to view cheques..."
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Cheque Selection */}
         <Card>
           <CardHeader>
@@ -486,7 +493,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
             </div>
 
             {/* Cheques List */}
-            <div className="space-y-2 max-h-96 overflow-y-auto">
+            <div className="space-y-2 max-h-[50vh] md:max-h-96 overflow-y-auto">
               {filteredCheques.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   {searchTerm ? `No cheques found matching "${searchTerm}"` : 'No outstanding cheques found'}
@@ -496,56 +503,40 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
                   <div
                     key={cheque.id}
                     className={`p-3 border rounded-lg cursor-pointer transition-colors ${
-                      selectedCheque?.id === cheque.id 
-                        ? 'border-blue-500 bg-blue-50' 
+                      selectedCheque?.id === cheque.id
+                        ? 'border-blue-500 bg-blue-50'
                         : 'hover:bg-gray-50'
                     }`}
                     onClick={() => setSelectedCheque(cheque)}
                   >
-                    <div className="flex justify-between items-start">
-                      <div className="flex-1">
-                        <div className="font-medium">Cheque #{cheque.chequeNumber}</div>
-                        <div className="text-sm text-gray-600">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium truncate">Cheque #{cheque.chequeNumber}</div>
+                        <div className="text-sm text-gray-600 truncate">
                           {cheque.customerName} • {cheque.bankName}
                         </div>
                         <div className="text-sm text-gray-500">
-                          Date: {cheque.chequeDate.toLocaleDateString()}
+                          {cheque.chequeDate.toLocaleDateString()}
                         </div>
                       </div>
-                      <div className="text-right space-y-2">
-                        <div className="font-bold text-green-600">
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <div className="font-bold text-green-600 text-sm">
                           LKR {cheque.amount.toLocaleString()}
                         </div>
                         <Badge variant={cheque.status === 'cleared' ? 'default' : cheque.status === 'held' ? 'destructive' : 'secondary'}>
                           {cheque.status}
                         </Badge>
-                        <div>
-                          {cheque.status === 'held' ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                handleUnholdOutstandingCheque(cheque);
-                              }}
-                            >
-                              <Play className="h-4 w-4 mr-1" />
-                              Unhold
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                handleHoldOutstandingCheque(cheque);
-                              }}
-                            >
-                              <Pause className="h-4 w-4 mr-1" />
-                              Hold
-                            </Button>
-                          )}
-                        </div>
+                        {cheque.status === 'held' ? (
+                          <Button size="sm" variant="outline" className="text-xs h-7 px-2"
+                            onClick={(e) => { e.stopPropagation(); handleUnholdOutstandingCheque(cheque); }}>
+                            <Play className="h-3 w-3 mr-1" />Unhold
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" className="text-xs h-7 px-2"
+                            onClick={(e) => { e.stopPropagation(); handleHoldOutstandingCheque(cheque); }}>
+                            <Pause className="h-3 w-3 mr-1" />Hold
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -630,7 +621,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
             <CardTitle>Outstanding Cheques Summary</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-3 gap-3 md:gap-4">
               <div className="text-center p-4 bg-blue-50 rounded-lg">
                 <div className="text-2xl font-bold text-blue-600">{cheques.length}</div>
                 <div className="text-sm text-gray-600">Total Outstanding Cheques</div>
@@ -654,7 +645,37 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
 
       <Card>
         <CardHeader>
-          <CardTitle>Returned Cheque Details</CardTitle>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <CardTitle>Returned Cheque Details</CardTitle>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={returnedFilter === 'returned' ? 'default' : 'outline'}
+                onClick={() => setReturnedFilter('returned')}
+                className="flex-1 sm:flex-none"
+              >
+                Returned
+                {returnedCheques.filter(c => c.status === 'returned' || c.status === 'held').length > 0 && (
+                  <span className="ml-1.5 bg-white/20 text-xs rounded-full px-1.5">
+                    {returnedCheques.filter(c => c.status === 'returned' || c.status === 'held').length}
+                  </span>
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant={returnedFilter === 'cleared' ? 'default' : 'outline'}
+                onClick={() => setReturnedFilter('cleared')}
+                className="flex-1 sm:flex-none"
+              >
+                Cleared
+                {returnedCheques.filter(c => c.status === 'resolved' || c.status === 'cleared').length > 0 && (
+                  <span className="ml-1.5 bg-white/20 text-xs rounded-full px-1.5">
+                    {returnedCheques.filter(c => c.status === 'resolved' || c.status === 'cleared').length}
+                  </span>
+                )}
+              </Button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           {recoveryCheque && (
@@ -665,7 +686,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
                   Clearing cheque {recoveryCheque.chequeNumber} with a new cheque. The replacement stays open until its cheque date.
                 </p>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
                   <Label htmlFor="replacementChequeNumber">Cheque Number</Label>
                   <Input
@@ -715,75 +736,129 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
             </div>
           )}
 
-          {returnedCheques.length === 0 ? (
+          {filteredReturnedCheques.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
-              No returned cheques found for the selected agency.
+              {returnedFilter === 'cleared'
+                ? 'No cleared cheques found.'
+                : 'No returned cheques found for the selected agency.'}
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Cheque #</th>
-                    <th className="px-3 py-2 text-left font-medium">Customer</th>
-                    <th className="px-3 py-2 text-left font-medium">Bank</th>
-                    <th className="px-3 py-2 text-right font-medium">Amount</th>
-                    <th className="px-3 py-2 text-left font-medium">Cheque Date</th>
-                    <th className="px-3 py-2 text-left font-medium">Returned Date</th>
-                    <th className="px-3 py-2 text-left font-medium">Status</th>
-                    <th className="px-3 py-2 text-left font-medium">Reason</th>
-                    <th className="px-3 py-2 text-right font-medium">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {returnedCheques.map((cheque) => (
-                    <tr key={cheque.id} className="border-t">
-                      <td className="px-3 py-2 font-medium text-gray-900">{cheque.chequeNumber}</td>
-                      <td className="px-3 py-2 text-gray-700">{cheque.customerName}</td>
-                      <td className="px-3 py-2 text-gray-700">{cheque.bankName}</td>
-                      <td className="px-3 py-2 text-right font-semibold text-red-600">
-                        LKR {cheque.amount.toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2 text-gray-600">{cheque.chequeDate.toLocaleDateString()}</td>
-                      <td className="px-3 py-2 text-gray-600">
-                        {cheque.returnedAt ? cheque.returnedAt.toLocaleDateString() : '-'}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Badge variant={cheque.status === 'held' ? 'secondary' : 'destructive'}>
+            <>
+              {/* Card layout — shown on mobile/tablet (< lg) */}
+              <div className="space-y-3 lg:hidden">
+                {filteredReturnedCheques.map((cheque) => (
+                  <div key={cheque.id} className="border rounded-lg p-4 space-y-3">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-gray-900">Cheque #{cheque.chequeNumber}</div>
+                        <div className="text-sm text-gray-600 truncate">{cheque.customerName}</div>
+                        <div className="text-sm text-gray-500">{cheque.bankName}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="font-bold text-red-600">LKR {cheque.amount.toLocaleString()}</div>
+                        <Badge variant={cheque.status === 'held' ? 'secondary' : cheque.status === 'resolved' ? 'default' : 'destructive'} className="mt-1">
                           {cheque.status}
                         </Badge>
-                      </td>
-                      <td className="px-3 py-2 text-gray-700">{cheque.returnReason || '-'}</td>
-                      <td className="px-3 py-2">
-                        <div className="flex justify-end gap-2">
-                          {cheque.status === 'held' ? (
-                            <Button size="sm" variant="outline" onClick={() => handleManualPass(cheque)}>
-                              <CheckCircle2 className="h-4 w-4 mr-1" />
-                              Pass
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600">
+                      <div><span className="font-medium">Cheque Date:</span> {cheque.chequeDate.toLocaleDateString()}</div>
+                      <div><span className="font-medium">Returned:</span> {cheque.returnedAt ? cheque.returnedAt.toLocaleDateString() : '-'}</div>
+                      {cheque.returnReason && (
+                        <div className="col-span-2"><span className="font-medium">Reason:</span> {cheque.returnReason}</div>
+                      )}
+                    </div>
+                    {returnedFilter === 'returned' && (
+                      <div className="flex flex-wrap gap-2 pt-1 border-t">
+                        {cheque.status === 'held' ? (
+                          <Button size="sm" variant="outline" onClick={() => handleManualPass(cheque)}>
+                            <CheckCircle2 className="h-4 w-4 mr-1" />Pass
+                          </Button>
+                        ) : (
+                          <>
+                            <Button size="sm" variant="outline" onClick={() => handleClearWithMoney(cheque)}>
+                              <Banknote className="h-4 w-4 mr-1" />Money
                             </Button>
-                          ) : (
-                            <>
-                              <Button size="sm" variant="outline" onClick={() => handleClearWithMoney(cheque)}>
-                                <Banknote className="h-4 w-4 mr-1" />
-                                Money
-                              </Button>
-                              <Button size="sm" variant="outline" onClick={() => openReplacementChequeForm(cheque)}>
-                                <Landmark className="h-4 w-4 mr-1" />
-                                Cheque
-                              </Button>
-                              <Button size="sm" variant="outline" onClick={() => handleHoldCheque(cheque)}>
-                                <Pause className="h-4 w-4 mr-1" />
-                                Hold
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      </td>
+                            <Button size="sm" variant="outline" onClick={() => openReplacementChequeForm(cheque)}>
+                              <Landmark className="h-4 w-4 mr-1" />Cheque
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => handleHoldCheque(cheque)}>
+                              <Pause className="h-4 w-4 mr-1" />Hold
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Table layout — shown on desktop (lg+) */}
+              <div className="hidden lg:block overflow-x-auto rounded-lg border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Cheque #</th>
+                      <th className="px-3 py-2 text-left font-medium">Customer</th>
+                      <th className="px-3 py-2 text-left font-medium">Bank</th>
+                      <th className="px-3 py-2 text-right font-medium">Amount</th>
+                      <th className="px-3 py-2 text-left font-medium">Cheque Date</th>
+                      <th className="px-3 py-2 text-left font-medium">Returned Date</th>
+                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                      <th className="px-3 py-2 text-left font-medium">Reason</th>
+                      {returnedFilter === 'returned' && (
+                        <th className="px-3 py-2 text-right font-medium">Action</th>
+                      )}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {filteredReturnedCheques.map((cheque) => (
+                      <tr key={cheque.id} className="border-t">
+                        <td className="px-3 py-2 font-medium text-gray-900">{cheque.chequeNumber}</td>
+                        <td className="px-3 py-2 text-gray-700">{cheque.customerName}</td>
+                        <td className="px-3 py-2 text-gray-700">{cheque.bankName}</td>
+                        <td className="px-3 py-2 text-right font-semibold text-red-600">
+                          LKR {cheque.amount.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-2 text-gray-600">{cheque.chequeDate.toLocaleDateString()}</td>
+                        <td className="px-3 py-2 text-gray-600">
+                          {cheque.returnedAt ? cheque.returnedAt.toLocaleDateString() : '-'}
+                        </td>
+                        <td className="px-3 py-2">
+                          <Badge variant={cheque.status === 'held' ? 'secondary' : cheque.status === 'resolved' ? 'default' : 'destructive'}>
+                            {cheque.status}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-2 text-gray-700 max-w-[160px] truncate">{cheque.returnReason || '-'}</td>
+                        {returnedFilter === 'returned' && (
+                          <td className="px-3 py-2">
+                            <div className="flex justify-end gap-2">
+                              {cheque.status === 'held' ? (
+                                <Button size="sm" variant="outline" onClick={() => handleManualPass(cheque)}>
+                                  <CheckCircle2 className="h-4 w-4 mr-1" />Pass
+                                </Button>
+                              ) : (
+                                <>
+                                  <Button size="sm" variant="outline" onClick={() => handleClearWithMoney(cheque)}>
+                                    <Banknote className="h-4 w-4 mr-1" />Money
+                                  </Button>
+                                  <Button size="sm" variant="outline" onClick={() => openReplacementChequeForm(cheque)}>
+                                    <Landmark className="h-4 w-4 mr-1" />Cheque
+                                  </Button>
+                                  <Button size="sm" variant="outline" onClick={() => handleHoldCheque(cheque)}>
+                                    <Pause className="h-4 w-4 mr-1" />Hold
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

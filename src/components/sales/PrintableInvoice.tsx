@@ -340,10 +340,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
                   <td>Subtotal:</td>
                   <td>LKR ${invoice.subtotal.toLocaleString()}</td>
                 </tr>
-                <tr style="color: green;">
-                  <td>Discount:</td>
-                  <td>-LKR ${invoice.discountAmount.toLocaleString()}</td>
-                </tr>
+                ${invoice.discountAmount > 0 ? `<tr style="color: green;"><td>Discount:</td><td>-LKR ${invoice.discountAmount.toLocaleString()}</td></tr>` : ''}
                 <tr class="total-row">
                   <td>Total Amount:</td>
                   <td>LKR ${invoice.total.toLocaleString()}</td>
@@ -351,13 +348,6 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               </table>
             </div>
             
-            <div class="signature-section">
-              <div style="margin-bottom: 10px;">Customer Signature</div>
-              ${invoice.signature ? 
-                `<img src="${invoice.signature}" alt="Customer Signature" class="signature-image" />` : 
-                '<div style="width: 200px; height: 60px; border-bottom: 1px solid #333; margin-left: auto;"></div>'
-              }
-            </div>
             
             <div class="footer">
               <div>Invoice generated on: ${new Date().toLocaleString()}</div>
@@ -595,10 +585,12 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
                 <span>Subtotal:</span>
                 <span>LKR {invoice.subtotal.toLocaleString()}</span>
               </div>
-              <div className="flex justify-between py-1 text-green-600">
-                <span>Discount:</span>
-                <span>-LKR {invoice.discountAmount.toLocaleString()}</span>
-              </div>
+              {invoice.discountAmount > 0 && (
+                <div className="flex justify-between py-1 text-green-600">
+                  <span>Discount:</span>
+                  <span>-LKR {invoice.discountAmount.toLocaleString()}</span>
+                </div>
+              )}
               <div className="flex justify-between py-2 text-lg font-bold border-t border-gray-300">
                 <span>Total Amount:</span>
                 <span>LKR {invoice.total.toLocaleString()}</span>
@@ -607,25 +599,6 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="border-t pt-6 mt-8">
-          <div className="text-right">
-            <div className="mb-4">
-              <p className="text-sm text-gray-600">Customer Signature</p>
-              {invoice.signature ? (
-                <div className="mt-2">
-                  <img 
-                    src={invoice.signature} 
-                    alt="Customer Signature" 
-                    className="w-48 h-16 object-contain border-b border-gray-400 ml-auto"
-                  />
-                </div>
-              ) : (
-                <div className="mt-8 border-b border-gray-400 w-48 ml-auto"></div>
-              )}
-            </div>
-          </div>
-        </div>
 
         {/* Additional Info */}
         <div className="mt-8 text-xs text-gray-500">

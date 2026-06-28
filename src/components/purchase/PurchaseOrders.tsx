@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Search, Eye, Plus, Package } from 'lucide-react';
+import { Search, Eye, Plus, Package, Pencil } from 'lucide-react';
 import EnhancedPurchaseOrderForm from './EnhancedPurchaseOrderForm';
 import PrintablePurchaseOrder from './PrintablePurchaseOrder';
 import { supabase } from '@/integrations/supabase/client';
@@ -21,6 +21,7 @@ const PurchaseOrders = ({ user }: PurchaseOrdersProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [editingOrder, setEditingOrder] = useState<PurchaseOrder | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<PurchaseOrder | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const { toast } = useToast();
@@ -120,6 +121,7 @@ const PurchaseOrders = ({ user }: PurchaseOrdersProps) => {
   const handleOrderSuccess = async () => {
     await fetchOrders();
     setShowCreateForm(false);
+    setEditingOrder(null);
   };
 
   if (showCreateForm) {
@@ -128,6 +130,17 @@ const PurchaseOrders = ({ user }: PurchaseOrdersProps) => {
         user={user}
         onSuccess={handleOrderSuccess}
         onCancel={() => setShowCreateForm(false)}
+      />
+    );
+  }
+
+  if (editingOrder) {
+    return (
+      <EnhancedPurchaseOrderForm
+        user={user}
+        onSuccess={handleOrderSuccess}
+        onCancel={() => setEditingOrder(null)}
+        editingOrder={editingOrder}
       />
     );
   }
@@ -250,14 +263,24 @@ const PurchaseOrders = ({ user }: PurchaseOrdersProps) => {
                     </div>
                     
                     <div className="flex gap-2">
-                      <Button 
-                        size="sm" 
+                      <Button
+                        size="sm"
                         variant="outline"
                         onClick={() => setSelectedOrder(order)}
                       >
                         <Eye className="h-4 w-4 mr-1" />
                         View
                       </Button>
+                      {order.status === 'pending' && user.role !== 'superuser' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setEditingOrder(order)}
+                        >
+                          <Pencil className="h-4 w-4 mr-1" />
+                          Edit
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>

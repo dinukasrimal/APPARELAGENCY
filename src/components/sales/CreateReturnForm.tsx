@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { User } from '@/types/auth';
 import { ReturnItem } from '@/types/sales';
 import { Customer } from '@/types/customer';
@@ -30,6 +30,8 @@ const CreateReturnForm = ({ user, customers, products, onSubmit, onCancel }: Cre
   const [discountType, setDiscountType] = useState<'percentage' | 'amount'>('percentage');
   const [discountValue, setDiscountValue] = useState(0);
   const [priceType, setPriceType] = useState<PriceType>('selling_price');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
 
   useEffect(() => {
     const loadPriceType = async () => {
@@ -172,6 +174,10 @@ const CreateReturnForm = ({ user, customers, products, onSubmit, onCancel }: Cre
       return;
     }
 
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+
     try {
       // Get current location with better error handling
       const position = await new Promise<GeolocationPosition>((resolve, reject) => {
@@ -236,6 +242,9 @@ const CreateReturnForm = ({ user, customers, products, onSubmit, onCancel }: Cre
       
       console.log('Submitting return data with fallback location:', returnData);
       await onSubmit(returnData);
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -530,12 +539,12 @@ const CreateReturnForm = ({ user, customers, products, onSubmit, onCancel }: Cre
               <Button variant="outline" onClick={onCancel}>
                 Cancel
               </Button>
-              <Button 
+              <Button
                 onClick={handleSubmit}
-                disabled={returnItems.length === 0 || !reason.trim()}
+                disabled={isSubmitting || returnItems.length === 0 || !reason.trim()}
                 className="bg-red-600 hover:bg-red-700"
               >
-                Process Return
+                {isSubmitting ? 'Processing...' : 'Process Return'}
               </Button>
             </div>
           </CardContent>

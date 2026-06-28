@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { sendSMS, SmsTemplates } from '@/services/sms.service';
+import { generateAndUploadInvoicePdf } from '@/services/invoice-pdf.service';
 import { User } from '@/types/auth';
 import { Customer } from '@/types/customer';
 import { Product } from '@/types/product';
@@ -50,6 +52,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
   const [signature, setSignature] = useState<string>('');
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const [gpsCapturing, setGpsCapturing] = useState(false);
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [inventoryLoading, setInventoryLoading] = useState(false);
@@ -101,11 +104,11 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       const nameA = a.name || '';
       const nameB = b.name || '';
 
-      // Macbell grouping: standard MACBELL- variants before MAC BELL LONG LEG, both sorted by size
+      // Macbell grouping: Long Leg first (S–2XL), then regular MACBELL- variants
       const macbellPriority = (name: string) => {
-        if (/^macbell-\s*/i.test(name)) return 0; // MACBELL- S/M/L...
-        if (/^mac bell long leg/i.test(name)) return 1; // Long leg variants
-        return 2; // everything else
+        if (/mac\s*bell\s*long\s*leg/i.test(name)) return 0; // Long leg first
+        if (/^macbell[-\s]/i.test(name)) return 1;            // Regular macbell second
+        return 2;
       };
 
       const macbellA = macbellPriority(nameA);
@@ -135,10 +138,11 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       };
 
       const extractSizeFromName = (name: string) => {
+        const normalizedName = name.replace(/\s*\([^)]*\)\s*$/, '').trim();
         // Check for size patterns at the end of product name
         const sizePatterns = [
-          // Clothing sizes: S, M, L, XL, 2XL, 3XL, 4XL
-          /\b(S|M|L|XL|2XL|3XL|4XL)$/i,
+          // Clothing sizes: XS, S, M, L, XL, 2XL, 3XL, 4XL
+          /\b(XS|S|M|L|XL|2XL|3XL|4XL)$/i,
           // Numeric sizes: 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42
           /\b(20|22|24|26|28|30|32|34|36|38|40|42)$/,
           // Larger numeric sizes: 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100
@@ -148,7 +152,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         ];
 
         for (const pattern of sizePatterns) {
-          const match = name.match(pattern);
+          const match = normalizedName.match(pattern);
           if (match) {
             return match[1];
           }
@@ -160,7 +164,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         if (!size) return 999; // No size pattern found, put at end
 
         // Clothing sizes order
-        const clothingSizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
+        const clothingSizes = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
         const clothingIndex = clothingSizes.indexOf(size.toUpperCase());
         if (clothingIndex !== -1) return clothingIndex;
 
@@ -344,10 +348,23 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       // Sort products using same logic as sales orders.
       const sortedProducts = sortProductsByName(filteredProducts);
 
+      const sortSizes = (sizes: string[]) => {
+        const preferredOrder = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+        return [...sizes].sort((a, b) => {
+          const orderA = preferredOrder.indexOf(a.toUpperCase());
+          const orderB = preferredOrder.indexOf(b.toUpperCase());
+          if (orderA !== -1 || orderB !== -1) {
+            return (orderA === -1 ? preferredOrder.length : orderA) -
+              (orderB === -1 ? preferredOrder.length : orderB);
+          }
+          return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+        });
+      };
+
       setProductGridItems(sortedProducts.map(product => ({
         product,
         color: selectedColor,
-        sizes: product.sizes.map(size => ({ size, quantity: 0 }))
+        sizes: sortSizes(product.sizes).map(size => ({ size, quantity: 0 }))
       })));
     } else {
       setProductGridItems([]);
@@ -485,6 +502,8 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       return;
     }
 
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     setIsSubmitting(true);
     
     try {
@@ -500,6 +519,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
           description: "Please wait for GPS coordinates to be captured",
           variant: "destructive"
         });
+        submitLockRef.current = false;
         setIsSubmitting(false);
         return;
       }
@@ -515,6 +535,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
           description: discountValidation.message || 'This discount requires superuser approval. Please reduce the discount or contact a superuser.',
           variant: "destructive"
         });
+        submitLockRef.current = false;
         setIsSubmitting(false);
         return;
       }
@@ -606,6 +627,30 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         description: `Invoice ${invoiceData.id} has been created successfully with inventory updated`
       });
 
+      const customerForSms = customers.find(c => c.id === selectedCustomerId) ?? selectedCustomer;
+      generateAndUploadInvoicePdf({
+        invoiceId: invoiceData.id,
+        invoiceNumber,
+        customerName: customerForSms?.name ?? '',
+        agencyName: user.agencyName ?? '',
+        date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
+        items: invoiceSummary.map(i => ({
+          productName: i.productName,
+          color: i.color,
+          size: i.size,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          total: i.total,
+        })),
+        subtotal,
+        discountAmount,
+        total,
+        gpsLat: gpsCoordinates.latitude || undefined,
+        gpsLng: gpsCoordinates.longitude || undefined,
+      }).then(pdfUrl => {
+        sendSMS(customerForSms?.phone, SmsTemplates.invoiceCreated(customerForSms?.name ?? '', invoiceNumber, total, pdfUrl ?? undefined));
+      });
+
       onSuccess();
     } catch (error) {
       console.error('Error creating direct invoice:', error);
@@ -615,6 +660,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         variant: "destructive"
       });
     } finally {
+      submitLockRef.current = false;
       setIsSubmitting(false);
     }
   };
