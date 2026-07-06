@@ -204,7 +204,7 @@ const ReturnChequesLodge = ({ user, onBack }: ReturnChequesLodgeProps) => {
         }
       }
 
-      setCheques(outstandingChequesList);
+      setCheques(outstandingChequesList.sort((a, b) => b.chequeDate.getTime() - a.chequeDate.getTime()));
       setReturnedCheques(
         returnedChequesList.sort((a, b) => (b.returnedAt?.getTime() || 0) - (a.returnedAt?.getTime() || 0))
       );

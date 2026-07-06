@@ -125,6 +125,83 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   } | null>(null);
   const [comparisonLoading, setComparisonLoading] = useState(false);
 
+  // Category breakdown for comparison tab
+  const [compCategoryData, setCompCategoryData] = useState<Array<{category: string; target: number; achieved: number}>>([]);
+  const [compCategoryLoading, setCompCategoryLoading] = useState(false);
+
+  const fetchCompCategoryBreakdown = async () => {
+    const agencyId = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
+    if (!agencyId) return;
+    setCompCategoryLoading(true);
+    try {
+      const year = parseInt(comparisonYear);
+      const month = parseInt(comparisonMonth);
+      const from = new Date(year, month - 1, 1).toISOString();
+      const to = new Date(year, month, 0, 23, 59, 59).toISOString();
+
+      // 1. All sub-categories from products table (so zero-achievement ones appear)
+      const { data: products } = await supabase
+        .from('products')
+        .select('sub_category')
+        .not('sub_category', 'is', null);
+      const allSubCats = Array.from(new Set((products || []).map((p: any) => p.sub_category as string).filter(Boolean)));
+
+      // 2. Build target map from external targets matching this month
+      const externalSvc = ExternalDataService.getInstance();
+      const targetMap = new Map<string, number>();
+      externalTargets.forEach((t: any) => {
+        const months = externalSvc.parseTargetMonths(t.target_months);
+        if (!months.includes(month)) return;
+        const rawYear = parseInt(t.target_year || t.year || '0');
+        if (rawYear !== year) return;
+        const cats = externalSvc.getTargetCategories(t.target_data);
+        cats.forEach(({ category, target: tval }) => {
+          targetMap.set(category, (targetMap.get(category) || 0) + tval);
+        });
+      });
+
+      // 3. Invoice achievement per sub-category
+      const { data: invoices } = await supabase
+        .from('invoices')
+        .select('id')
+        .eq('agency_id', agencyId)
+        .gte('created_at', from)
+        .lte('created_at', to);
+
+      const invoiceIds = (invoices || []).map((i: any) => i.id);
+      const achieveMap = new Map<string, number>();
+
+      if (invoiceIds.length > 0) {
+        const { data: items } = await supabase
+          .from('invoice_items')
+          .select('quantity, unit_price, products!inner(sub_category)')
+          .in('invoice_id', invoiceIds);
+
+        (items || []).forEach((item: any) => {
+          const cat = item.products?.sub_category || 'Uncategorized';
+          const amount = Number(item.quantity) * Number(item.unit_price);
+          achieveMap.set(cat, (achieveMap.get(cat) || 0) + amount);
+        });
+      }
+
+      // 4. Only sub-cats that have a real (> 0) target assigned — sorted by achieved desc
+      const result = Array.from(targetMap.entries())
+        .filter(([, tval]) => tval > 0)
+        .map(([cat, tval]) => ({
+          category: cat,
+          target: tval,
+          achieved: achieveMap.get(cat) || 0,
+        })).sort((a, b) => b.achieved - a.achieved);
+
+      setCompCategoryData(result);
+    } catch (err) {
+      console.error('Error fetching category breakdown:', err);
+      setCompCategoryData([]);
+    } finally {
+      setCompCategoryLoading(false);
+    }
+  };
+
   // Set agency name for targets filtering (either selected agency or user's agency)
   useEffect(() => {
     const setTargetAgencyName = async () => {
@@ -345,6 +422,7 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   useEffect(() => {
     if (activeTab === 'comparison' && currentUserName && user) {
       fetchComparisonData();
+      fetchCompCategoryBreakdown();
     }
   }, [activeTab, currentUserName, comparisonMonth, comparisonYear, selectedAgencyId, user]);
 
@@ -859,6 +937,80 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                   </p>
                 </div>
               )}
+
+              {/* Category Breakdown */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                  <BarChart3 className="h-5 w-5 text-purple-600" />
+                  Category Breakdown — {comparisonMonthLabel} {comparisonYear}
+                </h3>
+                {compCategoryLoading ? (
+                  <div className="text-center py-6">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600 mx-auto mb-2"></div>
+                    <p className="text-sm text-gray-500">Loading categories...</p>
+                  </div>
+                ) : compCategoryData.length === 0 ? (
+                  <div className="text-center py-6 text-gray-400 text-sm">No targets assigned for this period.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {(() => {
+                      const total = compCategoryData.length;
+                      const achieved = compCategoryData.filter(c => c.achieved >= c.target).length;
+                      const pctAchieved = total > 0 ? (achieved / total) * 100 : 0;
+                      return (
+                        <div className="flex items-center justify-between bg-purple-50 border border-purple-200 rounded-lg px-4 py-3">
+                          <span className="text-sm font-medium text-purple-900">
+                            {achieved} of {total} sub-categories achieved target
+                          </span>
+                          <Badge className={`${pctAchieved >= 75 ? 'bg-green-600' : pctAchieved >= 50 ? 'bg-yellow-500' : 'bg-red-500'} text-white`}>
+                            {pctAchieved.toFixed(0)}%
+                          </Badge>
+                        </div>
+                      );
+                    })()}
+                    {compCategoryData.map((cat) => {
+                      const pct = cat.target > 0 ? Math.min((cat.achieved / cat.target) * 100, 100) : 0;
+                      const gap = cat.achieved - cat.target;
+                      const isOnTrack = cat.target === 0 || cat.achieved >= cat.target;
+                      return (
+                        <Card key={cat.category}>
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="font-medium text-gray-900">{cat.category}</span>
+                              <Badge variant={isOnTrack ? 'default' : 'secondary'} className="text-xs">
+                                {cat.target === 0 ? 'No Target' : isOnTrack ? 'On Track' : 'Below Target'}
+                              </Badge>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 text-sm mb-3">
+                              <div>
+                                <p className="text-gray-500 text-xs">Target</p>
+                                <p className="font-semibold text-gray-900">
+                                  {cat.target > 0 ? `Rs ${cat.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-gray-500 text-xs">Achieved</p>
+                                <p className="font-semibold text-gray-900">Rs {cat.achieved.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                              </div>
+                              <div>
+                                <p className="text-gray-500 text-xs">{cat.target > 0 ? 'Gap' : 'Progress'}</p>
+                                <p className={`font-semibold ${gap >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                  {cat.target > 0 ? `${gap >= 0 ? '+' : ''}Rs ${gap.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : `${pct.toFixed(0)}%`}
+                                </p>
+                              </div>
+                            </div>
+                            {cat.target > 0 && <Progress value={pct} className="h-2" />}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                    <div className="flex justify-between text-sm text-gray-500 pt-1 px-1">
+                      <span>Total Target: Rs {compCategoryData.reduce((s, c) => s + c.target, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                      <span>Total Achieved: Rs {compCategoryData.reduce((s, c) => s + c.achieved, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="text-center py-12">

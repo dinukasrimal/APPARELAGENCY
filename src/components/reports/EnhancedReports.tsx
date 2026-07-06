@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
-import { Calendar, Users, ShoppingCart, AlertTriangle, Download, TrendingUp, Percent, ArrowLeft, MapPin, Receipt, DollarSign } from 'lucide-react';
+import { Calendar, Users, ShoppingCart, AlertTriangle, Download, TrendingUp, Percent, ArrowLeft, MapPin, Receipt, DollarSign, Truck, Map as MapIcon } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
@@ -85,6 +85,25 @@ interface InternalInvoiceDetail {
   createdByName: string;
 }
 
+interface DeliveryDetail {
+  id: string;
+  invoiceId: string;
+  customerName: string;
+  status: string;
+  receivedByName: string | null;
+  deliveryNotes: string | null;
+  deliveredAt: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+interface GpsPoint {
+  lat: number;
+  lng: number;
+  label: string;
+  type: string;
+}
+
 interface DailySummary {
   date: string;
   totalKm: number;
@@ -98,6 +117,8 @@ interface DailySummary {
   expenseDetails: ExpenseDetail[];
   salesOrderDetails: SalesOrderDetail[];
   internalInvoiceDetails: InternalInvoiceDetail[];
+  deliveryDetails: DeliveryDetail[];
+  gpsPoints: GpsPoint[];
 }
 
 interface EnhancedReportsProps {
@@ -200,6 +221,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
         salesOrdersRes,
         customersDetailRes,
         nonProductiveDetailRes,
+        deliveriesRes,
       ] = await Promise.all([
         supabase
           .from('customers')
@@ -236,7 +258,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           .lte('occurred_at', endDateTime),
         supabase
           .from('sales_orders')
-          .select('id, customer_name, order_number, status, total, created_at, created_by')
+          .select('id, customer_name, order_number, status, total, created_at, created_by, latitude, longitude')
           .eq('agency_id', selectedAgency)
           .gte('created_at', startDateTime)
           .lte('created_at', endDateTime),
@@ -252,6 +274,12 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           .eq('agency_id', selectedAgency)
           .gte('created_at', startDateTime)
           .lte('created_at', endDateTime),
+        supabase
+          .from('deliveries')
+          .select('id, invoice_id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, invoices(customer_name)')
+          .eq('agency_id', selectedAgency)
+          .gte('delivered_at', startDateTime)
+          .lte('delivered_at', endDateTime),
       ]);
 
       if (customersOnboardedRes.error) throw customersOnboardedRes.error;
@@ -263,6 +291,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       if (salesOrdersRes.error) throw salesOrdersRes.error;
       if (customersDetailRes.error) throw customersDetailRes.error;
       if (nonProductiveDetailRes.error) throw nonProductiveDetailRes.error;
+      if (deliveriesRes.error) console.warn('Deliveries fetch failed:', deliveriesRes.error.message);
 
       const internalInvoices = await fetchAllSupabaseRows<{
         id: string;
@@ -271,10 +300,12 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
         total: number | null;
         created_at: string;
         created_by: string | null;
+        latitude: number | null;
+        longitude: number | null;
       }>(() =>
         supabase
           .from('invoices')
-          .select('id, invoice_number, customer_name, total, created_at, created_by')
+          .select('id, invoice_number, customer_name, total, created_at, created_by, latitude, longitude')
           .eq('agency_id', selectedAgency)
           .gte('created_at', startDateTime)
           .lte('created_at', endDateTime)
@@ -285,6 +316,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       const salesOrders = salesOrdersRes.data || [];
       const customersDetail = customersDetailRes.data || [];
       const nonProductiveDetail = nonProductiveDetailRes.data || [];
+      const deliveries = deliveriesRes.data || [];
 
       let odometerEntries: Array<{
         time_tracking_id: string;
@@ -337,6 +369,8 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
             expenseDetails: [],
             salesOrderDetails: [],
             internalInvoiceDetails: [],
+            deliveryDetails: [],
+            gpsPoints: [],
           });
         }
         return summaryMap.get(date)!;
@@ -448,6 +482,14 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           createdBy: order.created_by,
           createdByName: order.created_by ? (userNameById.get(order.created_by) || 'Unknown') : 'Unknown',
         });
+        if (order.latitude && order.longitude) {
+          summary.gpsPoints.push({
+            lat: Number(order.latitude),
+            lng: Number(order.longitude),
+            label: `Order: ${order.customer_name}`,
+            type: 'order',
+          });
+        }
       });
 
       const selectedAgencyName = agencies.find((agency) => agency.id === selectedAgency)?.name || user.agencyName || '';
@@ -467,6 +509,40 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           createdBy: invoice.created_by,
           createdByName: invoice.created_by ? (userNameById.get(invoice.created_by) || 'Unknown') : 'Unknown',
         });
+        if (invoice.latitude && invoice.longitude) {
+          summary.gpsPoints.push({
+            lat: Number(invoice.latitude),
+            lng: Number(invoice.longitude),
+            label: `Invoice: ${invoice.customer_name}`,
+            type: 'invoice',
+          });
+        }
+      });
+
+      deliveries.forEach((delivery) => {
+        const dateKey = delivery.delivered_at ? toDateKey(delivery.delivered_at) : null;
+        if (!dateKey) return;
+        const summary = getSummary(dateKey);
+        const customerName = (delivery.invoices as any)?.customer_name || '';
+        summary.deliveryDetails.push({
+          id: delivery.id,
+          invoiceId: delivery.invoice_id || '',
+          customerName,
+          status: delivery.status || '',
+          receivedByName: delivery.received_by_name ?? null,
+          deliveryNotes: delivery.delivery_notes ?? null,
+          deliveredAt: delivery.delivered_at ?? null,
+          lat: delivery.delivery_latitude != null ? Number(delivery.delivery_latitude) : null,
+          lng: delivery.delivery_longitude != null ? Number(delivery.delivery_longitude) : null,
+        });
+        if (delivery.delivery_latitude && delivery.delivery_longitude) {
+          summary.gpsPoints.push({
+            lat: Number(delivery.delivery_latitude),
+            lng: Number(delivery.delivery_longitude),
+            label: `Delivery: ${customerName || delivery.invoice_id || ''}`,
+            type: 'delivery',
+          });
+        }
       });
 
       const dailySummariesList = Array.from(summaryMap.values()).sort((a, b) =>
@@ -515,6 +591,63 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const openMapForDay = (gpsPoints: GpsPoint[]) => {
+    if (gpsPoints.length === 0) return;
+
+    const colorMap: Record<string, string> = {
+      delivery: '#16a34a',
+      invoice: '#2563eb',
+      order: '#ea580c',
+    };
+
+    const markers = gpsPoints.map((p) => {
+      const color = colorMap[p.type] || '#6b7280';
+      const safeLabel = p.label.replace(/'/g, "\\'");
+      return `L.marker([${p.lat}, ${p.lng}], {
+        icon: L.divIcon({
+          className: '',
+          html: '<div style="background:${color};width:14px;height:14px;border-radius:50%;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.5)" title="${safeLabel}"></div>',
+          iconSize: [14, 14], iconAnchor: [7, 7]
+        })
+      }).addTo(map).bindPopup('${safeLabel}')`;
+    }).join(';\n');
+
+    const boundsArr = gpsPoints.map((p) => `[${p.lat}, ${p.lng}]`).join(',');
+
+    const legend = Object.entries({ Delivery: '#16a34a', Invoice: '#2563eb', 'Sales Order': '#ea580c' })
+      .map(([label, color]) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="background:${color};width:12px;height:12px;border-radius:50%;display:inline-block"></span>${label}</span>`)
+      .join('');
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Audit Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  body{margin:0;font-family:sans-serif}
+  #map{width:100vw;height:calc(100vh - 40px)}
+  #legend{height:40px;display:flex;align-items:center;padding:0 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:13px}
+</style>
+</head>
+<body>
+<div id="legend">${legend}</div>
+<div id="map"></div>
+<script>
+var map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
+${markers};
+map.fitBounds([${boundsArr}],{padding:[30,30]});
+</script>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
   };
 
   const exportPivotCSV = () => {
@@ -1200,6 +1333,64 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
                                         <td className="px-3 py-2 text-slate-600">{detail.createdByName}</td>
                                         <td className="px-3 py-2 text-slate-500">
                                           {new Date(detail.createdAt).toLocaleString()}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="text-sm font-semibold text-slate-700 flex items-center gap-1">
+                                <Truck className="h-4 w-4 text-green-600" />
+                                Delivered Shops
+                              </h4>
+                              {day.gpsPoints.length > 0 && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openMapForDay(day.gpsPoints)}
+                                  className="text-xs h-7 gap-1"
+                                >
+                                  <MapIcon className="h-3 w-3" />
+                                  Open Map ({day.gpsPoints.length} pins)
+                                </Button>
+                              )}
+                            </div>
+                            {day.deliveryDetails.length === 0 ? (
+                              <p className="text-sm text-slate-500">No deliveries recorded for this day.</p>
+                            ) : (
+                              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                                <table className="min-w-full text-sm">
+                                  <thead className="bg-slate-50 text-slate-600">
+                                    <tr>
+                                      <th className="px-3 py-2 text-left font-medium">Customer</th>
+                                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                                      <th className="px-3 py-2 text-left font-medium">Received By</th>
+                                      <th className="px-3 py-2 text-left font-medium">Notes</th>
+                                      <th className="px-3 py-2 text-left font-medium">Delivered At</th>
+                                      <th className="px-3 py-2 text-left font-medium">GPS</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {day.deliveryDetails.map((detail) => (
+                                      <tr key={detail.id} className="border-t">
+                                        <td className="px-3 py-2 text-slate-700 font-medium">{detail.customerName || '-'}</td>
+                                        <td className="px-3 py-2">
+                                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                                            detail.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'
+                                          }`}>{detail.status || '-'}</span>
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-600">{detail.receivedByName || '-'}</td>
+                                        <td className="px-3 py-2 text-slate-500 max-w-[200px] truncate">{detail.deliveryNotes || '-'}</td>
+                                        <td className="px-3 py-2 text-slate-500">
+                                          {detail.deliveredAt ? new Date(detail.deliveredAt).toLocaleString('en-LK', { timeZone: 'Asia/Colombo' }) : '-'}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-500 text-xs">
+                                          {detail.lat && detail.lng ? `${detail.lat.toFixed(4)}, ${detail.lng.toFixed(4)}` : '-'}
                                         </td>
                                       </tr>
                                     ))}

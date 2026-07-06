@@ -660,6 +660,38 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
     }
   };
 
+  const handleEditOrder = async (order: SalesOrder) => {
+    try {
+      const { data, error } = await supabase
+        .from('sales_order_items')
+        .select('id, sales_order_id, product_id, product_name, color, size, quantity, unit_price, total')
+        .eq('sales_order_id', order.id);
+
+      if (error) throw error;
+
+      setEditingOrder({
+        ...order,
+        items: (data || []).map((item) => ({
+          id: item.id,
+          productId: item.product_id || '',
+          productName: item.product_name,
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: Number(item.unit_price),
+          total: Number(item.total)
+        }))
+      });
+    } catch (error) {
+      console.error('Error loading sales order items for edit:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load order items',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const invalidateSalesCache = () => {
     const cacheKey = `${user.id}:${user.agencyId}:${selectedAgencyId}`;
     delete _salesCache[cacheKey];
@@ -911,7 +943,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         order={selectedOrder}
         user={effectiveUser}
         onBack={() => setSelectedOrder(null)}
-        onEdit={canEdit(selectedOrder) ? () => setEditingOrder(selectedOrder) : undefined}
+        onEdit={canEdit(selectedOrder) ? () => handleEditOrder(selectedOrder) : undefined}
       />
     );
   }
@@ -1182,7 +1214,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
                             <Button 
                               size="sm" 
                               variant="outline"
-                              onClick={() => setEditingOrder(order)}
+                              onClick={() => handleEditOrder(order)}
                               className="text-xs h-7 md:h-8"
                             >
                               <Edit className="h-3 w-3 md:h-4 md:w-4 mr-1" />

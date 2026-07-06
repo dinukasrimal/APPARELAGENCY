@@ -2,19 +2,20 @@ import { useState } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, BarChart3, Calendar, TrendingUp, FileText, Users, WalletCards } from 'lucide-react';
+import { ArrowLeft, BarChart3, Calendar, TrendingUp, FileText, Users, WalletCards, Receipt } from 'lucide-react';
 import EnhancedReports from './EnhancedReports';
 import DailyLogReport from './DailyLogReport';
 import CategorySizeInvoiceReport from './CategorySizeInvoiceReport';
 import CustomerEngagementReport from './CustomerEngagementReport';
 import AgingOutstandingReport from './AgingOutstandingReport';
+import SalesReport from './SalesReport';
 
 interface ReportsProps {
   user: User;
   onBack: () => void;
 }
 
-type ReportType = 'main' | 'enhanced' | 'daily-log' | 'category-size' | 'customer-engagement' | 'aging-outstanding';
+type ReportType = 'main' | 'enhanced' | 'daily-log' | 'category-size' | 'customer-engagement' | 'aging-outstanding' | 'sales-report';
 
 const Reports = ({ user, onBack }: ReportsProps) => {
   const [activeReport, setActiveReport] = useState<ReportType>('main');
@@ -55,6 +56,13 @@ const Reports = ({ user, onBack }: ReportsProps) => {
       icon: WalletCards,
       color: 'bg-cyan-500',
     },
+    {
+      id: 'sales-report',
+      title: 'Sales Report',
+      description: 'Customer invoice summary for a date range with Excel pivot download showing all invoice numbers',
+      icon: Receipt,
+      color: 'bg-emerald-500',
+    },
   ];
 
   const renderActiveReport = () => {
@@ -69,6 +77,8 @@ const Reports = ({ user, onBack }: ReportsProps) => {
         return <CustomerEngagementReport user={user} onBack={() => setActiveReport('main')} />;
       case 'aging-outstanding':
         return <AgingOutstandingReport user={user} onBack={() => setActiveReport('main')} />;
+      case 'sales-report':
+        return <SalesReport user={user} onBack={() => setActiveReport('main')} />;
       default:
         return null;
     }
