@@ -15,7 +15,7 @@ interface PdfData {
   docNumber: string;
   salesOrderId?: string;
   customerName: string;
-  customerId?: string;
+  customerAddress?: string;
   agencyName: string;
   date: string;
   items: LineItem[];
@@ -47,11 +47,11 @@ function buildHtml(data: PdfData): string {
     </tr>`).join('');
 
   return `
-    <div style="width:794px;background:#fff;padding:37px 45px;font-family:Arial,sans-serif;font-size:12px;color:#333;line-height:1.4">
+    <div style="width:794px;background:#fff;padding:37px 45px;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:12px;color:#333;line-height:1.4;-webkit-font-smoothing:antialiased">
       <!-- Header -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid #333;padding-bottom:16px;margin-bottom:16px">
         <div style="display:flex;align-items:center;gap:12px">
-          <img src="${LOGO_URL}" alt="Logo" style="height:48px;object-fit:contain" crossorigin="anonymous" />
+          <img src="${LOGO_URL}" alt="Logo" style="height:80px;object-fit:contain" crossorigin="anonymous" />
           <div>
             <div style="font-size:22px;font-weight:bold;margin-bottom:4px">${COMPANY_NAME}</div>
             <div style="font-size:11px;color:#555">${COMPANY_ADDRESS}</div>
@@ -76,7 +76,7 @@ function buildHtml(data: PdfData): string {
         <div>
           <h3 style="margin:0 0 8px;font-size:14px">Bill To:</h3>
           <div style="font-weight:bold">${data.customerName}</div>
-          ${data.customerId ? `<div style="color:#666">Customer ID: ${data.customerId}</div>` : ''}
+          ${data.customerAddress ? `<div style="color:#666">${data.customerAddress}</div>` : ''}
         </div>
       </div>
 
@@ -95,7 +95,13 @@ function buildHtml(data: PdfData): string {
         <tbody>${itemRows}</tbody>
       </table>
 
-      <!-- Totals -->
+      <!-- Footer left-aligned below table -->
+      <div style="font-size:10px;color:#888;margin-bottom:6px">
+        <div>Generated: ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</div>
+        ${data.gpsLat != null ? `<div>GPS: ${data.gpsLat.toFixed(6)}, ${data.gpsLng?.toFixed(6)}</div>` : ''}
+      </div>
+
+      <!-- Totals right-aligned -->
       <div style="display:flex;justify-content:flex-end;margin-bottom:20px">
         <table style="width:300px">
           <tr><td style="padding:5px 10px">Subtotal:</td><td style="padding:5px 10px;text-align:right">LKR ${data.subtotal.toLocaleString()}</td></tr>
@@ -105,12 +111,6 @@ function buildHtml(data: PdfData): string {
             <td style="padding:8px 10px;text-align:right">LKR ${data.total.toLocaleString()}</td>
           </tr>
         </table>
-      </div>
-
-      <!-- Footer -->
-      <div style="margin-top:24px;font-size:10px;color:#888">
-        <div>Generated on: ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</div>
-        ${data.gpsLat != null ? `<div>GPS Location: ${data.gpsLat.toFixed(6)}, ${data.gpsLng?.toFixed(6)}</div>` : ''}
       </div>
     </div>`;
 }
@@ -182,7 +182,7 @@ export interface InvoicePdfData {
   invoiceNumber: string;
   salesOrderId?: string;
   customerName: string;
-  customerId?: string;
+  customerAddress?: string;
   agencyName: string;
   date: string;
   items: LineItem[];
@@ -198,7 +198,7 @@ export interface SalesOrderPdfData {
   orderId: string;
   orderNumber: string;
   customerName: string;
-  customerId?: string;
+  customerAddress?: string;
   agencyName: string;
   date: string;
   items: LineItem[];

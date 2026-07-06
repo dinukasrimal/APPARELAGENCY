@@ -266,13 +266,14 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
 
       // Fire-and-forget: generate PDF, upload, then send SMS
       Promise.all([
-        supabase.from('customers').select('phone').eq('id', salesOrder.customerId).single(),
+        supabase.from('customers').select('phone, address').eq('id', salesOrder.customerId).single(),
         supabase.from('agencies').select('name').eq('id', salesOrder.agencyId).single(),
       ]).then(async ([{ data: cust }, { data: ag }]) => {
         const pdfUrl = await generateAndUploadInvoicePdf({
           invoiceId: invoice.id,
           invoiceNumber: invoice.invoice_number || invoiceNumber,
           customerName: salesOrder.customerName,
+          customerAddress: cust?.address || undefined,
           agencyName: ag?.name ?? 'Agency',
           date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
           items: invoiceItems.map(i => ({

@@ -632,6 +632,7 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         invoiceId: invoiceData.id,
         invoiceNumber,
         customerName: customerForSms?.name ?? '',
+        customerAddress: customerForSms?.address || undefined,
         agencyName: user.agencyName ?? '',
         date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
         items: invoiceSummary.map(i => ({

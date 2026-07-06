@@ -40,6 +40,7 @@ export interface Invoice {
   salesOrderId?: string;
   customerId: string;
   customerName: string;
+  customerAddress?: string;
   agencyId: string;
   agencyName: string;
   items: InvoiceItem[];

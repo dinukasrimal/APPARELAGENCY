@@ -17,6 +17,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
   const { toast } = useToast();
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>(invoice.items || []);
   const [isLoadingItems, setIsLoadingItems] = useState(false);
+  const [customerAddress, setCustomerAddress] = useState<string>(invoice.customerAddress || '');
 
   useEffect(() => {
     let isMounted = true;
@@ -69,6 +70,12 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
       isMounted = false;
     };
   }, [invoice.id, invoice.items, salesOrder?.items]);
+
+  useEffect(() => {
+    if (invoice.customerAddress || !invoice.customerId) return;
+    supabase.from('customers').select('address').eq('id', invoice.customerId).single()
+      .then(({ data }) => { if (data?.address) setCustomerAddress(data.address); });
+  }, [invoice.customerId, invoice.customerAddress]);
 
   const handlePrint = () => {
     window.print();
@@ -163,10 +170,11 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
           <title>Invoice ${invoice.invoiceNumber}</title>
           <style>
             * { box-sizing: border-box; }
-            body { 
-              margin: 0; 
-              padding: 0; 
-              font-family: Arial, sans-serif; 
+            body {
+              margin: 0;
+              padding: 0;
+              font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+              -webkit-font-smoothing: antialiased;
               font-size: 12px;
               line-height: 1.4;
               color: #333;
@@ -205,7 +213,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               color: #555;
             }
             .company-logo {
-              height: 48px;
+              height: 80px;
               object-fit: contain;
             }
             .company-details {
@@ -305,7 +313,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               <div>
                 <h3 style="margin: 0 0 10px 0; font-size: 14px;">Bill To:</h3>
                 <div><strong>${invoice.customerName}</strong></div>
-                <div>Customer ID: ${invoice.customerId}</div>
+                ${customerAddress ? `<div style="color:#666">${customerAddress}</div>` : ''}
               </div>
             </div>
             
@@ -334,7 +342,12 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               </tbody>
             </table>
             
-            <div class="totals">
+            <div class="footer" style="margin-bottom:6px">
+              <div>Generated: ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</div>
+              <div>GPS: ${invoice.gpsCoordinates.latitude.toFixed(6)}, ${invoice.gpsCoordinates.longitude.toFixed(6)}</div>
+              ${salesOrder ? `<div>Order Date: ${salesOrder.createdAt.toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</div>` : ''}
+            </div>
+            <div style="display:flex;justify-content:flex-end;margin-bottom:15px">
               <table class="totals-table">
                 <tr>
                   <td>Subtotal:</td>
@@ -346,13 +359,6 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
                   <td>LKR ${invoice.total.toLocaleString()}</td>
                 </tr>
               </table>
-            </div>
-            
-            
-            <div class="footer">
-              <div>Invoice generated on: ${new Date().toLocaleString()}</div>
-              <div>GPS Location: ${invoice.gpsCoordinates.latitude.toFixed(6)}, ${invoice.gpsCoordinates.longitude.toFixed(6)}</div>
-              ${salesOrder ? `<div>Original Order Date: ${salesOrder.createdAt.toLocaleString()}</div>` : ''}
             </div>
           </div>
         </body>
@@ -541,7 +547,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
             <h3 className="text-lg font-semibold text-gray-800 mb-2">Bill To:</h3>
             <div className="space-y-1">
               <p className="font-semibold">{invoice.customerName}</p>
-              <p className="text-gray-600">Customer ID: {invoice.customerId}</p>
+              {customerAddress && <p className="text-gray-600">{customerAddress}</p>}
             </div>
           </div>
         </div>
@@ -577,7 +583,16 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
           )}
         </div>
 
-        {/* Totals */}
+        {/* Footer left-aligned below table */}
+        <div className="text-xs text-gray-500 mb-2">
+          <p>Generated: {new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</p>
+          <p>GPS: {invoice.gpsCoordinates.latitude.toFixed(6)}, {invoice.gpsCoordinates.longitude.toFixed(6)}</p>
+          {salesOrder && (
+            <p>Order Date: {salesOrder.createdAt.toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</p>
+          )}
+        </div>
+
+        {/* Totals right-aligned */}
         <div className="flex justify-end mb-6">
           <div className="w-80">
             <div className="space-y-2">
@@ -597,16 +612,6 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               </div>
             </div>
           </div>
-        </div>
-
-
-        {/* Additional Info */}
-        <div className="mt-8 text-xs text-gray-500">
-          <p>Invoice generated on: {new Date().toLocaleString()}</p>
-          <p>GPS Location: {invoice.gpsCoordinates.latitude.toFixed(6)}, {invoice.gpsCoordinates.longitude.toFixed(6)}</p>
-          {salesOrder && (
-            <p>Original Order Date: {salesOrder.createdAt.toLocaleString()}</p>
-          )}
         </div>
       </div>
     </div>
