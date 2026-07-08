@@ -22,7 +22,6 @@ interface PdfData {
   subtotal: number;
   discountAmount: number;
   total: number;
-
   gpsLat?: number;
   gpsLng?: number;
 }
@@ -32,135 +31,241 @@ const COMPANY_ADDRESS = 'Dag clothing Pvt Ltd Kandamuduna Thalalla Matara';
 const COMPANY_PHONE = '0412259525';
 const COMPANY_EMAIL = 'order@dag-apparel.com';
 const COMPANY_WEBSITE = 'www.dag.lk';
-// Inline logo as a public URL — same image used in PrintableInvoice
 const LOGO_URL = `${window.location.origin}/icon.png`;
 
-function buildHtml(data: PdfData): string {
-  const itemRows = data.items.map((item, i) => `
-    <tr>
-      <td style="border:1px solid #333;padding:8px">${i + 1}</td>
-      <td style="border:1px solid #333;padding:8px">${item.productName}</td>
-      <td style="border:1px solid #333;padding:8px">${item.color}, ${item.size}</td>
-      <td style="border:1px solid #333;padding:8px;text-align:right">LKR ${item.unitPrice.toLocaleString()}</td>
-      <td style="border:1px solid #333;padding:8px;text-align:right">${item.quantity}</td>
-      <td style="border:1px solid #333;padding:8px;text-align:right">LKR ${item.total.toLocaleString()}</td>
-    </tr>`).join('');
-
-  return `
-    <div style="width:794px;background:#fff;padding:37px 45px;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:12px;color:#333;line-height:1.4;-webkit-font-smoothing:antialiased">
-      <!-- Header -->
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid #333;padding-bottom:16px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;gap:12px">
-          <img src="${LOGO_URL}" alt="Logo" style="height:80px;object-fit:contain" crossorigin="anonymous" />
-          <div>
-            <div style="font-size:22px;font-weight:bold;margin-bottom:4px">${COMPANY_NAME}</div>
-            <div style="font-size:11px;color:#555">${COMPANY_ADDRESS}</div>
-          </div>
-        </div>
-        <div style="text-align:right;font-size:11px;color:#555;line-height:1.8">
-          <div>Phone: ${COMPANY_PHONE}</div>
-          <div>Email: ${COMPANY_EMAIL}</div>
-          <div>Website: ${COMPANY_WEBSITE}</div>
-        </div>
-      </div>
-
-      <!-- Invoice/Order Meta -->
-      <div style="display:flex;justify-content:space-between;margin-bottom:20px">
-        <div>
-          <h2 style="margin:0 0 12px;font-size:18px">${data.docType}</h2>
-          <div><strong>${data.docType === 'INVOICE' ? 'Invoice' : data.docType === 'PURCHASE ORDER' ? 'PO' : 'Order'} Number:</strong> ${data.docNumber}</div>
-          <div><strong>Date:</strong> ${data.date}</div>
-          ${data.salesOrderId ? `<div><strong>Sales Order:</strong> ${data.salesOrderId}</div>` : ''}
-          <div><strong>Agency:</strong> ${data.agencyName}</div>
-        </div>
-        <div>
-          <h3 style="margin:0 0 8px;font-size:14px">Bill To:</h3>
-          <div style="font-weight:bold">${data.customerName}</div>
-          ${data.customerAddress ? `<div style="color:#666">${data.customerAddress}</div>` : ''}
-        </div>
-      </div>
-
-      <!-- Items Table -->
-      <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
-        <thead>
-          <tr style="background:#f0f0f0">
-            <th style="border:1px solid #333;padding:8px;text-align:left">#</th>
-            <th style="border:1px solid #333;padding:8px;text-align:left">Product</th>
-            <th style="border:1px solid #333;padding:8px;text-align:left">Color/Size</th>
-            <th style="border:1px solid #333;padding:8px;text-align:right">Unit Price</th>
-            <th style="border:1px solid #333;padding:8px;text-align:right">Quantity</th>
-            <th style="border:1px solid #333;padding:8px;text-align:right">Total</th>
-          </tr>
-        </thead>
-        <tbody>${itemRows}</tbody>
-      </table>
-
-      <!-- Footer left-aligned below table -->
-      <div style="font-size:10px;color:#888;margin-bottom:6px">
-        <div>Generated: ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}</div>
-        ${data.gpsLat != null ? `<div>GPS: ${data.gpsLat.toFixed(6)}, ${data.gpsLng?.toFixed(6)}</div>` : ''}
-      </div>
-
-      <!-- Totals right-aligned -->
-      <div style="display:flex;justify-content:flex-end;margin-bottom:20px">
-        <table style="width:300px">
-          <tr><td style="padding:5px 10px">Subtotal:</td><td style="padding:5px 10px;text-align:right">LKR ${data.subtotal.toLocaleString()}</td></tr>
-          ${data.discountAmount > 0 ? `<tr style="color:green"><td style="padding:5px 10px">Discount:</td><td style="padding:5px 10px;text-align:right">-LKR ${data.discountAmount.toLocaleString()}</td></tr>` : ''}
-          <tr style="font-weight:bold;font-size:14px;border-top:1px solid #333">
-            <td style="padding:8px 10px">Total Amount:</td>
-            <td style="padding:8px 10px;text-align:right">LKR ${data.total.toLocaleString()}</td>
-          </tr>
-        </table>
-      </div>
-    </div>`;
+async function fetchLogoBase64(): Promise<string | null> {
+  try {
+    const res = await fetch(LOGO_URL);
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
 }
 
-async function renderHtmlToPdfBlob(html: string): Promise<Blob | null> {
-  const [jspdfModule, h2cModule] = await Promise.all([
-    import(/* @vite-ignore */ 'jspdf'),
-    import(/* @vite-ignore */ 'html2canvas').then(m => (m as any).default ?? (m as any)),
-  ]);
+async function buildPdf(data: PdfData): Promise<Blob | null> {
+  const jspdfModule = await import(/* @vite-ignore */ 'jspdf');
   const JsPDF = (jspdfModule as any).default ?? (jspdfModule as any).jsPDF;
+  const doc = new JsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
 
-  // Mount off-screen
-  const container = document.createElement('div');
-  container.style.cssText = 'position:fixed;left:-9999px;top:0;z-index:-1;';
-  container.innerHTML = html;
-  document.body.appendChild(container);
-  const el = container.firstElementChild as HTMLElement;
+  const PW = 210, PH = 297;
+  const ML = 14, MR = 14, MT = 12;
+  const CW = PW - ML - MR; // 182 mm
 
-  try {
-    const canvas = await (h2cModule as any)(el, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      logging: false,
-      backgroundColor: '#ffffff',
-      width: 794,
-    });
+  // Column definitions — widths must sum to CW (182)
+  const cols = [
+    { label: '#',            w: 8,  align: 'left'  as const },
+    { label: 'Product',      w: 67, align: 'left'  as const },
+    { label: 'Color / Size', w: 37, align: 'left'  as const },
+    { label: 'Unit Price',   w: 28, align: 'right' as const },
+    { label: 'Qty',          w: 14, align: 'right' as const },
+    { label: 'Total',        w: 28, align: 'right' as const },
+  ];
 
-    const imgData = canvas.toDataURL('image/jpeg', 0.95);
-    const pdf = new JsPDF('p', 'mm', 'a4');
-    const pageW = pdf.internal.pageSize.getWidth();
-    const pageH = pdf.internal.pageSize.getHeight();
-    const imgW = pageW;
-    const imgH = (canvas.height * imgW) / canvas.width;
+  const PAD = 2;
+  const ROW_H = 6.5;
+  const HDR_H = 7;
 
-    let left = imgH;
-    let pos = 0;
-    pdf.addImage(imgData, 'JPEG', 0, pos, imgW, imgH, undefined, 'FAST');
-    left -= pageH;
-    while (left > 0) {
-      pos = left - imgH;
-      pdf.addPage();
-      pdf.addImage(imgData, 'JPEG', 0, pos, imgW, imgH, undefined, 'FAST');
-      left -= pageH;
+  // Helvetica helpers — standard PDF Type 1 font, present in every viewer
+  const hv = (style: 'normal' | 'bold' | 'italic' = 'normal', size = 10) => {
+    doc.setFont('helvetica', style);
+    doc.setFontSize(size);
+  };
+  const rgb = (r: number, g: number, b: number) => doc.setTextColor(r, g, b);
+
+  let y = MT;
+
+  // ── LOGO ────────────────────────────────────────────────────────────────
+  const logo = await fetchLogoBase64();
+  if (logo) {
+    try { doc.addImage(logo, 'PNG', ML, y, 18, 18); } catch (_) { /* skip if format unsupported */ }
+  }
+
+  hv('bold', 14);
+  rgb(33, 33, 33);
+  doc.text(COMPANY_NAME, ML + 22, y + 6);
+
+  hv('normal', 8.5);
+  rgb(90, 90, 90);
+  doc.text(COMPANY_ADDRESS, ML + 22, y + 12);
+
+  // Contact info — right aligned
+  hv('normal', 8.5);
+  [`Phone: ${COMPANY_PHONE}`, `Email: ${COMPANY_EMAIL}`, `Web:   ${COMPANY_WEBSITE}`]
+    .forEach((line, i) => doc.text(line, PW - MR, y + 5 + i * 5, { align: 'right' }));
+
+  rgb(33, 33, 33);
+  y += 23;
+
+  // Header divider
+  doc.setDrawColor(51, 51, 51);
+  doc.setLineWidth(0.6);
+  doc.line(ML, y, PW - MR, y);
+  y += 7;
+
+  // ── DOC TYPE + META ─────────────────────────────────────────────────────
+  hv('bold', 16);
+  doc.text(data.docType, ML, y);
+  y += 7;
+
+  const numLabel = data.docType === 'INVOICE' ? 'Invoice No:' : data.docType === 'PURCHASE ORDER' ? 'PO Number:' : 'Order No:';
+  const metaRows: [string, string][] = [
+    [numLabel, data.docNumber],
+    ['Date:', data.date],
+    ['Agency:', data.agencyName],
+    ...(data.salesOrderId ? [['Sales Order:', data.salesOrderId] as [string, string]] : []),
+  ];
+
+  const metaStartY = y;
+  for (const [label, val] of metaRows) {
+    hv('bold', 9.5); rgb(51, 51, 51);
+    doc.text(label, ML, y);
+    hv('normal', 9.5);
+    doc.text(val, ML + 34, y);
+    y += 5.5;
+  }
+
+  // ── BILL TO — right column ───────────────────────────────────────────────
+  const billX = ML + CW * 0.53;
+  let bY = metaStartY;
+  hv('bold', 10); rgb(51, 51, 51);
+  doc.text('Bill To:', billX, bY); bY += 5.5;
+  hv('bold', 9.5);
+  doc.text(data.customerName, billX, bY);
+  if (data.customerAddress) {
+    bY += 5;
+    hv('normal', 9); rgb(102, 102, 102);
+    doc.text(data.customerAddress, billX, bY);
+    rgb(51, 51, 51);
+  }
+
+  y += 5;
+
+  // ── ITEMS TABLE ─────────────────────────────────────────────────────────
+  const drawHeader = (startY: number): number => {
+    doc.setFillColor(240, 240, 240);
+    doc.rect(ML, startY, CW, HDR_H, 'F');
+    doc.setDrawColor(51, 51, 51);
+    doc.setLineWidth(0.25);
+    hv('bold', 9);
+    let cx = ML;
+    for (const col of cols) {
+      doc.rect(cx, startY, col.w, HDR_H);
+      const tx = col.align === 'right' ? cx + col.w - PAD : cx + PAD;
+      doc.text(col.label, tx, startY + 4.8, { align: col.align });
+      cx += col.w;
+    }
+    return startY + HDR_H;
+  };
+
+  y = drawHeader(y);
+  doc.setLineWidth(0.25);
+
+  for (let i = 0; i < data.items.length; i++) {
+    if (y + ROW_H > PH - 55) {
+      doc.addPage();
+      y = MT;
+      y = drawHeader(y);
     }
 
-    return pdf.output('blob');
-  } finally {
-    document.body.removeChild(container);
+    const item = data.items[i];
+    const vals = [
+      String(i + 1),
+      item.productName,
+      `${item.color}, ${item.size}`,
+      `LKR ${item.unitPrice.toLocaleString()}`,
+      String(item.quantity),
+      `LKR ${item.total.toLocaleString()}`,
+    ];
+
+    hv('normal', 9);
+    let cx = ML;
+    for (let c = 0; c < cols.length; c++) {
+      doc.rect(cx, y, cols[c].w, ROW_H);
+      const maxW = cols[c].w - PAD * 2;
+      let val = vals[c];
+      while (doc.getTextWidth(val) > maxW && val.length > 1) val = val.slice(0, -1);
+      if (val !== vals[c]) val = val.slice(0, -1) + '…';
+      const tx = cols[c].align === 'right' ? cx + cols[c].w - PAD : cx + PAD;
+      doc.text(val, tx, y + 4.3, { align: cols[c].align });
+      cx += cols[c].w;
+    }
+    y += ROW_H;
   }
+
+  y += 4;
+
+  // ── GENERATED / GPS ─────────────────────────────────────────────────────
+  hv('normal', 7.5); rgb(140, 140, 140);
+  doc.text(`Generated: ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}`, ML, y);
+  y += 4;
+  if (data.gpsLat != null) {
+    doc.text(`GPS: ${data.gpsLat.toFixed(6)}, ${data.gpsLng?.toFixed(6)}`, ML, y);
+    y += 4;
+  }
+  rgb(51, 51, 51);
+
+  // ── TOTALS ──────────────────────────────────────────────────────────────
+  const totX = PW - MR - 76;
+  hv('normal', 10);
+  doc.text('Subtotal:', totX, y);
+  doc.text(`LKR ${data.subtotal.toLocaleString()}`, PW - MR, y, { align: 'right' });
+  y += 6;
+
+  if (data.discountAmount > 0) {
+    rgb(0, 120, 0);
+    doc.text('Discount:', totX, y);
+    doc.text(`-LKR ${data.discountAmount.toLocaleString()}`, PW - MR, y, { align: 'right' });
+    rgb(51, 51, 51);
+    y += 6;
+  }
+
+  doc.setDrawColor(51, 51, 51);
+  doc.setLineWidth(0.3);
+  doc.line(totX, y, PW - MR, y);
+  y += 5;
+
+  hv('bold', 12);
+  doc.text('Total Amount:', totX, y);
+  doc.text(`LKR ${data.total.toLocaleString()}`, PW - MR, y, { align: 'right' });
+  y += 12;
+
+  // ── SIGNATURE BLOCK ─────────────────────────────────────────────────────
+  if (y + 34 > PH - MT) { doc.addPage(); y = MT; }
+
+  doc.setDrawColor(200, 200, 200);
+  doc.setLineWidth(0.3);
+  doc.line(ML, y, PW - MR, y);
+  y += 7;
+
+  hv('normal', 8.5); rgb(85, 85, 85);
+  doc.text('Customer Signature', ML, y);
+  doc.text('Authorized Signature', PW - MR, y, { align: 'right' });
+  y += 20;
+
+  // Dotted signing lines
+  doc.setDrawColor(100, 100, 100);
+  doc.setLineWidth(0.3);
+  try { (doc as any).setLineDashPattern([1, 1.5], 0); } catch (_) {}
+  doc.line(ML, y, ML + 74, y);
+  doc.line(PW - MR - 74, y, PW - MR, y);
+  try { (doc as any).setLineDashPattern([], 0); } catch (_) {}
+  y += 5;
+
+  hv('normal', 8.5); rgb(85, 85, 85);
+  doc.text('Name: ___________________________', ML, y);
+  y += 5;
+  doc.text('Date:  ___________________________', ML, y);
+  doc.text(data.agencyName, PW - MR, y - 5, { align: 'right' });
+
+  rgb(51, 51, 51);
+
+  return doc.output('blob');
 }
 
 async function uploadPdf(blob: Blob, path: string): Promise<string | null> {
@@ -173,7 +278,6 @@ async function uploadPdf(blob: Blob, path: string): Promise<string | null> {
     return null;
   }
   const { data } = supabase.storage.from('invoice-pdfs').getPublicUrl(path);
-  // Cache-bust so SMS recipients always open the latest version
   return `${data.publicUrl}?t=${Date.now()}`;
 }
 
@@ -189,7 +293,6 @@ export interface InvoicePdfData {
   subtotal: number;
   discountAmount: number;
   total: number;
-
   gpsLat?: number;
   gpsLng?: number;
 }
@@ -211,8 +314,7 @@ export interface SalesOrderPdfData {
 
 export async function generateAndUploadInvoicePdf(data: InvoicePdfData): Promise<string | null> {
   try {
-    const html = buildHtml({ docId: data.invoiceId, docType: 'INVOICE', docNumber: data.invoiceNumber, ...data });
-    const blob = await renderHtmlToPdfBlob(html);
+    const blob = await buildPdf({ docId: data.invoiceId, docType: 'INVOICE', docNumber: data.invoiceNumber, ...data });
     if (!blob) return null;
     return uploadPdf(blob, `invoices/${data.invoiceId}.pdf`);
   } catch (err) {
@@ -223,8 +325,7 @@ export async function generateAndUploadInvoicePdf(data: InvoicePdfData): Promise
 
 export async function generateAndUploadSalesOrderPdf(data: SalesOrderPdfData): Promise<string | null> {
   try {
-    const html = buildHtml({ docId: data.orderId, docType: 'SALES ORDER', docNumber: data.orderNumber, ...data });
-    const blob = await renderHtmlToPdfBlob(html);
+    const blob = await buildPdf({ docId: data.orderId, docType: 'SALES ORDER', docNumber: data.orderNumber, ...data });
     if (!blob) return null;
     return uploadPdf(blob, `orders/${data.orderId}.pdf`);
   } catch (err) {
@@ -247,7 +348,7 @@ export interface PurchaseOrderPdfData {
 
 export async function generateAndUploadPurchaseOrderPdf(data: PurchaseOrderPdfData): Promise<string | null> {
   try {
-    const html = buildHtml({
+    const blob = await buildPdf({
       docId: data.purchaseOrderId,
       docType: 'PURCHASE ORDER',
       docNumber: data.purchaseOrderId.slice(0, 8).toUpperCase(),
@@ -261,7 +362,6 @@ export async function generateAndUploadPurchaseOrderPdf(data: PurchaseOrderPdfDa
       gpsLat: data.gpsLat,
       gpsLng: data.gpsLng,
     });
-    const blob = await renderHtmlToPdfBlob(html);
     if (!blob) return null;
     return uploadPdf(blob, `purchase-orders/${data.purchaseOrderId}.pdf`);
   } catch (err) {

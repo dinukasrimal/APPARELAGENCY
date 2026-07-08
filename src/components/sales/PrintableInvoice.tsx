@@ -173,7 +173,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
             body {
               margin: 0;
               padding: 0;
-              font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+              font-family: Arial, sans-serif;
               -webkit-font-smoothing: antialiased;
               font-size: 12px;
               line-height: 1.4;
@@ -237,10 +237,10 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
               border-collapse: collapse; 
               margin-bottom: 15px; 
             }
-            .items-table th, .items-table td { 
-              border: 1px solid #333; 
-              padding: 8px; 
-              text-align: left; 
+            .items-table th, .items-table td {
+              border: 1px solid #333;
+              padding: 2px 5px;
+              text-align: left;
             }
             .items-table th { 
               background-color: #f0f0f0; 
@@ -360,6 +360,22 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
                 </tr>
               </table>
             </div>
+
+            <div style="display:flex;justify-content:space-between;margin-top:24px;padding-top:16px;border-top:1px solid #ddd">
+              <div style="width:42%">
+                <div style="font-size:10px;color:#555;margin-bottom:40px">Customer Signature</div>
+                <div style="border-bottom:1px dotted #333;width:100%;margin-bottom:4px"></div>
+                <div style="font-size:9px;color:#aaa;letter-spacing:1px">.......................................................................</div>
+                <div style="font-size:10px;color:#555;margin-top:6px">Name: .......................................</div>
+                <div style="font-size:10px;color:#555;margin-top:4px">Date: &nbsp;.......................................</div>
+              </div>
+              <div style="width:42%;text-align:right">
+                <div style="font-size:10px;color:#555;margin-bottom:40px">Authorized Signature</div>
+                <div style="border-bottom:1px dotted #333;width:100%;margin-bottom:4px"></div>
+                <div style="font-size:9px;color:#aaa;letter-spacing:1px">.......................................................................</div>
+                <div style="font-size:10px;color:#555;margin-top:6px">${invoice.agencyName}</div>
+              </div>
+            </div>
           </div>
         </body>
         </html>
@@ -461,7 +477,7 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
         
         th, td {
           border: 1px solid #000 !important;
-          padding: 8px !important;
+          padding: 2px 5px !important;
           text-align: left !important;
         }
         
@@ -611,6 +627,23 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
                 <span>LKR {invoice.total.toLocaleString()}</span>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Signature block */}
+        <div className="flex justify-between mt-6 pt-4 border-t border-gray-200">
+          <div className="w-5/12">
+            <p className="text-xs text-gray-500 mb-10">Customer Signature</p>
+            <div className="border-b border-dotted border-gray-500 w-full mb-1"></div>
+            <p className="text-xs text-gray-300 tracking-widest">.........................................................................</p>
+            <p className="text-xs text-gray-500 mt-2">Name: .......................................</p>
+            <p className="text-xs text-gray-500 mt-1">Date: &nbsp;.......................................</p>
+          </div>
+          <div className="w-5/12 text-right">
+            <p className="text-xs text-gray-500 mb-10">Authorized Signature</p>
+            <div className="border-b border-dotted border-gray-500 w-full mb-1"></div>
+            <p className="text-xs text-gray-300 tracking-widest">.........................................................................</p>
+            <p className="text-xs text-gray-500 mt-2">{invoice.agencyName}</p>
           </div>
         </div>
       </div>

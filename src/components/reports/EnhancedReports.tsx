@@ -85,6 +85,20 @@ interface InternalInvoiceDetail {
   createdByName: string;
 }
 
+interface CollectionDetail {
+  id: string;
+  customerName: string;
+  totalAmount: number;
+  paymentMethod: string;
+  cashAmount: number;
+  chequeAmount: number;
+  notes: string | null;
+  createdAt: string;
+  createdByName: string;
+  lat: number | null;
+  lng: number | null;
+}
+
 interface DeliveryDetail {
   id: string;
   invoiceId: string;
@@ -117,6 +131,8 @@ interface DailySummary {
   expenseDetails: ExpenseDetail[];
   salesOrderDetails: SalesOrderDetail[];
   internalInvoiceDetails: InternalInvoiceDetail[];
+  collectionDetails: CollectionDetail[];
+  collectionTotal: number;
   deliveryDetails: DeliveryDetail[];
   gpsPoints: GpsPoint[];
 }
@@ -146,6 +162,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
     totalSales: 0,
     internalInvoiceValue: 0,
     internalInvoiceCount: 0,
+    totalCollections: 0,
   });
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
@@ -163,7 +180,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       fetchReportData();
     } else {
       setDailySummaries([]);
-      setSummaryTotals({ totalKm: 0, totalExpenses: 0, totalSales: 0, internalInvoiceValue: 0, internalInvoiceCount: 0 });
+      setSummaryTotals({ totalKm: 0, totalExpenses: 0, totalSales: 0, internalInvoiceValue: 0, internalInvoiceCount: 0, totalCollections: 0 });
     }
   }, [selectedAgency, startDate, endDate]);
 
@@ -222,6 +239,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
         customersDetailRes,
         nonProductiveDetailRes,
         deliveriesRes,
+        collectionsRes,
       ] = await Promise.all([
         supabase
           .from('customers')
@@ -270,7 +288,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           .lte('created_at', endDateTime),
         supabase
           .from('non_productive_visits')
-          .select('id, customer_name, reason, potential_customer, created_at, user_id')
+          .select('id, customer_name, reason, potential_customer, created_at, user_id, latitude, longitude')
           .eq('agency_id', selectedAgency)
           .gte('created_at', startDateTime)
           .lte('created_at', endDateTime),
@@ -280,6 +298,12 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           .eq('agency_id', selectedAgency)
           .gte('delivered_at', startDateTime)
           .lte('delivered_at', endDateTime),
+        supabase
+          .from('collections')
+          .select('id, customer_name, total_amount, payment_method, cash_amount, cheque_amount, notes, created_at, created_by, latitude, longitude')
+          .eq('agency_id', selectedAgency)
+          .gte('created_at', startDateTime)
+          .lte('created_at', endDateTime),
       ]);
 
       if (customersOnboardedRes.error) throw customersOnboardedRes.error;
@@ -292,6 +316,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       if (customersDetailRes.error) throw customersDetailRes.error;
       if (nonProductiveDetailRes.error) throw nonProductiveDetailRes.error;
       if (deliveriesRes.error) console.warn('Deliveries fetch failed:', deliveriesRes.error.message);
+      if (collectionsRes.error) console.warn('Collections fetch failed:', collectionsRes.error.message);
 
       const internalInvoices = await fetchAllSupabaseRows<{
         id: string;
@@ -317,6 +342,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       const customersDetail = customersDetailRes.data || [];
       const nonProductiveDetail = nonProductiveDetailRes.data || [];
       const deliveries = deliveriesRes.data || [];
+      const collections = collectionsRes.data || [];
 
       let odometerEntries: Array<{
         time_tracking_id: string;
@@ -342,6 +368,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       internalInvoices.forEach((invoice) => invoice.created_by && userIds.add(invoice.created_by));
       customersDetail.forEach((customer) => customer.created_by && userIds.add(customer.created_by));
       nonProductiveDetail.forEach((visit) => visit.user_id && userIds.add(visit.user_id));
+      collections.forEach((col) => col.created_by && userIds.add(col.created_by));
 
       const { data: profilesData, error: profilesError } = userIds.size
         ? await supabase.from('profiles').select('id, name').in('id', Array.from(userIds))
@@ -369,6 +396,8 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
             expenseDetails: [],
             salesOrderDetails: [],
             internalInvoiceDetails: [],
+            collectionDetails: [],
+            collectionTotal: 0,
             deliveryDetails: [],
             gpsPoints: [],
           });
@@ -465,6 +494,14 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           userId: visit.user_id,
           userName: userNameById.get(visit.user_id) || 'Unknown',
         });
+        if (visit.latitude && visit.longitude) {
+          summary.gpsPoints.push({
+            lat: Number(visit.latitude),
+            lng: Number(visit.longitude),
+            label: `Non-Productive: ${visit.customer_name || visit.potential_customer || visit.reason || ''}`,
+            type: 'non_productive',
+          });
+        }
       });
 
       salesOrders.forEach((order) => {
@@ -545,6 +582,35 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
         }
       });
 
+      collections.forEach((col) => {
+        const dateKey = toDateKey(col.created_at);
+        if (!dateKey) return;
+        const summary = getSummary(dateKey);
+        const amount = Number(col.total_amount || 0);
+        summary.collectionTotal += amount;
+        summary.collectionDetails.push({
+          id: col.id,
+          customerName: col.customer_name || '',
+          totalAmount: amount,
+          paymentMethod: col.payment_method || '',
+          cashAmount: Number(col.cash_amount || 0),
+          chequeAmount: Number(col.cheque_amount || 0),
+          notes: col.notes ?? null,
+          createdAt: col.created_at,
+          createdByName: col.created_by ? (userNameById.get(col.created_by) || 'Unknown') : 'Unknown',
+          lat: col.latitude != null ? Number(col.latitude) : null,
+          lng: col.longitude != null ? Number(col.longitude) : null,
+        });
+        if (col.latitude && col.longitude) {
+          summary.gpsPoints.push({
+            lat: Number(col.latitude),
+            lng: Number(col.longitude),
+            label: `Collection: ${col.customer_name || ''} — LKR ${Number(col.total_amount || 0).toLocaleString()}`,
+            type: 'collection',
+          });
+        }
+      });
+
       const dailySummariesList = Array.from(summaryMap.values()).sort((a, b) =>
         b.date.localeCompare(a.date)
       );
@@ -556,9 +622,10 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
           acc.totalSales += day.totalSales;
           acc.internalInvoiceValue += day.internalInvoiceValue;
           acc.internalInvoiceCount += day.internalInvoiceCount;
+          acc.totalCollections += day.collectionTotal;
           return acc;
         },
-        { totalKm: 0, totalExpenses: 0, totalSales: 0, internalInvoiceValue: 0, internalInvoiceCount: 0 }
+        { totalKm: 0, totalExpenses: 0, totalSales: 0, internalInvoiceValue: 0, internalInvoiceCount: 0, totalCollections: 0 }
       );
 
       setDailySummaries(dailySummariesList);
@@ -600,6 +667,8 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
       delivery: '#16a34a',
       invoice: '#2563eb',
       order: '#ea580c',
+      collection: '#7c3aed',
+      non_productive: '#dc2626',
     };
 
     const markers = gpsPoints.map((p) => {
@@ -616,7 +685,7 @@ const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
 
     const boundsArr = gpsPoints.map((p) => `[${p.lat}, ${p.lng}]`).join(',');
 
-    const legend = Object.entries({ Delivery: '#16a34a', Invoice: '#2563eb', 'Sales Order': '#ea580c' })
+    const legend = Object.entries({ Delivery: '#16a34a', Invoice: '#2563eb', 'Sales Order': '#ea580c', Collection: '#7c3aed', 'Non-Productive': '#dc2626' })
       .map(([label, color]) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="background:${color};width:12px;height:12px;border-radius:50%;display:inline-block"></span>${label}</span>`)
       .join('');
 
@@ -867,6 +936,14 @@ map.fitBounds([${boundsArr}],{padding:[30,30]});
       icon: Receipt,
       color: 'text-cyan-600',
       bgColor: 'bg-cyan-50'
+    },
+    {
+      title: 'Collections',
+      value: formatCurrency(summaryTotals.totalCollections),
+      subtitle: `From ${startDate} to ${endDate}`,
+      icon: DollarSign,
+      color: 'text-violet-600',
+      bgColor: 'bg-violet-50'
     }
   ];
 
@@ -1136,6 +1213,11 @@ map.fitBounds([${boundsArr}],{padding:[30,30]});
                               <Badge className="bg-teal-100 text-teal-700 border border-teal-200">
                                 Invoices {formatCurrency(day.internalInvoiceValue)}
                               </Badge>
+                              {day.collectionTotal > 0 && (
+                                <Badge className="bg-violet-100 text-violet-700 border border-violet-200">
+                                  Collections {formatCurrency(day.collectionTotal)}
+                                </Badge>
+                              )}
                             </div>
                           </div>
                         </AccordionTrigger>
@@ -1333,6 +1415,53 @@ map.fitBounds([${boundsArr}],{padding:[30,30]});
                                         <td className="px-3 py-2 text-slate-600">{detail.createdByName}</td>
                                         <td className="px-3 py-2 text-slate-500">
                                           {new Date(detail.createdAt).toLocaleString()}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <h4 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1">
+                              <DollarSign className="h-4 w-4 text-violet-600" />
+                              Collections
+                            </h4>
+                            {day.collectionDetails.length === 0 ? (
+                              <p className="text-sm text-slate-500">No collections recorded for this day.</p>
+                            ) : (
+                              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                                <table className="min-w-full text-sm">
+                                  <thead className="bg-slate-50 text-slate-600">
+                                    <tr>
+                                      <th className="px-3 py-2 text-left font-medium">Customer</th>
+                                      <th className="px-3 py-2 text-left font-medium">Total</th>
+                                      <th className="px-3 py-2 text-left font-medium">Method</th>
+                                      <th className="px-3 py-2 text-left font-medium">Cash</th>
+                                      <th className="px-3 py-2 text-left font-medium">Cheque</th>
+                                      <th className="px-3 py-2 text-left font-medium">Collected By</th>
+                                      <th className="px-3 py-2 text-left font-medium">Notes</th>
+                                      <th className="px-3 py-2 text-left font-medium">GPS</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {day.collectionDetails.map((col) => (
+                                      <tr key={col.id} className="border-t">
+                                        <td className="px-3 py-2 text-slate-700 font-medium">{col.customerName || '-'}</td>
+                                        <td className="px-3 py-2 text-violet-700 font-semibold">{formatCurrency(col.totalAmount)}</td>
+                                        <td className="px-3 py-2">
+                                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700 capitalize">
+                                            {col.paymentMethod || '-'}
+                                          </span>
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-600">{col.cashAmount > 0 ? formatCurrency(col.cashAmount) : '-'}</td>
+                                        <td className="px-3 py-2 text-slate-600">{col.chequeAmount > 0 ? formatCurrency(col.chequeAmount) : '-'}</td>
+                                        <td className="px-3 py-2 text-slate-600">{col.createdByName}</td>
+                                        <td className="px-3 py-2 text-slate-500 max-w-[160px] truncate">{col.notes || '-'}</td>
+                                        <td className="px-3 py-2 text-slate-500 text-xs">
+                                          {col.lat && col.lng ? `${col.lat.toFixed(4)}, ${col.lng.toFixed(4)}` : '-'}
                                         </td>
                                       </tr>
                                     ))}
