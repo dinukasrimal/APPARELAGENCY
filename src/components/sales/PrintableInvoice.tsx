@@ -6,6 +6,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Capacitor } from '@capacitor/core';
 import companyLogo from '../../../assets/icon.png';
 import { supabase } from '@/integrations/supabase/client';
+import { generateDotMatrixBlob, generatePlainTextInvoice } from '@/services/invoice-pdf.service';
 
 interface PrintableInvoiceProps {
   invoice: Invoice;
@@ -416,6 +417,128 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
     }
   };
 
+  const handleDotMatrixPDF = async () => {
+    try {
+      const data = {
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber || invoice.id,
+        salesOrderId: invoice.salesOrderId,
+        customerName: invoice.customerName,
+        customerAddress: customerAddress || undefined,
+        agencyName: invoice.agencyName,
+        date: invoice.createdAt.toLocaleDateString('en-LK'),
+        items: invoiceItems.map(i => ({
+          productName: i.productName,
+          color: i.color,
+          size: i.size,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          total: i.total,
+        })),
+        subtotal: invoice.subtotal,
+        discountAmount: invoice.discountAmount,
+        total: invoice.total,
+        gpsLat: invoice.gpsCoordinates?.latitude,
+        gpsLng: invoice.gpsCoordinates?.longitude,
+      };
+
+      toast({ title: 'Generating dot-matrix PDF...', description: 'Please wait.' });
+      const blob = await generateDotMatrixBlob(data);
+      if (!blob) throw new Error('PDF generation failed');
+
+      const filename = `invoice-${invoice.invoiceNumber || invoice.id}-dotmatrix.pdf`;
+
+      if (Capacitor.getPlatform() !== 'web') {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string).split(',')[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        const { Filesystem, Directory } = await import(/* @vite-ignore */ '@capacitor/filesystem');
+        const { Share } = await import(/* @vite-ignore */ '@capacitor/share');
+        const writeResult = await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Cache });
+        await Share.share({ title: `Dot-Matrix Invoice ${invoice.invoiceNumber}`, files: [writeResult.uri], dialogTitle: 'Print / Share Invoice' });
+        toast({ title: 'Ready', description: 'Send to RAWBT or share as needed.' });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toast({ title: 'Downloaded', description: 'Dot-matrix PDF saved.' });
+      }
+    } catch (error) {
+      console.error('Dot-matrix PDF error:', error);
+      toast({ title: 'Failed', description: error instanceof Error ? error.message : 'Could not generate PDF', variant: 'destructive' });
+    }
+  };
+
+  const handlePlainTextPrint = async () => {
+    try {
+      const textData = {
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber || invoice.id,
+        salesOrderId: invoice.salesOrderId,
+        customerName: invoice.customerName,
+        customerAddress: customerAddress || undefined,
+        agencyName: invoice.agencyName,
+        date: invoice.createdAt.toLocaleDateString('en-LK'),
+        items: invoiceItems.map(i => ({
+          productName: i.productName,
+          color: i.color,
+          size: i.size,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          total: i.total,
+        })),
+        subtotal: invoice.subtotal,
+        discountAmount: invoice.discountAmount,
+        total: invoice.total,
+        gpsLat: invoice.gpsCoordinates?.latitude,
+        gpsLng: invoice.gpsCoordinates?.longitude,
+      };
+
+      const text = generatePlainTextInvoice(textData);
+
+      if (Capacitor.getPlatform() !== 'web') {
+        const { Filesystem, Directory, Encoding } = await import(/* @vite-ignore */ '@capacitor/filesystem');
+        const { Share } = await import(/* @vite-ignore */ '@capacitor/share');
+        const filename = `invoice-${invoice.invoiceNumber || invoice.id}.txt`;
+        // Write as UTF-8 text (not base64) so the file bytes are pure ASCII
+        const writeResult = await Filesystem.writeFile({
+          path: filename,
+          data: text,
+          directory: Directory.Cache,
+          encoding: Encoding.UTF8,
+        });
+        // Open Android share sheet — user picks RAWBT, Files, or any text app
+        await Share.share({
+          files: [writeResult.uri],
+          dialogTitle: 'Open invoice to print',
+        });
+      } else {
+        // Web: download as plain .txt so user can open in any editor / print
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `invoice-${invoice.invoiceNumber || invoice.id}.txt`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toast({ title: 'Downloaded', description: 'Plain text invoice saved.' });
+      }
+    } catch (error) {
+      console.error('Plain text print error:', error);
+      toast({
+        title: 'Failed',
+        description: error instanceof Error ? error.message : 'Could not copy invoice text',
+        variant: 'destructive',
+      });
+    }
+  };
+
   useEffect(() => {
     // Enhanced print styles to hide everything except the printable content
     const printStyles = `
@@ -517,6 +640,10 @@ const PrintableInvoice = ({ invoice, salesOrder, onClose }: PrintableInvoiceProp
           <Button onClick={handleDownloadPDF} variant="outline" className="border-green-600 text-green-600 hover:bg-green-50">
             <Download className="h-4 w-4 mr-2" />
             {Capacitor.getPlatform() !== 'web' ? 'Share/Save PDF' : 'Download PDF'}
+          </Button>
+          <Button onClick={handlePlainTextPrint} variant="outline" className="border-purple-600 text-purple-600 hover:bg-purple-50">
+            <Printer className="h-4 w-4 mr-2" />
+            Print (Dot Matrix)
           </Button>
           <Button onClick={handlePrint} className="bg-blue-600 hover:bg-blue-700">
             <Printer className="h-4 w-4 mr-2" />

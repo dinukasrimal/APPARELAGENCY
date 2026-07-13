@@ -116,9 +116,13 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
   };
 
   const handleSubmit = async () => {
+    // Lock immediately — before any await — so a second tap always exits here.
+    // The lock is only released on error; on success the form unmounts anyway.
     if (submitLockRef.current) return;
+    submitLockRef.current = true;
 
     if (invoiceItems.length === 0 || !signature) {
+      submitLockRef.current = false;
       toast({
         title: "Error",
         description: "Please ensure you have items and a signature",
@@ -128,7 +132,6 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
     }
 
     setIsSubmitting(true);
-    submitLockRef.current = true;
 
     try {
       // Capture GPS coordinates when creating invoice
@@ -309,15 +312,16 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
 
       onSubmit(invoiceResponseData);
     } catch (error) {
+      // Only release the lock on failure so the user can retry.
+      // On success the form unmounts and the lock is irrelevant.
+      submitLockRef.current = false;
+      setIsSubmitting(false);
       console.error('Error creating invoice:', error);
       toast({
         title: "Error",
         description: "Failed to create invoice",
         variant: "destructive",
       });
-    } finally {
-      setIsSubmitting(false);
-      submitLockRef.current = false;
     }
   };
 

@@ -18,6 +18,39 @@ import InvoiceManagement from './InvoiceManagement';
 import ReturnsManagement from './ReturnsManagement';
 import CreateInvoiceForm from './CreateInvoiceForm';
 import { supabase } from '@/integrations/supabase/client';
+
+// Picks the subset of raw DB item rows whose totals sum closest to the order's
+// subtotal.  Required because sales_order_items rows accumulate on every edit
+// when the RLS delete policy is absent (delete silently affects 0 rows).
+function selectItemsClosestToSubtotal(items: any[], targetSubtotal: number): any[] {
+  if (items.length === 0) return items;
+  const parsedItems = items.map(item => ({
+    ...item,
+    totalValue: Math.round(Number(item.total) * 100)
+  }));
+  const target = Math.round(targetSubtotal * 100);
+  // For very large sets skip the DFS to avoid combinatorial blowup
+  if (parsedItems.length > 18) return items;
+
+  let bestDiff = Number.POSITIVE_INFINITY;
+  let bestSelection: any[] = [];
+
+  const dfs = (index: number, currentSum: number, selection: any[]) => {
+    const diff = Math.abs(currentSum - target);
+    if (diff < bestDiff || (diff === bestDiff && selection.length < bestSelection.length)) {
+      bestDiff = diff;
+      bestSelection = selection.slice();
+    }
+    if (index >= parsedItems.length) return;
+    if (currentSum > target && currentSum - target > bestDiff) return;
+    const item = parsedItems[index];
+    dfs(index + 1, currentSum + item.totalValue, selection.concat(item));
+    dfs(index + 1, currentSum, selection);
+  };
+
+  dfs(0, 0, []);
+  return bestSelection.map(({ totalValue, ...rest }) => rest);
+}
 import { useToast } from '@/hooks/use-toast';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -198,49 +231,6 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       console.timeEnd('[Sales] round-trip-2: order-items+return-items');
 
       console.time('[Sales] JS transform + DFS');
-      // Helper: pick subset of items whose total is closest to the target subtotal.
-      // This mitigates duplicate legacy rows (we lack delete perms on sales_order_items).
-      const selectItemsClosestToSubtotal = (items: any[], targetSubtotal: number) => {
-        const parsedItems = items.map((item) => ({
-          ...item,
-          totalValue: Math.round(Number(item.total) * 100) // work in cents for precision
-        }));
-
-        const target = Math.round(targetSubtotal * 100);
-        let bestDiff = Number.POSITIVE_INFINITY;
-        let bestSelection: any[] = [];
-
-        // For large item counts, just return all to avoid combinatorial blowup
-        if (parsedItems.length > 18) {
-          return items;
-        }
-
-        const dfs = (index: number, currentSum: number, selection: any[]) => {
-          const currentDiff = Math.abs(currentSum - target);
-          if (
-            currentDiff < bestDiff ||
-            (currentDiff === bestDiff && selection.length < bestSelection.length)
-          ) {
-            bestDiff = currentDiff;
-            bestSelection = selection.slice();
-          }
-
-          if (index >= parsedItems.length) return;
-
-          // If we're already over target and worse than best, prune
-          if (currentSum > target && currentSum - target > bestDiff) return;
-
-          const item = parsedItems[index];
-          // Include
-          dfs(index + 1, currentSum + item.totalValue, selection.concat(item));
-          // Exclude
-          dfs(index + 1, currentSum, selection);
-        };
-
-        dfs(0, 0, []);
-        // Map back to original shape (drop helper field)
-        return bestSelection.map(({ totalValue, ...rest }) => rest);
-      };
 
       // Transform orders with items
       const transformedOrders: SalesOrder[] = (ordersData || []).map(order => {
@@ -669,9 +659,14 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       if (error) throw error;
 
+      // Deduplicate accumulated rows (caused by RLS preventing deletes on save).
+      // selectItemsClosestToSubtotal picks the subset whose totals match the order subtotal.
+      const rawItems = data || [];
+      const dedupedItems = selectItemsClosestToSubtotal(rawItems, order.subtotal);
+
       setEditingOrder({
         ...order,
-        items: (data || []).map((item) => ({
+        items: dedupedItems.map((item) => ({
           id: item.id,
           productId: item.product_id || '',
           productName: item.product_name,

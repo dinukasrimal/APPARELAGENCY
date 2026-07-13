@@ -33,6 +33,19 @@ const COMPANY_EMAIL = 'order@dag-apparel.com';
 const COMPANY_WEBSITE = 'www.dag.lk';
 const LOGO_URL = `${window.location.origin}/icon.png`;
 
+async function fetchAsBase64(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url);
+    const buffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  } catch {
+    return null;
+  }
+}
+
 async function fetchLogoBase64(): Promise<string | null> {
   try {
     const res = await fetch(LOGO_URL);
@@ -48,6 +61,10 @@ async function fetchLogoBase64(): Promise<string | null> {
   }
 }
 
+// Inter font TTF files via jsDelivr (MIT licensed, freely embeddable)
+const FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/npm/@fontsource/inter@5.0.16/files/inter-latin-400-normal.woff';
+const FONT_BOLD_URL    = 'https://cdn.jsdelivr.net/npm/@fontsource/inter@5.0.16/files/inter-latin-700-normal.woff';
+
 async function buildPdf(data: PdfData): Promise<Blob | null> {
   const jspdfModule = await import(/* @vite-ignore */ 'jspdf');
   const JsPDF = (jspdfModule as any).default ?? (jspdfModule as any).jsPDF;
@@ -56,6 +73,26 @@ async function buildPdf(data: PdfData): Promise<Blob | null> {
   const PW = 210, PH = 297;
   const ML = 14, MR = 14, MT = 12;
   const CW = PW - ML - MR; // 182 mm
+
+  // Embed Inter font (MIT licensed) so every viewer/printer uses exactly this font.
+  // Falls back to built-in helvetica if CDN is unreachable.
+  const [regularB64, boldB64] = await Promise.all([
+    fetchAsBase64(FONT_REGULAR_URL),
+    fetchAsBase64(FONT_BOLD_URL),
+  ]);
+
+  let fontName = 'helvetica';
+  if (regularB64 && boldB64) {
+    try {
+      doc.addFileToVFS('Inter-Regular.woff', regularB64);
+      doc.addFileToVFS('Inter-Bold.woff', boldB64);
+      doc.addFont('Inter-Regular.woff', 'Inter', 'normal');
+      doc.addFont('Inter-Bold.woff', 'Inter', 'bold');
+      fontName = 'Inter';
+    } catch (_) {
+      fontName = 'helvetica';
+    }
+  }
 
   // Column definitions — widths must sum to CW (182)
   const cols = [
@@ -71,9 +108,10 @@ async function buildPdf(data: PdfData): Promise<Blob | null> {
   const ROW_H = 6.5;
   const HDR_H = 7;
 
-  // Helvetica helpers — standard PDF Type 1 font, present in every viewer
+  // Font helper — uses embedded Inter when available, falls back to helvetica
   const hv = (style: 'normal' | 'bold' | 'italic' = 'normal', size = 10) => {
-    doc.setFont('helvetica', style);
+    const s = style === 'italic' ? 'normal' : style; // Inter has no italic subset loaded
+    doc.setFont(fontName, s);
     doc.setFontSize(size);
   };
   const rgb = (r: number, g: number, b: number) => doc.setTextColor(r, g, b);
@@ -266,6 +304,317 @@ async function buildPdf(data: PdfData): Promise<Blob | null> {
   rgb(51, 51, 51);
 
   return doc.output('blob');
+}
+
+// ── PLAIN-TEXT INVOICE (for dot-matrix / RAWBT printing) ────────────────────
+// Generates a fixed-width ASCII text invoice suitable for Epson LQ-310 via
+// RAWBT.  Plain text always prints correctly on dot-matrix; PDF image
+// approaches can fail due to RAWBT code-page mismatches.
+
+export function generatePlainTextInvoice(data: InvoicePdfData): string {
+  const W = 76; // safe column width for 80-col continuous paper
+  const DIVIDER = '='.repeat(W);
+  const LINE    = '-'.repeat(W);
+  const fmt     = (n: number) => n.toLocaleString('en-US');
+  const a       = (s: string) => String(s ?? '').replace(/[^\x20-\x7E]/g, '');
+  const padL    = (s: string | number, n: number) => String(s).slice(0, n).padEnd(n);
+  const padR    = (s: string | number, n: number) => String(s).slice(0, n).padStart(n);
+  const center  = (s: string) => { const p = Math.max(0, Math.floor((W - s.length) / 2)); return ' '.repeat(p) + s; };
+
+  const lines: string[] = [];
+
+  // Header
+  lines.push(center('DAG CLOTHING PVT LTD'));
+  lines.push(center('Dag Clothing Pvt Ltd Kandamuduna Thalalla Matara'));
+  lines.push(center('Tel: 0412259525  Email: order@dag-apparel.com'));
+  lines.push(DIVIDER);
+  lines.push('');
+
+  // Doc type
+  const docLabel = 'INVOICE';
+  lines.push(docLabel);
+  lines.push('');
+  lines.push(`Invoice No  : ${a(data.invoiceNumber)}`);
+  lines.push(`Date        : ${a(data.date)}`);
+  lines.push(`Agency      : ${a(data.agencyName)}`);
+  if (data.salesOrderId) lines.push(`Sales Order : ${a(data.salesOrderId)}`);
+  lines.push('');
+  lines.push(`Bill To     : ${a(data.customerName)}`);
+  if (data.customerAddress) lines.push(`              ${a(data.customerAddress)}`);
+  lines.push('');
+  lines.push(DIVIDER);
+
+  // Table header
+  // Cols: #(3) Product(22) Color/Size(12) UnitPrice(12) Qty(5) Total(12)  = 66 + 5*2 spaces = 76
+  const H_NO    = 3,  H_PROD = 22, H_CS = 12, H_UP = 12, H_QTY = 5, H_TOT = 12;
+  const hdr = padL('#', H_NO) + '  ' + padL('Product', H_PROD) + '  ' +
+              padL('Color/Size', H_CS) + '  ' + padR('Unit Price', H_UP) + '  ' +
+              padR('Qty', H_QTY) + '  ' + padR('Total', H_TOT);
+  lines.push(hdr);
+  lines.push(LINE);
+
+  data.items.forEach((item, i) => {
+    const row = padL(String(i + 1), H_NO) + '  ' +
+                padL(a(item.productName), H_PROD) + '  ' +
+                padL(`${a(item.color)},${a(item.size)}`, H_CS) + '  ' +
+                padR(`LKR ${fmt(item.unitPrice)}`, H_UP) + '  ' +
+                padR(String(item.quantity), H_QTY) + '  ' +
+                padR(`LKR ${fmt(item.total)}`, H_TOT);
+    lines.push(row);
+  });
+
+  lines.push(DIVIDER);
+  lines.push('');
+
+  // GPS / generated (left, below table)
+  const now = new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' });
+  lines.push(`Generated: ${now}`);
+  if (data.gpsLat != null) {
+    lines.push(`GPS: ${data.gpsLat.toFixed(6)}, ${(data.gpsLng ?? 0).toFixed(6)}`);
+  }
+  lines.push('');
+
+  // Totals (right-aligned)
+  const totLabelW = 20, totValW = 16;
+  lines.push(' '.repeat(W - totLabelW - totValW) + padL('Subtotal:', totLabelW) + padR(`LKR ${fmt(data.subtotal)}`, totValW));
+  if (data.discountAmount > 0) {
+    lines.push(' '.repeat(W - totLabelW - totValW) + padL('Discount:', totLabelW) + padR(`-LKR ${fmt(data.discountAmount)}`, totValW));
+  }
+  lines.push(DIVIDER);
+  lines.push(' '.repeat(W - totLabelW - totValW) + padL('TOTAL AMOUNT:', totLabelW) + padR(`LKR ${fmt(data.total)}`, totValW));
+  lines.push(DIVIDER);
+  lines.push('');
+  lines.push('');
+
+  // Signature block
+  const sigW = Math.floor(W / 2) - 2;
+  lines.push(padL('Customer Signature', sigW) + '  ' + 'Authorized Signature');
+  lines.push('');
+  lines.push('');
+  lines.push('_'.repeat(sigW) + '  ' + '_'.repeat(sigW));
+  lines.push('');
+  lines.push(padL(`Name: ${'.' .repeat(sigW - 6)}`, sigW) + '  ' + a(data.agencyName));
+  lines.push(padL(`Date: ${'.' .repeat(sigW - 6)}`, sigW));
+  lines.push('');
+  lines.push(DIVIDER);
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ── DOT-MATRIX PDF ──────────────────────────────────────────────────────────
+// Renders the invoice to a high-DPI black-and-white raster image so RAWBT
+// doesn't need to interpret fonts at all.  The resulting PDF contains a single
+// PNG image page — nothing for the printer driver to misread.
+
+const ascii = (s: string) => String(s ?? '').replace(/[^\x20-\x7E]/g, '');
+
+function buildDotMatrixHtml(data: PdfData): string {
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  // TD style — overflow hidden so nothing spills past cell border
+  const td = (extra = '') =>
+    `border:2px solid #000;padding:5px 6px;overflow:hidden;white-space:nowrap;${extra}`;
+
+  const rows = data.items.map((item, i) => `
+    <tr>
+      <td style="${td('text-align:center;width:5%')}">${i + 1}</td>
+      <td style="${td('width:33%')}">${ascii(item.productName)}</td>
+      <td style="${td('width:20%')}">${ascii(item.color)}, ${ascii(item.size)}</td>
+      <td style="${td('text-align:right;width:18%')}">LKR ${fmt(item.unitPrice)}</td>
+      <td style="${td('text-align:center;width:8%')}">${item.quantity}</td>
+      <td style="${td('text-align:right;width:16%')}">LKR ${fmt(item.total)}</td>
+    </tr>`).join('');
+
+  const discount = data.discountAmount > 0
+    ? `<tr>
+         <td style="border:2px solid #000;padding:5px 8px;text-align:right;font-weight:bold" colspan="5">Discount:</td>
+         <td style="border:2px solid #000;padding:5px 8px;text-align:right">-LKR ${fmt(data.discountAmount)}</td>
+       </tr>`
+    : '';
+
+  const now = new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' });
+  const gpsLine = data.gpsLat != null
+    ? `<div>GPS: ${data.gpsLat.toFixed(6)}, ${(data.gpsLng ?? 0).toFixed(6)}</div>` : '';
+  const addrLine = data.customerAddress
+    ? `<div style="margin-top:3px">${ascii(data.customerAddress)}</div>` : '';
+  const soLine = data.salesOrderId
+    ? `<div><b>Sales Order:</b> ${ascii(data.salesOrderId)}</div>` : '';
+
+  // 794px wide, 14px base font — at 794→210mm scale that gives ~3.7mm (~10.5pt)
+  // which is comfortably readable on a dot-matrix print.
+  // NOTE: return only the inner div — not a full HTML doc — so container.innerHTML
+  // correctly sets firstElementChild to this div for html2canvas.
+  return `<div style="width:794px;background:#fff;padding:16px 22px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#000;line-height:1.4;box-sizing:border-box">
+    <!-- Header -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #000;padding-bottom:10px;margin-bottom:12px">
+      <div>
+        <div style="font-size:20px;font-weight:bold">DAG CLOTHING PVT LTD</div>
+        <div style="font-size:13px;margin-top:3px">Dag Clothing Pvt Ltd Kandamuduna Thalalla Matara</div>
+      </div>
+      <div style="text-align:right;font-size:13px">
+        <div>Tel: 0412259525</div>
+        <div>Email: order@dag-apparel.com</div>
+        <div>www.dag.lk</div>
+      </div>
+    </div>
+    <!-- Doc type + meta -->
+    <div style="display:flex;justify-content:space-between;margin-bottom:12px">
+      <div style="max-width:48%">
+        <div style="font-size:18px;font-weight:bold;margin-bottom:5px">${ascii(data.docType)}</div>
+        <div><b>No:</b> ${ascii(data.docNumber)}</div>
+        <div><b>Date:</b> ${ascii(data.date)}</div>
+        <div><b>Agency:</b> ${ascii(data.agencyName)}</div>
+        ${soLine}
+      </div>
+      <div style="max-width:48%;text-align:right">
+        <div style="font-weight:bold;margin-bottom:3px">BILL TO:</div>
+        <div style="font-weight:bold;font-size:15px">${ascii(data.customerName)}</div>
+        ${addrLine}
+      </div>
+    </div>
+    <!-- Items table — table-layout:fixed prevents any column from expanding -->
+    <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px;margin-bottom:10px">
+      <colgroup>
+        <col style="width:5%">
+        <col style="width:33%">
+        <col style="width:20%">
+        <col style="width:18%">
+        <col style="width:8%">
+        <col style="width:16%">
+      </colgroup>
+      <thead>
+        <tr style="background:#000;color:#fff">
+          <th style="border:2px solid #000;padding:5px 6px;text-align:center">#</th>
+          <th style="border:2px solid #000;padding:5px 6px;text-align:left">Product</th>
+          <th style="border:2px solid #000;padding:5px 6px;text-align:left">Color / Size</th>
+          <th style="border:2px solid #000;padding:5px 6px;text-align:right">Unit Price</th>
+          <th style="border:2px solid #000;padding:5px 6px;text-align:center">Qty</th>
+          <th style="border:2px solid #000;padding:5px 6px;text-align:right">Total</th>
+        </tr>
+      </thead>
+      <tbody style="font-size:13px">${rows}</tbody>
+    </table>
+    <!-- Generated / GPS left-aligned below table -->
+    <div style="font-size:11px;margin-bottom:10px">
+      <div>Generated: ${now}</div>
+      ${gpsLine}
+    </div>
+    <!-- Totals — right-aligned, 300px wide so values have room -->
+    <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
+      <table style="border-collapse:collapse;width:300px;font-size:14px">
+        <tr>
+          <td style="border:2px solid #000;padding:5px 10px">Subtotal:</td>
+          <td style="border:2px solid #000;padding:5px 10px;text-align:right">LKR ${fmt(data.subtotal)}</td>
+        </tr>
+        ${discount}
+        <tr>
+          <td style="border:3px solid #000;padding:6px 10px;font-weight:bold;font-size:15px">TOTAL:</td>
+          <td style="border:3px solid #000;padding:6px 10px;text-align:right;font-weight:bold;font-size:15px">LKR ${fmt(data.total)}</td>
+        </tr>
+      </table>
+    </div>
+    <!-- Signature block -->
+    <div style="border-top:2px solid #000;padding-top:12px;display:flex;justify-content:space-between">
+      <div style="width:46%">
+        <div style="font-weight:bold;margin-bottom:32px">Customer Signature</div>
+        <div style="border-bottom:2px solid #000"></div>
+        <div style="margin-top:6px">Name: ............................................</div>
+        <div style="margin-top:5px">Date: ............................................</div>
+      </div>
+      <div style="width:46%;text-align:right">
+        <div style="font-weight:bold;margin-bottom:32px">Authorized Signature</div>
+        <div style="border-bottom:2px solid #000"></div>
+        <div style="margin-top:6px">${ascii(data.agencyName)}</div>
+      </div>
+    </div>
+  </div>
+  </div>`;
+}
+
+export async function generateDotMatrixBlob(data: InvoicePdfData): Promise<Blob | null> {
+  try {
+    const pdfData: PdfData = {
+      docId: data.invoiceId,
+      docType: 'INVOICE',
+      docNumber: data.invoiceNumber,
+      salesOrderId: data.salesOrderId,
+      customerName: data.customerName,
+      customerAddress: data.customerAddress,
+      agencyName: data.agencyName,
+      date: data.date,
+      items: data.items,
+      subtotal: data.subtotal,
+      discountAmount: data.discountAmount,
+      total: data.total,
+      gpsLat: data.gpsLat,
+      gpsLng: data.gpsLng,
+    };
+
+    const html2canvasModule = await import(/* @vite-ignore */ 'html2canvas')
+      .then(m => (m as any).default ?? (m as any));
+    const jspdfModule = await import(/* @vite-ignore */ 'jspdf');
+    const JsPDF = (jspdfModule as any).default ?? (jspdfModule as any).jsPDF;
+
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed;left:-9999px;top:0;z-index:-1;width:794px;overflow:hidden;background:#fff';
+    container.innerHTML = buildDotMatrixHtml(pdfData);
+    document.body.appendChild(container);
+    // Temporary global style so table-layout:fixed and border-box work in the off-screen div
+    const resetStyle = document.createElement('style');
+    resetStyle.textContent = '#_dm_tmp *{box-sizing:border-box}';
+    container.id = '_dm_tmp';
+    document.head.appendChild(resetStyle);
+    const el = container.firstElementChild as HTMLElement;
+
+    let blob: Blob | null = null;
+    try {
+      // Scale 3 ≈ 288 DPI at 96 DPI base; gives crisp dot-matrix output.
+      // width + windowWidth pin the render to exactly 794px so nothing bleeds right.
+      const canvas = await html2canvasModule(el, {
+        scale: 3,
+        width: 794,
+        windowWidth: 794,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+      });
+
+      // Convert to true black-and-white — threshold at 180 luminance
+      const bwCanvas = document.createElement('canvas');
+      bwCanvas.width  = canvas.width;
+      bwCanvas.height = canvas.height;
+      const ctx = bwCanvas.getContext('2d')!;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, bwCanvas.width, bwCanvas.height);
+      ctx.drawImage(canvas, 0, 0);
+      const imgData = ctx.getImageData(0, 0, bwCanvas.width, bwCanvas.height);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const bw = lum < 180 ? 0 : 255;
+        d[i] = d[i + 1] = d[i + 2] = bw;
+        d[i + 3] = 255;
+      }
+      ctx.putImageData(imgData, 0, 0);
+      const pngData = bwCanvas.toDataURL('image/png');
+
+      // Continuous-paper page: A4 width, height matches content exactly
+      const PAGE_W_MM = 210;
+      const PAGE_H_MM = Math.ceil((bwCanvas.height / bwCanvas.width) * PAGE_W_MM) + 4;
+
+      const pdf = new JsPDF({ orientation: 'p', unit: 'mm', format: [PAGE_W_MM, PAGE_H_MM] });
+      pdf.addImage(pngData, 'PNG', 0, 0, PAGE_W_MM, PAGE_H_MM - 4);
+      blob = pdf.output('blob') as Blob;
+    } finally {
+      document.body.removeChild(container);
+      document.head.removeChild(resetStyle);
+    }
+    return blob;
+  } catch (err) {
+    console.error('[PDF] Dot-matrix error:', err);
+    return null;
+  }
 }
 
 async function uploadPdf(blob: Blob, path: string): Promise<string | null> {
