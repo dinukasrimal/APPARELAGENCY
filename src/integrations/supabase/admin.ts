@@ -1,118 +1,58 @@
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './types';
+import { supabase } from './client';
 
-const SUPABASE_URL = "https://ejpwmgluazqcczrpwjlo.supabase.co";
+// User creation is handled by the create-user Edge Function.
+// The service role key lives only on the Edge Function server — never in the browser bundle.
 
-// Get service role key from environment
-const getServiceRoleKey = () => {
-  // Check for service role key in environment variables
-  const serviceKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY || 
-                    import.meta.env.SUPABASE_SERVICE_ROLE_KEY;
-  
-  if (!serviceKey || serviceKey === 'your_service_role_key_here') {
-    console.warn('Service role key not configured. Admin user creation will not be available.');
-    return null;
-  }
-  
-  return serviceKey;
-};
+export interface CreateUserResult {
+  userId: string;
+  email: string;
+  name: string;
+  role: string;
+}
 
-// Create admin client only if service role key is available
-const createAdminClient = () => {
-  const serviceKey = getServiceRoleKey();
-  
-  if (!serviceKey) {
-    return null;
-  }
-  
-  return createClient<Database>(SUPABASE_URL, serviceKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  });
-};
+export async function adminCreateAuthUserMinimal(
+  email: string,
+  password: string
+): Promise<{ user: { id: string; email: string } }> {
+  return callCreateUserEdgeFunction(email, password, '', 'agent');
+}
 
-export const supabaseAdmin = createAdminClient();
-
-// Helper function to create auth user using admin privileges (minimal version)
-export const adminCreateAuthUserMinimal = async (email: string, password: string) => {
-  if (!supabaseAdmin) {
-    throw new Error('Admin client not available. Service role key not configured.');
-  }
-  
-  console.log('=== MINIMAL AUTH USER CREATION ===');
-  console.log('Email:', email);
-  console.log('Password length:', password.length);
-  
-  const { data, error } = await supabaseAdmin.auth.admin.createUser({
+export async function adminCreateAuthUser(
+  email: string,
+  password: string,
+  userData?: { name?: string; role?: string }
+): Promise<{ user: { id: string; email: string } }> {
+  return callCreateUserEdgeFunction(
     email,
     password,
-    email_confirm: true
-    // No user_metadata to avoid database trigger issues
+    userData?.name ?? '',
+    userData?.role ?? 'agent'
+  );
+}
+
+async function callCreateUserEdgeFunction(
+  email: string,
+  password: string,
+  name: string,
+  role: string
+): Promise<{ user: { id: string; email: string } }> {
+  const { data, error } = await supabase.functions.invoke('create-user', {
+    body: { email, password, name, role },
   });
-  
+
   if (error) {
-    console.error('Minimal auth user creation error:', error);
-    throw error;
+    throw new Error(error.message ?? 'Edge Function error');
   }
-  
-  return data;
-};
 
-// Helper function to create auth user using admin privileges (full version)
-export const adminCreateAuthUser = async (email: string, password: string, userData?: any) => {
-  if (!supabaseAdmin) {
-    throw new Error('Admin client not available. Service role key not configured.');
+  if (data?.error) {
+    throw new Error(data.error);
   }
-  
-  console.log('=== ADMIN USER CREATION DEBUG ===');
-  console.log('Email:', email);
-  console.log('Password length:', password.length);
-  console.log('User metadata:', userData);
-  console.log('Admin client available:', !!supabaseAdmin);
-  
-  try {
-    const createParams = {
-      email,
-      password,
-      email_confirm: true, // Auto-confirm email for admin-created users
-      user_metadata: userData || {}
-    };
-    
-    console.log('Create user parameters:', createParams);
-    
-    const { data, error } = await supabaseAdmin.auth.admin.createUser(createParams);
-    
-    console.log('Create user response data:', data);
-    console.log('Create user response error:', error);
-    
-    if (error) {
-      console.error('=== AUTH USER CREATION ERROR ===');
-      console.error('Error object:', error);
-      console.error('Error message:', error.message);
-      console.error('Error status:', error.status);
-      console.error('Error name:', error.name);
-      console.error('Full error:', JSON.stringify(error, null, 2));
-      throw error;
-    }
-    
-    console.log('=== AUTH USER CREATED SUCCESSFULLY ===');
-    console.log('User ID:', data.user?.id);
-    console.log('User email:', data.user?.email);
-    
-    return data;
-    
-  } catch (err: any) {
-    console.error('=== UNEXPECTED ERROR IN AUTH USER CREATION ===');
-    console.error('Caught error:', err);
-    console.error('Error type:', typeof err);
-    console.error('Error constructor:', err.constructor?.name);
-    throw err;
-  }
-};
 
-// Helper function to check if admin operations are available
-export const isAdminAvailable = () => {
-  return supabaseAdmin !== null;
-};
+  return { user: { id: data.userId, email: data.email } };
+}
+
+// Always available now — Edge Function handles auth
+export const isAdminAvailable = () => true;
+
+// No longer needed — kept for import compatibility
+export const supabaseAdmin = null;

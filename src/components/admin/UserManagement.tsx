@@ -233,80 +233,16 @@ const UserManagement = ({ user }: UserManagementProps) => {
         return;
       }
 
-      // Check if admin functionality is available
-      if (!isAdminAvailable()) {
-        toast({
-          title: "Admin Required",
-          description: "User creation requires admin privileges. Please configure VITE_SUPABASE_SERVICE_ROLE_KEY in environment.",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      console.log('Creating user with admin privileges:', {
-        email: newUser.email,
-        name: newUser.name,
-        role: newUser.role
-      });
-
-      // Step 1: Create Supabase Auth user (minimal approach to avoid trigger issues)
-      console.log('Creating Supabase Auth user with minimal data...');
-      
-      // Use minimal auth user creation to avoid trigger conflicts
-      const authResult = await adminCreateAuthUserMinimal(
+      // Edge Function handles auth user + profile creation atomically
+      const authResult = await adminCreateAuthUser(
         newUser.email,
-        newUser.password
+        newUser.password,
+        { name: newUser.name, role: newUser.role }
       );
 
       if (!authResult.user) {
-        throw new Error('Failed to create auth user - no user returned');
+        throw new Error('Failed to create user');
       }
-
-      const authUserId = authResult.user.id;
-      console.log('Auth user created successfully with ID:', authUserId);
-      console.log('Profile should be auto-created by database trigger');
-
-      // Step 2: Create profile manually with matching ID
-      console.log('Creating profile manually with matching ID:', authUserId);
-      
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert({
-          id: authUserId,
-          name: newUser.name,
-          email: newUser.email,
-          role: newUser.role,
-          agency_id: null,
-          agency_name: null,
-        });
-
-      if (profileError) {
-        console.error('Profile creation error:', profileError);
-        
-        // If profile already exists (maybe created by trigger), try to update it
-        if (profileError.code === '23505' || profileError.message?.includes('duplicate key')) {
-          console.log('Profile already exists, updating instead...');
-          
-          const { error: updateError } = await supabase
-            .from('profiles')
-            .update({
-              name: newUser.name,
-              role: newUser.role
-            })
-            .eq('id', authUserId);
-            
-          if (updateError) {
-            console.error('Profile update error:', updateError);
-            throw updateError;
-          }
-        } else {
-          throw profileError;
-        }
-      }
-      
-      console.log('Profile created successfully');
-
-      console.log('User created successfully - Auth ID and Profile ID match:', authUserId);
 
       toast({
         title: "Success", 
