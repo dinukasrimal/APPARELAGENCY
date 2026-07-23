@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Calendar as CalendarIcon, Clock, MapPin, Users, ShoppingCart, Receipt, AlertTriangle, Download, ChevronLeft, ChevronRight, DollarSign, Image as ImageIcon, ArrowLeft } from 'lucide-react';
+import { Calendar as CalendarIcon, Clock, MapPin, Users, ShoppingCart, Receipt, AlertTriangle, Download, ChevronLeft, ChevronRight, DollarSign, Image as ImageIcon, ArrowLeft, Truck } from 'lucide-react';
 import { Calendar } from '@/components/ui/calendar';
 import { supabase } from '@/integrations/supabase/client';
 import LeafletMap from '@/components/dashboard/LeafletMap';
@@ -14,7 +14,7 @@ import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface DailyLogEntry {
   id: string;
-  type: 'clock_in' | 'clock_out' | 'customer' | 'non_productive' | 'sales_order' | 'invoice' | 'collection';
+  type: 'clock_in' | 'clock_out' | 'customer' | 'non_productive' | 'sales_order' | 'invoice' | 'collection' | 'delivery';
   name: string;
   latitude: number;
   longitude: number;
@@ -25,6 +25,7 @@ interface DailyLogEntry {
   userName?: string;
   orderNumber?: number;
   storefrontPhoto?: string;
+  amount?: number;
 }
 
 interface TimeRoutePath {
@@ -73,6 +74,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
   const [imageModalOpen, setImageModalOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ url: string; title: string } | null>(null);
   const [timeRoutes, setTimeRoutes] = useState<TimeRoutePath[]>([]);
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user.role === 'superuser') {
@@ -479,7 +481,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       // Fetch sales orders
       let soQuery = supabase
         .from('sales_orders')
-        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by')
+        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDate)
         .lte('created_at', endDate)
@@ -495,6 +497,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       orders?.forEach(order => {
         const user = users.find(u => u.id === order.created_by);
         const agency = agencies.find(a => a.id === order.agency_id);
+        const amount = Number(order.total) || 0;
         entries.push({
           id: order.id,
           type: 'sales_order',
@@ -502,17 +505,18 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           latitude: order.latitude,
           longitude: order.longitude,
           timestamp: new Date(order.created_at),
-          details: 'Sales Order',
+          details: `Sales Order: LKR ${amount.toLocaleString()}`,
           agencyName: agency?.name || 'Unknown Agency',
           userId: order.created_by,
-          userName: user?.name || 'Unknown User'
+          userName: user?.name || 'Unknown User',
+          amount
         });
       });
 
       // Fetch invoices
       let invoiceQuery = supabase
         .from('invoices')
-        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by')
+        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDate)
         .lte('created_at', endDate)
@@ -528,6 +532,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       invoices?.forEach(invoice => {
         const user = users.find(u => u.id === invoice.created_by);
         const agency = agencies.find(a => a.id === invoice.agency_id);
+        const amount = Number(invoice.total) || 0;
         entries.push({
           id: invoice.id,
           type: 'invoice',
@@ -535,10 +540,37 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           latitude: invoice.latitude,
           longitude: invoice.longitude,
           timestamp: new Date(invoice.created_at),
-          details: 'Invoice',
+          details: `Invoice: LKR ${amount.toLocaleString()}`,
           agencyName: agency?.name || 'Unknown Agency',
           userId: invoice.created_by,
-          userName: user?.name || 'Unknown User'
+          userName: user?.name || 'Unknown User',
+          amount
+        });
+      });
+
+      // Fetch deliveries (joined to invoice for customer name)
+      let deliveryQuery = supabase
+        .from('deliveries')
+        .select('id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, agency_id, invoices(customer_name)')
+        .eq('agency_id', agencyFilter)
+        .gte('delivered_at', startDate)
+        .lte('delivered_at', endDate)
+        .not('delivery_latitude', 'is', null)
+        .not('delivery_longitude', 'is', null);
+
+      const { data: deliveries } = await deliveryQuery;
+
+      deliveries?.forEach((delivery: any) => {
+        const agency = agencies.find(a => a.id === delivery.agency_id);
+        entries.push({
+          id: `delivery-${delivery.id}`,
+          type: 'delivery',
+          name: delivery.invoices?.customer_name || delivery.received_by_name || 'Delivery',
+          latitude: delivery.delivery_latitude,
+          longitude: delivery.delivery_longitude,
+          timestamp: new Date(delivery.delivered_at),
+          details: `Delivered${delivery.received_by_name ? ` to ${delivery.received_by_name}` : ''}${delivery.status ? ` (${delivery.status})` : ''}`,
+          agencyName: agency?.name || 'Unknown Agency'
         });
       });
 
@@ -772,7 +804,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       let soQuery = supabase
         .from('sales_orders')
-        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by')
+        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDateTime)
         .lte('created_at', endDateTime)
@@ -788,6 +820,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       orders?.forEach(order => {
         const user = users.find(u => u.id === order.created_by);
         const agency = agencies.find(a => a.id === order.agency_id);
+        const amount = Number(order.total) || 0;
         entries.push({
           id: order.id,
           type: 'sales_order',
@@ -795,16 +828,17 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           latitude: order.latitude,
           longitude: order.longitude,
           timestamp: new Date(order.created_at),
-          details: 'Sales Order',
+          details: `Sales Order: LKR ${amount.toLocaleString()}`,
           agencyName: agency?.name || 'Unknown Agency',
           userId: order.created_by,
-          userName: user?.name || 'Unknown User'
+          userName: user?.name || 'Unknown User',
+          amount
         });
       });
 
       let invoiceQuery = supabase
         .from('invoices')
-        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by')
+        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDateTime)
         .lte('created_at', endDateTime)
@@ -820,6 +854,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       invoices?.forEach(invoice => {
         const user = users.find(u => u.id === invoice.created_by);
         const agency = agencies.find(a => a.id === invoice.agency_id);
+        const amount = Number(invoice.total) || 0;
         entries.push({
           id: invoice.id,
           type: 'invoice',
@@ -827,10 +862,37 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           latitude: invoice.latitude,
           longitude: invoice.longitude,
           timestamp: new Date(invoice.created_at),
-          details: 'Invoice',
+          details: `Invoice: LKR ${amount.toLocaleString()}`,
           agencyName: agency?.name || 'Unknown Agency',
           userId: invoice.created_by,
-          userName: user?.name || 'Unknown User'
+          userName: user?.name || 'Unknown User',
+          amount
+        });
+      });
+
+      // Fetch deliveries for the range
+      let deliveryQuery = supabase
+        .from('deliveries')
+        .select('id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, agency_id, invoices(customer_name)')
+        .eq('agency_id', agencyFilter)
+        .gte('delivered_at', startDateTime)
+        .lte('delivered_at', endDateTime)
+        .not('delivery_latitude', 'is', null)
+        .not('delivery_longitude', 'is', null);
+
+      const { data: deliveries } = await deliveryQuery;
+
+      deliveries?.forEach((delivery: any) => {
+        const agency = agencies.find(a => a.id === delivery.agency_id);
+        entries.push({
+          id: `delivery-${delivery.id}`,
+          type: 'delivery',
+          name: delivery.invoices?.customer_name || delivery.received_by_name || 'Delivery',
+          latitude: delivery.delivery_latitude,
+          longitude: delivery.delivery_longitude,
+          timestamp: new Date(delivery.delivered_at),
+          details: `Delivered${delivery.received_by_name ? ` to ${delivery.received_by_name}` : ''}${delivery.status ? ` (${delivery.status})` : ''}`,
+          agencyName: agency?.name || 'Unknown Agency'
         });
       });
 
@@ -893,6 +955,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       case 'sales_order': return ShoppingCart;
       case 'invoice': return Receipt;
       case 'collection': return DollarSign;
+      case 'delivery': return Truck;
       default: return MapPin;
     }
   };
@@ -906,8 +969,30 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       case 'sales_order': return '#000000';
       case 'invoice': return '#22C55E';
       case 'collection': return '#8B5CF6'; // Purple color for collections
+      case 'delivery': return '#0EA5E9'; // Sky blue for deliveries
       default: return '#6B7280';
     }
+  };
+
+  // Totals for the selected day/range, derived from the loaded entries
+  const summary = {
+    salesOrderValue: logEntries
+      .filter(e => e.type === 'sales_order')
+      .reduce((sum, e) => sum + (e.amount || 0), 0),
+    invoiceValue: logEntries
+      .filter(e => e.type === 'invoice')
+      .reduce((sum, e) => sum + (e.amount || 0), 0),
+    // count of distinct customers delivered to
+    deliveredCustomers: new Set(
+      logEntries.filter(e => e.type === 'delivery').map(e => e.name)
+    ).size,
+    collectionValue: logEntries
+      .filter(e => e.type === 'collection')
+      .reduce((sum, e) => {
+        // Collection amount is embedded in details: "Collection: LKR 1,234 (...)"
+        const match = e.details?.match(/LKR\s([\d,]+)/);
+        return sum + (match ? Number(match[1].replace(/,/g, '')) : 0);
+      }, 0),
   };
 
   const exportToCSV = () => {
@@ -1084,6 +1169,56 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                 />
               </CardContent>
             </Card>
+
+            {/* Day summary cards */}
+            {selectedDate && logEntries.length > 0 && (
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                <Card>
+                  <CardContent className="p-4 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100">
+                      <ShoppingCart className="h-5 w-5 text-gray-900" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Sales Orders</div>
+                      <div className="text-lg font-bold">LKR {summary.salesOrderValue.toLocaleString()}</div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center bg-green-100">
+                      <Receipt className="h-5 w-5 text-green-600" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Invoices</div>
+                      <div className="text-lg font-bold">LKR {summary.invoiceValue.toLocaleString()}</div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center bg-sky-100">
+                      <Truck className="h-5 w-5 text-sky-600" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Delivered Customers</div>
+                      <div className="text-lg font-bold">{summary.deliveredCustomers}</div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center bg-purple-100">
+                      <DollarSign className="h-5 w-5 text-purple-600" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Collections</div>
+                      <div className="text-lg font-bold">LKR {summary.collectionValue.toLocaleString()}</div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </div>
 
           <div>
@@ -1126,10 +1261,15 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                     <div className="space-y-3 max-h-96 overflow-y-auto">
                       {logEntries.map((entry) => {
                         const Icon = getEntryIcon(entry.type);
+                        const isSelected = selectedEntryId === entry.id;
                         return (
-                          <div key={entry.id} className="flex items-center gap-3 p-3 border rounded-lg">
+                          <div
+                            key={entry.id}
+                            onClick={() => setSelectedEntryId(isSelected ? null : entry.id)}
+                            className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${isSelected ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50'}`}
+                          >
                             <div className="flex items-center gap-2">
-                              <div 
+                              <div
                                 className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold"
                                 style={{ backgroundColor: getEntryColor(entry.type) }}
                               >
@@ -1141,7 +1281,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                             {entry.storefrontPhoto && (entry.type === 'customer' || entry.type === 'non_productive') && (
                               <div 
                                 className="relative cursor-pointer group flex-shrink-0"
-                                onClick={() => handleImageClick(entry.storefrontPhoto!, entry.name, entry.type)}
+                                onClick={(e) => { e.stopPropagation(); handleImageClick(entry.storefrontPhoto!, entry.name, entry.type); }}
                               >
                                 <img
                                   src={entry.storefrontPhoto}
@@ -1218,13 +1358,22 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                 <span className="text-sm">Invoice</span>
               </div>
               <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-sky-500"></div>
+                <span className="text-sm">Delivery</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-purple-500"></div>
+                <span className="text-sm">Collection</span>
+              </div>
+              <div className="flex items-center gap-2">
                 <div className="w-8 h-1 rounded-full bg-blue-600"></div>
                 <span className="text-sm">Tracked Route</span>
               </div>
             </div>
+            <p className="text-xs text-gray-500 mt-1">Numbers on the map match the visit sequence in the activities list. Click an activity to highlight it here.</p>
           </CardHeader>
           <CardContent>
-              <LeafletMap 
+              <LeafletMap
                 locations={logEntries.map(entry => ({
                   id: entry.id,
                   type: entry.type,
@@ -1233,10 +1382,12 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                 longitude: entry.longitude,
                 timestamp: entry.timestamp,
                 details: entry.details,
-                agencyName: entry.agencyName
+                agencyName: entry.agencyName,
+                orderNumber: entry.orderNumber
               }))}
               routes={timeRoutes}
               height="600px"
+              selectedId={selectedEntryId}
             />
           </CardContent>
         </Card>
@@ -1262,10 +1413,15 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
               <div className="space-y-4">
                 {logEntries.map((entry) => {
                   const Icon = getEntryIcon(entry.type);
+                  const isSelected = selectedEntryId === entry.id;
                   return (
-                    <div key={entry.id} className="flex items-center gap-4 p-4 border rounded-lg">
+                    <div
+                      key={entry.id}
+                      onClick={() => setSelectedEntryId(isSelected ? null : entry.id)}
+                      className={`flex items-center gap-4 p-4 border rounded-lg cursor-pointer transition-colors ${isSelected ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50'}`}
+                    >
                       <div className="flex items-center gap-3">
-                        <div 
+                        <div
                           className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold"
                           style={{ backgroundColor: getEntryColor(entry.type) }}
                         >
@@ -1278,7 +1434,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                       {entry.storefrontPhoto && (entry.type === 'customer' || entry.type === 'non_productive') && (
                         <div 
                           className="relative cursor-pointer group flex-shrink-0"
-                          onClick={() => handleImageClick(entry.storefrontPhoto!, entry.name, entry.type)}
+                          onClick={(e) => { e.stopPropagation(); handleImageClick(entry.storefrontPhoto!, entry.name, entry.type); }}
                         >
                           <img
                             src={entry.storefrontPhoto}

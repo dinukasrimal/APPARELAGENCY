@@ -91,6 +91,10 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
   const [showAllOrders, setShowAllOrders] = useState(false);
   const [invoicePage, setInvoicePage] = useState(1);
   const [invoiceTotalCount, setInvoiceTotalCount] = useState(0);
+  // Invoice search: `invoiceSearchInput` is what the user types (responsive),
+  // `invoiceSearch` is the debounced value actually sent to the server query.
+  const [invoiceSearchInput, setInvoiceSearchInput] = useState('');
+  const [invoiceSearch, setInvoiceSearch] = useState('');
   const [selectedAgencyId, setSelectedAgencyId] = useState<string | null>(
     user.role === 'superuser' ? null : user.agencyId
   );
@@ -183,8 +187,11 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
 
       // Round trip 1: orders + agencies + customers + products + returns in parallel
       // (return_items excluded here — must be filtered by return IDs, added in round trip 2)
+      // Limit raised from 100 → 1000 so the client-side order search can see all of
+      // an agency's orders, not just the newest 100 (a searched customer's older
+      // orders were previously invisible).
       const [ordersResult, agenciesResult, customersResult, productsResult, returnsResult] = await Promise.all([
-        ordersQuery.order('created_at', { ascending: false }).limit(100),
+        ordersQuery.order('created_at', { ascending: false }).limit(1000),
         supabase.from('agencies').select('id, name'),
         customersQuery.order('name'),
         productsQuery,
@@ -407,6 +414,15 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
       }
 
+      // Server-side search so matches are found across ALL pages, not just the
+      // current one. Strip characters that would break the PostgREST or() syntax.
+      const invoiceTerm = invoiceSearch.trim().replace(/[,()%]/g, ' ').trim();
+      if (invoiceTerm) {
+        invoicesQuery = invoicesQuery.or(
+          `customer_name.ilike.%${invoiceTerm}%,invoice_number.ilike.%${invoiceTerm}%`
+        );
+      }
+
       const invoicesResult = await invoicesQuery
         .order('created_at', { ascending: false })
         .range(invoiceFrom, invoiceTo);
@@ -558,11 +574,23 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         variant: 'destructive'
       });
     }
-  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage, toast]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage, invoiceSearch, toast]);
 
   useEffect(() => {
     fetchInvoicePage();
-  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage]);
+  }, [user.id, user.role, user.agencyId, selectedAgencyId, invoicePage, invoiceSearch]);
+
+  // Debounce the invoice search box, and reset to page 1 whenever the term changes
+  // so the matches are shown from the start rather than mid-way through pages.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setInvoiceSearch((prev) => {
+        if (prev !== invoiceSearchInput) setInvoicePage(1);
+        return invoiceSearchInput;
+      });
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [invoiceSearchInput]);
 
   // Memoized filtered orders to prevent unnecessary recalculations
   const filteredOrders = useMemo(() => {
@@ -1260,6 +1288,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             totalCount={invoiceTotalCount}
             onPageChange={setInvoicePage}
             onRefresh={fetchData}
+            searchTerm={invoiceSearchInput}
+            onSearchChange={setInvoiceSearchInput}
           />
         </TabsContent>
 

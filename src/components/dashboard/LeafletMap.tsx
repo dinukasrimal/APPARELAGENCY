@@ -4,13 +4,14 @@ import 'leaflet/dist/leaflet.css';
 
 interface LocationData {
   id: string;
-  type: 'customer' | 'non_productive' | 'sales_order' | 'invoice' | 'collection' | 'clock_in' | 'clock_out';
+  type: 'customer' | 'non_productive' | 'sales_order' | 'invoice' | 'collection' | 'clock_in' | 'clock_out' | 'delivery';
   name: string;
   latitude: number;
   longitude: number;
   timestamp: Date;
   details?: string;
   agencyName?: string;
+  orderNumber?: number;
 }
 
 interface RoutePath {
@@ -28,12 +29,14 @@ interface LeafletMapProps {
   locations: LocationData[];
   height?: string;
   routes?: RoutePath[];
+  selectedId?: string | null;
 }
 
-const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProps) => {
+const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null }: LeafletMapProps) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
+  const markerByIdRef = useRef<Record<string, L.Marker>>({});
   const routeLayersRef = useRef<L.Polyline[]>([]);
 
   const getMarkerColor = (type: string) => {
@@ -43,25 +46,37 @@ const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProp
       case 'sales_order': return '#000000';
       case 'invoice': return '#22C55E';
       case 'collection': return '#8B5CF6'; // Purple color for collections
+      case 'delivery': return '#0EA5E9'; // Sky blue for deliveries
       case 'clock_in': return '#10B981';
       case 'clock_out': return '#EF4444';
       default: return '#6B7280';
     }
   };
 
-  const createCustomIcon = (color: string) => {
+  const createCustomIcon = (color: string, orderNumber?: number, highlighted = false) => {
+    const size = highlighted ? 30 : 24;
+    const label = orderNumber !== undefined ? String(orderNumber) : '';
+    const ring = highlighted
+      ? 'border: 3px solid #2563EB; box-shadow: 0 0 0 4px rgba(37,99,235,0.35), 0 2px 6px rgba(0,0,0,0.4);'
+      : 'border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);';
     return L.divIcon({
       className: 'custom-marker',
       html: `<div style="
-        width: 20px;
-        height: 20px;
+        width: ${size}px;
+        height: ${size}px;
         border-radius: 50%;
         background-color: ${color};
-        border: 2px solid white;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-      "></div>`,
-      iconSize: [20, 20],
-      iconAnchor: [10, 10],
+        ${ring}
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: ${highlighted ? 13 : 11}px;
+        font-weight: 700;
+        font-family: sans-serif;
+      ">${label}</div>`,
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
     });
   };
 
@@ -94,6 +109,7 @@ const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProp
       mapInstanceRef.current?.removeLayer(marker);
     });
     markersRef.current = [];
+    markerByIdRef.current = {};
 
     routeLayersRef.current.forEach((polyline) => {
       mapInstanceRef.current?.removeLayer(polyline);
@@ -112,7 +128,7 @@ const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProp
     
     locations.forEach((location) => {
       const marker = L.marker([location.latitude, location.longitude], {
-        icon: createCustomIcon(getMarkerColor(location.type))
+        icon: createCustomIcon(getMarkerColor(location.type), location.orderNumber)
       });
 
       const popupContent = `
@@ -131,6 +147,7 @@ const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProp
       bounds.extend([location.latitude, location.longitude]);
       hasBounds = true;
       markersRef.current.push(marker);
+      markerByIdRef.current[location.id] = marker;
     });
 
     routes.forEach((route, index) => {
@@ -165,6 +182,31 @@ const LeafletMap = ({ locations, height = '400px', routes = [] }: LeafletMapProp
       }
     }
   }, [locations, routes]);
+
+  // Highlight the selected marker: enlarge it, pan to it, and open its popup
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+
+    // Reset all markers to their normal icon
+    locations.forEach((location) => {
+      const marker = markerByIdRef.current[location.id];
+      if (marker) {
+        marker.setIcon(createCustomIcon(getMarkerColor(location.type), location.orderNumber, false));
+        marker.setZIndexOffset(0);
+      }
+    });
+
+    if (!selectedId) return;
+
+    const selected = locations.find(l => l.id === selectedId);
+    const marker = selectedId ? markerByIdRef.current[selectedId] : null;
+    if (selected && marker) {
+      marker.setIcon(createCustomIcon(getMarkerColor(selected.type), selected.orderNumber, true));
+      marker.setZIndexOffset(1000);
+      mapInstanceRef.current.panTo([selected.latitude, selected.longitude]);
+      marker.openPopup();
+    }
+  }, [selectedId, locations]);
 
   return (
     <div className="w-full">

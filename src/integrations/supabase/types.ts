@@ -799,6 +799,7 @@ export type Database = {
       invoices: {
         Row: {
           agency_id: string
+          client_request_id: string | null
           created_at: string | null
           created_by: string | null
           customer_id: string | null
@@ -815,6 +816,7 @@ export type Database = {
         }
         Insert: {
           agency_id: string
+          client_request_id?: string | null
           created_at?: string | null
           created_by?: string | null
           customer_id?: string | null
@@ -831,6 +833,7 @@ export type Database = {
         }
         Update: {
           agency_id?: string
+          client_request_id?: string | null
           created_at?: string | null
           created_by?: string | null
           customer_id?: string | null
@@ -1703,6 +1706,7 @@ export type Database = {
           agency_id: string
           approved_at: string | null
           approved_by: string | null
+          client_request_id: string | null
           created_at: string | null
           created_by: string | null
           customer_id: string | null
@@ -1723,6 +1727,7 @@ export type Database = {
           agency_id: string
           approved_at?: string | null
           approved_by?: string | null
+          client_request_id?: string | null
           created_at?: string | null
           created_by?: string | null
           customer_id?: string | null
@@ -1743,6 +1748,7 @@ export type Database = {
           agency_id?: string
           approved_at?: string | null
           approved_by?: string | null
+          client_request_id?: string | null
           created_at?: string | null
           created_by?: string | null
           customer_id?: string | null

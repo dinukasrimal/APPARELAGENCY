@@ -7,10 +7,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, UserPlus, Building2, Edit, Search, RefreshCw, KeyRound, Mail, UserCheck } from 'lucide-react';
+import { Users, UserPlus, Building2, Edit, Search, RefreshCw, KeyRound, UserCheck, Trash2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { adminCreateAuthUser, adminCreateAuthUserMinimal, isAdminAvailable } from '@/integrations/supabase/admin';
+import { adminCreateAuthUser, adminCreateAuthUserMinimal, adminGeneratePasswordResetLink, adminDeleteUser, isAdminAvailable } from '@/integrations/supabase/admin';
 import { useToast } from '@/hooks/use-toast';
 
 type UserRole = 'agency' | 'superuser' | 'agent';
@@ -63,6 +64,14 @@ const UserManagement = ({ user }: UserManagementProps) => {
   const [showPasswordReset, setShowPasswordReset] = useState(false);
   const [resettingPassword, setResettingPassword] = useState(false);
   const [resetUser, setResetUser] = useState<UserProfile | null>(null);
+  const [resetLink, setResetLink] = useState<string | null>(null);
+
+  // Delete states
+  const [userToDelete, setUserToDelete] = useState<UserProfile | null>(null);
+  const [agencyToDelete, setAgencyToDelete] = useState<Agency | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const isSuperuser = user.role === 'superuser';
   
   // Agency allocation states
   const [showAllocateUser, setShowAllocateUser] = useState(false);
@@ -70,10 +79,6 @@ const UserManagement = ({ user }: UserManagementProps) => {
   const [userToAllocate, setUserToAllocate] = useState<UserProfile | null>(null);
   const [selectedAgencyForAllocation, setSelectedAgencyForAllocation] = useState('');
   
-  // Email testing states
-  const [showEmailTest, setShowEmailTest] = useState(false);
-  const [testingEmail, setTestingEmail] = useState(false);
-  const [testEmailAddress, setTestEmailAddress] = useState('');
   
   const { toast } = useToast();
 
@@ -293,202 +298,83 @@ const UserManagement = ({ user }: UserManagementProps) => {
     }
   };
 
-  // Email-based password reset function with enhanced debugging
-  const sendPasswordResetEmail = async () => {
+  const generateResetLink = async () => {
+    if (!resetUser) return;
     try {
       setResettingPassword(true);
-
-      if (!resetUser) {
-        toast({
-          title: "Error",
-          description: "No user selected for password reset",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      console.log('=== EMAIL RESET DEBUG START ===');
-      console.log(`Target user:`, resetUser);
-      console.log(`Email address:`, resetUser.email);
-      console.log(`Current origin:`, window.location.origin);
-      console.log(`Redirect URL:`, `${window.location.origin}/reset-password`);
-      
-      // Important: We can only see users in our profiles table, not Supabase auth users
-      // Supabase will only send emails to users that actually exist in the auth system
-      console.log('Note: Email will only be sent if user exists in Supabase Auth (not just profiles table)');
-      
-      // Send password reset email using Supabase auth
-      console.log('Calling supabase.auth.resetPasswordForEmail...');
-      const { data, error } = await supabase.auth.resetPasswordForEmail(resetUser.email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-
-      console.log('Response data:', data);
-      console.log('Response error:', error);
-
-      if (error) {
-        console.error('=== EMAIL SEND ERROR ===');
-        console.error('Error object:', error);
-        console.error('Error message:', error.message);
-        console.error('Error code:', error.code);
-        console.error('Error details:', error.details);
-        console.error('Error hint:', error.hint);
-        throw error;
-      }
-
-      console.log('=== EMAIL SENT SUCCESSFULLY ===');
-      console.log(`Email sent to: ${resetUser.email}`);
-      console.log('Data returned:', data);
-
-      toast({
-        title: "Password Reset Request Sent",
-        description: `Request processed for ${resetUser.email}. Note: Emails are only sent to users who have active accounts in our system. Check your inbox and spam folder if this user exists.`,
-      });
-
-      // Close dialog
-      setShowPasswordReset(false);
-      setResetUser(null);
-
+      const link = await adminGeneratePasswordResetLink(resetUser.email);
+      setResetLink(link);
     } catch (error: any) {
-      console.error('=== EMAIL RESET ERROR CAUGHT ===');
-      console.error('Full error object:', error);
-      console.error('Error type:', typeof error);
-      console.error('Error constructor:', error.constructor.name);
-      
-      if (error && typeof error === 'object') {
-        console.error('Error properties:');
-        Object.keys(error).forEach(key => {
-          console.error(`  ${key}:`, error[key]);
-        });
-      }
-      
-      let errorMessage = "Failed to send password reset email";
-      let troubleshooting = "";
-      let debugInfo = "";
-      
-      if (error.message?.includes('Email rate limit exceeded')) {
-        errorMessage = "Too many email requests. Please try again in a few minutes.";
-        troubleshooting = "Rate limit reached - wait 5-10 minutes before trying again.";
-      } else if (error.message?.includes('Invalid email')) {
-        errorMessage = "Invalid email address format";
-        troubleshooting = "Please check if the user's email address is correct.";
-      } else if (error.message?.includes('Email not confirmed')) {
-        errorMessage = "User email not verified";
-        troubleshooting = "The user may need to verify their email first.";
-      } else if (error.message?.includes('SMTP')) {
-        errorMessage = "SMTP configuration issue";
-        troubleshooting = "Check your SMTP settings in Supabase dashboard.";
-        debugInfo = `SMTP Error: ${error.message}`;
-      } else if (error.message?.includes('Network')) {
-        errorMessage = "Network connection issue";
-        troubleshooting = "Check your internet connection and try again.";
-      } else if (error.code) {
-        errorMessage = `Supabase error (${error.code})`;
-        troubleshooting = `Error code: ${error.code}. Check Supabase dashboard logs.`;
-        debugInfo = `Full error: ${JSON.stringify(error, null, 2)}`;
-      } else if (error.message) {
-        errorMessage = error.message;
-        troubleshooting = "Check browser console for detailed logs.";
-        debugInfo = `Error details logged to console`;
-      } else {
-        errorMessage = "Unknown error occurred";
-        troubleshooting = "Check browser console and Supabase logs.";
-        debugInfo = "No specific error message available";
-      }
-      
-      console.error('Processed error message:', errorMessage);
-      console.error('Troubleshooting advice:', troubleshooting);
-      console.error('Debug info:', debugInfo);
-      
       toast({
-        title: "Email Send Failed",
-        description: `${errorMessage}. ${troubleshooting}`,
+        title: "Failed to Generate Link",
+        description: error.message || "Unknown error",
         variant: "destructive",
       });
-      
-      // Show debug info in a separate toast for development
-      if (debugInfo) {
-        setTimeout(() => {
-          toast({
-            title: "Debug Information",
-            description: debugInfo,
-            variant: "default",
-          });
-        }, 1000);
-      }
-      
     } finally {
       setResettingPassword(false);
-      console.log('=== EMAIL RESET DEBUG END ===');
     }
   };
 
-  // Test email function to verify SMTP configuration
-  const testEmailConfiguration = async () => {
+  // Delete a user (auth account + profile) via Edge Function
+  const handleDeleteUser = async () => {
+    if (!userToDelete) return;
     try {
-      setTestingEmail(true);
-
-      if (!testEmailAddress || !testEmailAddress.includes('@')) {
-        toast({
-          title: "Invalid Email",
-          description: "Please enter a valid email address",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      console.log('=== EMAIL CONFIGURATION TEST START ===');
-      console.log(`Test email address: ${testEmailAddress}`);
-      
-      // Try to send password reset to test email
-      const { data, error } = await supabase.auth.resetPasswordForEmail(testEmailAddress, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-
-      console.log('Test email response data:', data);
-      console.log('Test email response error:', error);
-
-      if (error) {
-        console.error('=== EMAIL TEST ERROR ===');
-        console.error('Error details:', error);
-        
-        let message = "Email test failed";
-        if (error.message?.includes('rate limit')) {
-          message = "Rate limit exceeded. Wait a few minutes and try again.";
-        } else if (error.message?.includes('SMTP')) {
-          message = `SMTP Configuration Issue: ${error.message}`;
-        } else {
-          message = `Error: ${error.message}`;
-        }
-        
-        toast({
-          title: "Email Test Failed",
-          description: message,
-          variant: "destructive",
-        });
-        return;
-      }
-
-      console.log('=== EMAIL TEST SUCCESS ===');
+      setDeleting(true);
+      await adminDeleteUser(userToDelete.id);
       toast({
-        title: "Email Test Sent",
-        description: `Test email sent to ${testEmailAddress}. Check inbox and spam folder. If received, your SMTP is working.`,
+        title: "User Deleted",
+        description: `${userToDelete.name} has been removed.`,
       });
-
-      setShowEmailTest(false);
-      setTestEmailAddress('');
-
+      setUserToDelete(null);
+      fetchUsers();
     } catch (error: any) {
-      console.error('Email test error:', error);
       toast({
-        title: "Email Test Error",
-        description: `Failed to test email: ${error.message || 'Unknown error'}`,
+        title: "Delete Failed",
+        description: error.message || "Failed to delete user",
         variant: "destructive",
       });
     } finally {
-      setTestingEmail(false);
+      setDeleting(false);
     }
   };
+
+  // Delete an agency (and unlink any users assigned to it)
+  const handleDeleteAgency = async () => {
+    if (!agencyToDelete) return;
+    try {
+      setDeleting(true);
+
+      // Unlink users assigned to this agency so they aren't left with a stale reference
+      await supabase
+        .from('profiles')
+        .update({ agency_id: null, agency_name: null })
+        .eq('agency_id', agencyToDelete.id);
+
+      const { error } = await supabase
+        .from('agencies')
+        .delete()
+        .eq('id', agencyToDelete.id);
+
+      if (error) throw error;
+
+      toast({
+        title: "Agency Deleted",
+        description: `${agencyToDelete.name} has been removed.`,
+      });
+      setAgencyToDelete(null);
+      fetchAgencies();
+      fetchUsers();
+    } catch (error: any) {
+      toast({
+        title: "Delete Failed",
+        description: error.message || "Failed to delete agency",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
 
   // Allocate user to agency function
   const allocateUserToAgency = async () => {
@@ -652,45 +538,6 @@ const UserManagement = ({ user }: UserManagementProps) => {
             {refreshing ? 'Refreshing...' : 'Refresh'}
           </Button>
           
-          <Dialog open={showEmailTest} onOpenChange={setShowEmailTest}>
-            <DialogTrigger asChild>
-              <Button variant="outline" className="flex items-center gap-2">
-                <Mail className="h-4 w-4" />
-                Test Email
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>Test Email Configuration</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                <p className="text-sm text-gray-600">
-                  Send a test password reset email to verify your SMTP configuration is working.
-                </p>
-                
-                <div>
-                  <Label htmlFor="test-email">Test Email Address</Label>
-                  <Input
-                    id="test-email"
-                    type="email"
-                    value={testEmailAddress}
-                    onChange={(e) => setTestEmailAddress(e.target.value)}
-                    placeholder="Enter your email to test"
-                  />
-                </div>
-                
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setShowEmailTest(false)}>
-                    Cancel
-                  </Button>
-                  <Button onClick={testEmailConfiguration} disabled={testingEmail || !testEmailAddress}>
-                    {testingEmail ? 'Sending...' : 'Send Test Email'}
-                  </Button>
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
-          
           <Dialog open={showCreateUser} onOpenChange={setShowCreateUser}>
             <DialogTrigger asChild>
               <Button className="flex items-center gap-2 bg-green-600 hover:bg-green-700">
@@ -832,7 +679,19 @@ const UserManagement = ({ user }: UserManagementProps) => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {agencies.map((agency) => (
               <div key={agency.id} className="border rounded-lg p-4">
-                <h4 className="font-semibold">{agency.name}</h4>
+                <div className="flex justify-between items-start gap-2">
+                  <h4 className="font-semibold">{agency.name}</h4>
+                  {isSuperuser && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setAgencyToDelete(agency)}
+                      className="text-red-600 hover:text-red-700 border-red-300 hover:bg-red-50 shrink-0"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
                 {agency.address && <p className="text-sm text-gray-600">{agency.address}</p>}
                 {agency.phone && <p className="text-sm text-gray-600">{agency.phone}</p>}
                 {agency.email && <p className="text-sm text-gray-600">{agency.email}</p>}
@@ -932,6 +791,17 @@ const UserManagement = ({ user }: UserManagementProps) => {
                       )}
                     </DialogContent>
                   </Dialog>
+                  {isSuperuser && userProfile.id !== user.id && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setUserToDelete(userProfile)}
+                      className="text-red-600 hover:text-red-700 border-red-300 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      Delete
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}
@@ -940,7 +810,10 @@ const UserManagement = ({ user }: UserManagementProps) => {
       </Card>
 
       {/* Password Reset Dialog */}
-      <Dialog open={showPasswordReset} onOpenChange={setShowPasswordReset}>
+      <Dialog open={showPasswordReset} onOpenChange={(open) => {
+        setShowPasswordReset(open);
+        if (!open) { setResetUser(null); setResetLink(null); }
+      }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Reset Password</DialogTitle>
@@ -951,75 +824,97 @@ const UserManagement = ({ user }: UserManagementProps) => {
                 <p className="font-medium">{resetUser.name}</p>
                 <p className="text-sm text-gray-600">{resetUser.email}</p>
               </div>
-              
-              <div className="space-y-4">
-                <div className="p-3 bg-green-50 border border-green-200 rounded-md">
-                  <div className="flex items-start gap-2">
-                    <Mail className="h-5 w-5 text-green-600 mt-0.5" />
-                    <div>
-                      <h4 className="font-medium text-green-800">Email Password Reset</h4>
-                      <p className="text-sm text-green-700 mt-1">
-                        A secure password reset email will be sent to the user's email address. The user can then set their own new password.
-                      </p>
-                    </div>
+
+              {!resetLink ? (
+                <>
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-md text-sm text-blue-800">
+                    Click the button below to generate a secure password reset link. Copy the link and send it to the user via WhatsApp, SMS, or any other channel. No email is sent — no rate limits.
                   </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Reset Email Will Be Sent To</Label>
-                  <div className="p-3 bg-gray-50 rounded border">
-                    <div className="flex items-center gap-2">
-                      <div>
-                        <p className="font-medium text-gray-900">{resetUser.name}</p>
-                        <p className="text-sm text-gray-600">{resetUser.email}</p>
-                      </div>
-                    </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button variant="outline" onClick={() => setShowPasswordReset(false)}>
+                      Cancel
+                    </Button>
+                    <Button onClick={generateResetLink} disabled={resettingPassword}>
+                      {resettingPassword ? 'Generating...' : 'Generate Reset Link'}
+                    </Button>
                   </div>
-                </div>
-                
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
-                  <div className="flex items-start gap-2">
-                    <div className="text-blue-600">ℹ️</div>
-                    <div>
-                      <h5 className="font-medium text-blue-800 text-sm">How Password Reset Works:</h5>
-                      <ul className="text-xs text-blue-700 mt-1 space-y-1">
-                        <li>• <strong>User must have signed up before</strong> to receive email</li>
-                        <li>• Profile in database ≠ Auth account (users need both)</li>
-                        <li>• System always shows "success" for security</li>
-                        <li>• Only real authenticated users get reset emails</li>
-                      </ul>
-                    </div>
+                </>
+              ) : (
+                <>
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-md text-sm text-green-800">
+                    Link generated. Send this to the user — it expires in 1 hour.
                   </div>
-                </div>
-                
-                <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
-                  <div className="flex items-start gap-2">
-                    <div className="text-yellow-600">⚠️</div>
-                    <div>
-                      <h5 className="font-medium text-yellow-800 text-sm">Email Delivery:</h5>
-                      <ul className="text-xs text-yellow-700 mt-1 space-y-1">
-                        <li>• Check spam/junk folder if email doesn't arrive</li>
-                        <li>• Email may take 2-5 minutes to arrive</li>
-                        <li>• User must click the link to reset password</li>
-                        <li>• Link expires after 1 hour for security</li>
-                      </ul>
-                    </div>
+                  <div className="space-y-2">
+                    <Label>Password Reset Link</Label>
+                    <Textarea
+                      readOnly
+                      value={resetLink}
+                      className="text-xs font-mono resize-none"
+                      rows={4}
+                      onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                    />
                   </div>
-                </div>
-                
-                <div className="flex justify-end gap-2 pt-4">
-                  <Button variant="outline" onClick={() => setShowPasswordReset(false)}>
-                    Cancel
-                  </Button>
-                  <Button onClick={sendPasswordResetEmail} disabled={resettingPassword}>
-                    {resettingPassword ? 'Sending Email...' : 'Send Reset Email'}
-                  </Button>
-                </div>
-              </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button variant="outline" onClick={() => setShowPasswordReset(false)}>
+                      Close
+                    </Button>
+                    <Button onClick={() => {
+                      navigator.clipboard.writeText(resetLink);
+                      toast({ title: "Copied", description: "Reset link copied to clipboard." });
+                    }}>
+                      Copy Link
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Delete User Confirmation */}
+      <AlertDialog open={!!userToDelete} onOpenChange={(open) => { if (!open) setUserToDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete User</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <strong>{userToDelete?.name}</strong> ({userToDelete?.email}) and their login account. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); handleDeleteUser(); }}
+              disabled={deleting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {deleting ? 'Deleting...' : 'Delete User'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Agency Confirmation */}
+      <AlertDialog open={!!agencyToDelete} onOpenChange={(open) => { if (!open) setAgencyToDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Agency</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <strong>{agencyToDelete?.name}</strong>. Users assigned to this agency will be unassigned. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); handleDeleteAgency(); }}
+              disabled={deleting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {deleting ? 'Deleting...' : 'Delete Agency'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Agency Allocation Dialog */}
       <Dialog open={showAllocateUser} onOpenChange={setShowAllocateUser}>

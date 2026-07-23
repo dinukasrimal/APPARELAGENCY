@@ -709,6 +709,57 @@ export class ExternalDataService {
   }
 
   /**
+   * Per-category external achievement for an explicit date range.
+   * Sums qty_delivered * price_unit from external invoice order_lines, grouped
+   * by product_category. Pass userName = null/'' to aggregate ALL agencies.
+   * Returns a map keyed by UPPER-CASED trimmed category name.
+   */
+  public async getExternalCategoryAchievement(
+    userName: string | null,
+    startDate: string,
+    endDate: string
+  ): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    try {
+      const { data: invoices, error } = await this.getInvoices({
+        userName: userName || undefined,
+        startDate,
+        endDate,
+      });
+      if (error || !invoices) return result;
+
+      const addLine = (line: any) => {
+        if (!line || !line.product_category) return;
+        const key = String(line.product_category).toUpperCase().trim();
+        const qty = Number(line.qty_delivered || 0);
+        const price = Number(line.price_unit || 0);
+        let amount = qty * price;
+        if (!amount) {
+          amount = Number(line.price_total || line.subtotal || line.total_amount || line.amount || 0);
+        }
+        if (!amount) return;
+        result.set(key, (result.get(key) || 0) + amount);
+      };
+
+      invoices.forEach((invoice: any) => {
+        let orderLines = invoice.order_lines;
+        if (!orderLines) return;
+        try {
+          if (typeof orderLines === 'string') orderLines = JSON.parse(orderLines);
+        } catch { return; }
+        if (Array.isArray(orderLines)) {
+          orderLines.forEach(addLine);
+        } else if (typeof orderLines === 'object') {
+          addLine(orderLines);
+        }
+      });
+    } catch (e) {
+      console.error('getExternalCategoryAchievement error:', e);
+    }
+    return result;
+  }
+
+  /**
    * Calculate achievement for external targets based on external invoices
    */
   public async calculateExternalAchievement(
@@ -930,6 +981,58 @@ export class ExternalDataService {
   }
 
   /**
+   * Fetch the individual invoices that make up the internal achievement for a
+   * period — used for the drill-down helper under "Internal Achievement".
+   * Uses the same role/agency filter as getInternalSalesData so the list totals
+   * to the same figure.
+   */
+  public async getInternalAchievementInvoices(
+    user: User,
+    startDate: string,
+    endDate: string,
+    agencyId?: string | null
+  ): Promise<{
+    data: Array<{ id: string; invoiceNumber: string | null; customerName: string; total: number; createdAt: string }>;
+    error: string | null;
+  }> {
+    try {
+      const rows = await fetchAllSupabaseRows<{
+        id: string; invoice_number: string | null; customer_name: string | null; total: number | null; created_at: string | null;
+      }>(() => {
+        let query = supabase
+          .from('invoices')
+          .select('id, invoice_number, customer_name, total, created_at')
+          .gte('created_at', startDate + 'T00:00:00')
+          .lte('created_at', endDate + 'T23:59:59');
+
+        if (agencyId) {
+          query = query.eq('agency_id', agencyId);
+        } else if (user.role === 'agent') {
+          query = query.eq('created_by', user.id);
+        } else if (user.role === 'agency') {
+          query = query.eq('agency_id', user.agencyId);
+        }
+
+        return query;
+      });
+
+      const data = rows
+        .map((r) => ({
+          id: r.id,
+          invoiceNumber: r.invoice_number,
+          customerName: r.customer_name || 'Unknown',
+          total: Number(r.total || 0),
+          createdAt: r.created_at || '',
+        }))
+        .sort((a, b) => (b.createdAt.localeCompare(a.createdAt)));
+
+      return { data, error: null };
+    } catch (error) {
+      return { data: [], error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
    * Compare external targets with internal sales achievements
    */
   public async getTargetVsAchievementComparison(
@@ -955,13 +1058,18 @@ export class ExternalDataService {
     error: string | null;
   }> {
     try {
-      console.log('🔄 Starting target vs achievement comparison for:', userName, 'year:', year, 'month:', month || 'all');
-      
+      // Superuser with no specific agency selected = aggregate ALL agencies.
+      // In that case fetch every agency's external targets (no name filter) so
+      // the external target figure sums across all agencies.
+      const aggregateAllAgencies = user.role === 'superuser' && !agencyId;
+
+      console.log('🔄 Starting target vs achievement comparison for:',
+        aggregateAllAgencies ? 'ALL AGENCIES' : userName, 'year:', year, 'month:', month || 'all');
+
       // Fetch external targets
-      const { data: externalTargets, error: externalError } = await this.getSalesTargets({
-        userName,
-        year
-      });
+      const { data: externalTargets, error: externalError } = await this.getSalesTargets(
+        aggregateAllAgencies ? { year } : { userName, year }
+      );
 
       if (externalError) {
         return {

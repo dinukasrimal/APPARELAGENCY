@@ -24,6 +24,8 @@ interface InvoiceManagementProps {
   totalCount?: number;
   onPageChange?: (page: number) => void;
   onRefresh?: () => void;
+  searchTerm?: string;
+  onSearchChange?: (value: string) => void;
 }
 
 const InvoiceManagement = ({
@@ -35,9 +37,15 @@ const InvoiceManagement = ({
   pageSize = 50,
   totalCount = invoices.length,
   onPageChange,
-  onRefresh
+  onRefresh,
+  searchTerm: searchTermProp,
+  onSearchChange
 }: InvoiceManagementProps) => {
-  const [searchTerm, setSearchTerm] = useState('');
+  // Search can be driven by the parent (server-side search across all pages) or
+  // fall back to purely local state when used standalone.
+  const [localSearch, setLocalSearch] = useState('');
+  const searchTerm = searchTermProp !== undefined ? searchTermProp : localSearch;
+  const setSearchTerm = onSearchChange ?? setLocalSearch;
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [showPrintView, setShowPrintView] = useState(false);
   const [markingForDelivery, setMarkingForDelivery] = useState<string | null>(null);
@@ -50,13 +58,19 @@ const InvoiceManagement = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { toast } = useToast();
 
+  // When the parent drives search (server-side across all pages), the rows we
+  // receive are already filtered — don't re-filter locally (the server matches
+  // customer_name / invoice_number, which differ from the local fields below).
+  const serverSideSearch = onSearchChange !== undefined;
+
   // Filter invoices based on user role and filters
   const filteredInvoices = invoices.filter(invoice => {
-    const matchesSearch = invoice.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    const matchesSearch = serverSideSearch ||
+                         invoice.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          invoice.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          (invoice.salesOrderId && invoice.salesOrderId.toLowerCase().includes(searchTerm.toLowerCase()));
     const matchesAgency = user.role === 'superuser' || invoice.agencyId === user.agencyId;
-    
+
     return matchesSearch && matchesAgency;
   });
 

@@ -20,6 +20,7 @@ import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
+import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
 
 interface DirectInvoiceFormProps {
   user: User;
@@ -53,6 +54,9 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
+  // Stable idempotency key for this form instance — reused on retries so a lost
+  // response cannot create a duplicate invoice.
+  const requestIdRef = useRef<string>(newRequestId());
   const [gpsCapturing, setGpsCapturing] = useState(false);
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [inventoryLoading, setInventoryLoading] = useState(false);
@@ -541,7 +545,8 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
       }
 
       // Create direct invoice (no sales_order_id)
-      const { data: invoiceData, error: invoiceError } = await supabase
+      let invoiceData: any;
+      const { data: insertedInvoice, error: invoiceError } = await supabase
         .from('invoices')
         .insert({
           customer_id: selectedCustomerId,
@@ -554,13 +559,32 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
           longitude: gpsCoordinates.longitude,
           signature,
           invoice_number: invoiceNumber,
-          created_by: user.id
+          created_by: user.id,
+          client_request_id: requestIdRef.current
           // No sales_order_id - this is a direct invoice
         })
         .select()
         .single();
 
-      if (invoiceError) throw invoiceError;
+      if (invoiceError) {
+        if (isIdempotencyConflict(invoiceError)) {
+          // Retry of a submission that already reached the server (lost
+          // response). Reuse the invoice that was already created.
+          console.warn('Duplicate invoice submission detected — reusing existing invoice.');
+          const { data: existing, error: fetchError } = await supabase
+            .from('invoices')
+            .select()
+            .eq('client_request_id', requestIdRef.current)
+            .single();
+          if (fetchError || !existing) throw (fetchError || invoiceError);
+          invoiceData = existing;
+          await supabase.from('invoice_items').delete().eq('invoice_id', invoiceData.id);
+        } else {
+          throw invoiceError;
+        }
+      } else {
+        invoiceData = insertedInvoice;
+      }
 
       // Create invoice items
       const invoiceItems = invoiceSummary.map(item => ({

@@ -19,6 +19,7 @@ import { useDraftSalesOrder } from '@/hooks/useDraftSalesOrder';
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 import { externalInventoryService, type ExternalInventoryItem } from '@/services/external-inventory.service';
+import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
 
 // Module-level inventory cache — survives re-mounts (e.g. navigating away and back) for 5 minutes
 const _inventoryCache: Record<string, { data: ExternalInventoryItem[]; expiry: number }> = {};
@@ -61,6 +62,9 @@ const EnhancedSalesOrderForm = ({
   const [selectedSubCategory, setSelectedSubCategory] = useState('');
   const [selectedColor, setSelectedColor] = useState('');
   const submitLockRef = useRef(false);
+  // Stable idempotency key for this form instance — reused on retries so a lost
+  // response cannot create a duplicate sales order.
+  const requestIdRef = useRef<string>(newRequestId());
   const [productGridItems, setProductGridItems] = useState<Array<{
     product: Product;
     color: string;
@@ -876,7 +880,8 @@ const EnhancedSalesOrderForm = ({
           requires_approval: requiresApproval,
           latitude: coords.latitude,
           longitude: coords.longitude,
-          created_by: user.id
+          created_by: user.id,
+          client_request_id: requestIdRef.current
         };
 
         let orderError = null;
@@ -896,6 +901,24 @@ const EnhancedSalesOrderForm = ({
           }
 
           orderError = error;
+
+          // A retry of a submission that already succeeded (lost response):
+          // reuse the order that was already created instead of duplicating it.
+          if (isIdempotencyConflict(error)) {
+            const { data: existing, error: fetchError } = await supabase
+              .from('sales_orders')
+              .select()
+              .eq('client_request_id', requestIdRef.current)
+              .single();
+            if (!fetchError && existing) {
+              orderData = existing;
+              orderError = null;
+              // Clear items from the interrupted first attempt so the set below
+              // is re-inserted cleanly.
+              await supabase.from('sales_order_items').delete().eq('sales_order_id', existing.id);
+            }
+            break;
+          }
 
           if (!isDuplicateOrderNumberError(error)) {
             break;

@@ -12,6 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { externalInventoryService } from '@/services/external-inventory.service';
 import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
+import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
 import { Database } from '@/integrations/supabase/types';
 
 interface CreateInvoiceFormProps {
@@ -55,6 +56,9 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
+  // Stable idempotency key for this form instance — reused on retries so a lost
+  // response cannot create a duplicate invoice.
+  const requestIdRef = useRef<string>(newRequestId());
   const { toast } = useToast();
 
   const captureGPS = async (): Promise<{ latitude: number; longitude: number }> => {
@@ -162,7 +166,8 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
         longitude: coords.longitude,
         signature,
         invoice_number: invoiceNumber,
-        created_by: user.id
+        created_by: user.id,
+        client_request_id: requestIdRef.current
       };
 
       // Only include sales_order_id if it's a valid UUID
@@ -170,15 +175,35 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
         invoiceData.sales_order_id = salesOrder.id;
       }
 
-      const { data: invoice, error: invoiceError } = await supabase
+      let invoice: any;
+      const { data: insertedInvoice, error: invoiceError } = await supabase
         .from('invoices')
         .insert([invoiceData])
         .select()
         .single();
 
       if (invoiceError) {
-        console.error('Invoice insert error:', invoiceError);
-        throw invoiceError;
+        if (isIdempotencyConflict(invoiceError)) {
+          // This exact submission already reached the server (a retry after a
+          // lost response). Load the invoice that was already created and reuse
+          // it instead of creating a duplicate.
+          console.warn('Duplicate invoice submission detected — reusing existing invoice.');
+          const { data: existing, error: fetchError } = await supabase
+            .from('invoices')
+            .select()
+            .eq('client_request_id', requestIdRef.current)
+            .single();
+          if (fetchError || !existing) throw (fetchError || invoiceError);
+          invoice = existing;
+          // Clear any items from the interrupted first attempt so we can
+          // re-insert a clean, consistent set below.
+          await supabase.from('invoice_items').delete().eq('invoice_id', invoice.id);
+        } else {
+          console.error('Invoice insert error:', invoiceError);
+          throw invoiceError;
+        }
+      } else {
+        invoice = insertedInvoice;
       }
 
       console.log('Invoice created:', invoice);

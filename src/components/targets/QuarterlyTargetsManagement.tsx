@@ -7,11 +7,13 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Target, TrendingUp, Calendar, Building2, ExternalLink, ChevronDown, ChevronRight, BarChart3, GitCompare } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Target, TrendingUp, Calendar, Building2, ExternalLink, ChevronDown, ChevronRight, BarChart3, GitCompare, Receipt } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useExternalTargetsWithAchievements, useExternalConnection } from '@/hooks/useExternalData';
 import { ExternalDataService } from '@/services/external-data.service';
 import { supabase } from '@/integrations/supabase/client';
+import { chunkArray, fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import AgencySelector from '@/components/common/AgencySelector';
 import { useAgencies } from '@/hooks/useAgency';
 
@@ -94,7 +96,7 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   }
 
   // Tab state
-  const [activeTab, setActiveTab] = useState('external');
+  const [activeTab, setActiveTab] = useState('comparison');
   
   // Period filters for targets and comparisons
   const [selectedQuarter, setSelectedQuarter] = useState<string>(getCurrentQuarter());
@@ -129,9 +131,36 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
   const [compCategoryData, setCompCategoryData] = useState<Array<{category: string; target: number; achieved: number}>>([]);
   const [compCategoryLoading, setCompCategoryLoading] = useState(false);
 
+  // Internal Achievement drill-down (invoices behind the achievement figure)
+  const [showAchievementInvoices, setShowAchievementInvoices] = useState(false);
+  const [achievementInvoices, setAchievementInvoices] = useState<Array<{ id: string; invoiceNumber: string | null; customerName: string; total: number; createdAt: string }>>([]);
+  const [achievementInvoicesLoading, setAchievementInvoicesLoading] = useState(false);
+
+  const openAchievementInvoices = async () => {
+    setShowAchievementInvoices(true);
+    setAchievementInvoicesLoading(true);
+    try {
+      const year = parseInt(comparisonYear);
+      const month = parseInt(comparisonMonth);
+      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+      const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+      const agencyId = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
+      const { data } = await ExternalDataService.getInstance().getInternalAchievementInvoices(
+        user, startDate, endDate, agencyId
+      );
+      setAchievementInvoices(data);
+    } catch (e) {
+      setAchievementInvoices([]);
+    } finally {
+      setAchievementInvoicesLoading(false);
+    }
+  };
+
   const fetchCompCategoryBreakdown = async () => {
+    // Superuser with no agency selected = aggregate across ALL agencies.
+    const aggregateAll = user.role === 'superuser' && !selectedAgencyId;
     const agencyId = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
-    if (!agencyId) return;
+    if (!aggregateAll && !agencyId) return;
     setCompCategoryLoading(true);
     try {
       const year = parseInt(comparisonYear);
@@ -139,17 +168,19 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
       const from = new Date(year, month - 1, 1).toISOString();
       const to = new Date(year, month, 0, 23, 59, 59).toISOString();
 
-      // 1. All sub-categories from products table (so zero-achievement ones appear)
-      const { data: products } = await supabase
-        .from('products')
-        .select('sub_category')
-        .not('sub_category', 'is', null);
-      const allSubCats = Array.from(new Set((products || []).map((p: any) => p.sub_category as string).filter(Boolean)));
-
-      // 2. Build target map from external targets matching this month
       const externalSvc = ExternalDataService.getInstance();
-      const targetMap = new Map<string, number>();
-      externalTargets.forEach((t: any) => {
+
+      // 1. Targets: all agencies when aggregating, else the selected/own agency.
+      //    Fetch straight from the service so it matches the summary figures
+      //    (the externalTargets hook is name-filtered and empty for All agencies).
+      const { data: targetsData } = await externalSvc.getSalesTargets(
+        aggregateAll ? { year } : { userName: currentUserName || user.name || '', year }
+      );
+
+      const norm = (s: string) => (s || '').toLowerCase().trim();
+
+      const targetMap = new Map<string, number>();   // display name -> target value
+      (targetsData || []).forEach((t: any) => {
         const months = externalSvc.parseTargetMonths(t.target_months);
         if (!months.includes(month)) return;
         const rawYear = parseInt(t.target_year || t.year || '0');
@@ -160,37 +191,68 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
         });
       });
 
-      // 3. Invoice achievement per sub-category
-      const { data: invoices } = await supabase
-        .from('invoices')
-        .select('id')
-        .eq('agency_id', agencyId)
-        .gte('created_at', from)
-        .lte('created_at', to);
+      // 2. Achievement per category — from the APP's own invoices (same source
+      //    as the "Internal Achievement" headline, so the category rows reconcile
+      //    with it). Paginated so nothing caps at 1000 rows; item lookups chunked.
+      const invoices = await fetchAllSupabaseRows<{ id: string }>(() => {
+        let q = supabase
+          .from('invoices')
+          .select('id')
+          .gte('created_at', from)
+          .lte('created_at', to);
+        if (!aggregateAll && agencyId) q = q.eq('agency_id', agencyId);
+        return q;
+      });
+      const invoiceIds = (invoices || []).map((i) => i.id);
 
-      const invoiceIds = (invoices || []).map((i: any) => i.id);
+      // Resolve products manually (no FK embed — invoice_items may reference
+      // external product ids). Match by product_id, then by product_name.
+      const productRows = await fetchAllSupabaseRows<{ id: string; name: string | null; category: string | null; sub_category: string | null }>(
+        () => supabase.from('products').select('id, name, category, sub_category')
+      );
+      const prodById = new Map(productRows.map((p) => [p.id, p]));
+      const prodByName = new Map(productRows.map((p) => [norm(p.name || ''), p]));
+
       const achieveMap = new Map<string, number>();
-
+      let unmatched = 0;
       if (invoiceIds.length > 0) {
-        const { data: items } = await supabase
-          .from('invoice_items')
-          .select('quantity, unit_price, products!inner(sub_category)')
-          .in('invoice_id', invoiceIds);
-
-        (items || []).forEach((item: any) => {
-          const cat = item.products?.sub_category || 'Uncategorized';
-          const amount = Number(item.quantity) * Number(item.unit_price);
-          achieveMap.set(cat, (achieveMap.get(cat) || 0) + amount);
+        const itemChunks = await Promise.all(
+          chunkArray(invoiceIds, 200).map((chunk) =>
+            fetchAllSupabaseRows<any>(() =>
+              supabase
+                .from('invoice_items')
+                .select('product_id, product_name, quantity, unit_price, total')
+                .in('invoice_id', chunk)
+            )
+          )
+        );
+        itemChunks.flat().forEach((item: any) => {
+          // Prefer the stored line total (net of any line discount); fall back to qty*price.
+          const amount = Number(item.total) || (Number(item.quantity) * Number(item.unit_price));
+          const p = prodById.get(item.product_id) || prodByName.get(norm(item.product_name || ''));
+          if (!p) { unmatched += 1; return; }
+          const keys = new Set<string>();
+          if (p.category) keys.add(norm(p.category));
+          if (p.sub_category) keys.add(norm(p.sub_category));
+          keys.forEach((k) => achieveMap.set(k, (achieveMap.get(k) || 0) + amount));
         });
       }
 
-      // 4. Only sub-cats that have a real (> 0) target assigned — sorted by achieved desc
+      console.log('📊 Category breakdown:',
+        '| period =', from, 'to', to,
+        '| agencyId =', aggregateAll ? 'ALL' : agencyId,
+        '| internal invoices =', invoiceIds.length,
+        '| target cats =', Array.from(targetMap.keys()),
+        '| achieved cats =', Array.from(achieveMap.keys()),
+        '| unmatched items =', unmatched);
+
+      // 3. Only categories that have a real (> 0) target assigned — sorted by achieved desc
       const result = Array.from(targetMap.entries())
         .filter(([, tval]) => tval > 0)
         .map(([cat, tval]) => ({
           category: cat,
           target: tval,
-          achieved: achieveMap.get(cat) || 0,
+          achieved: achieveMap.get(norm(cat)) || 0,
         })).sort((a, b) => b.achieved - a.achieved);
 
       setCompCategoryData(result);
@@ -379,20 +441,23 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
 
   // Function to fetch comparison data
   const fetchComparisonData = async () => {
-    if (!currentUserName || !user) {
+    // Superuser with "All agencies" selected has no single agency name — that's
+    // valid and means aggregate across all agencies.
+    const aggregateAllAgencies = user.role === 'superuser' && !selectedAgencyId;
+    if (!user || (!currentUserName && !aggregateAllAgencies)) {
       console.log('No user name or user data available for comparison');
       return;
     }
 
     setComparisonLoading(true);
     try {
-      console.log('🔄 Fetching comparison data for:', currentUserName);
-      
+      console.log('🔄 Fetching comparison data for:', aggregateAllAgencies ? 'ALL AGENCIES' : currentUserName);
+
       const currentYear = parseInt(comparisonYear);
       const currentMonth = parseInt(comparisonMonth);
       const comparison = await ExternalDataService.getInstance().getTargetVsAchievementComparison(
         user,
-        currentUserName,
+        currentUserName || user.name || '',
         currentYear,
         currentMonth,
         user.role === 'superuser' ? selectedAgencyId : user.agencyId
@@ -420,7 +485,8 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
 
   // Fetch comparison data when switching to comparison tab or when user/year changes
   useEffect(() => {
-    if (activeTab === 'comparison' && currentUserName && user) {
+    const aggregateAllAgencies = user.role === 'superuser' && !selectedAgencyId;
+    if (activeTab === 'comparison' && user && (currentUserName || aggregateAllAgencies)) {
       fetchComparisonData();
       fetchCompCategoryBreakdown();
     }
@@ -840,12 +906,20 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card
+                  className="cursor-pointer hover:ring-2 hover:ring-green-400 transition"
+                  onClick={openAchievementInvoices}
+                  title="Click to see the invoices behind this figure"
+                >
                   <CardContent className="p-4">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm text-gray-600">Internal Achievement</p>
+                        <p className="text-sm text-gray-600 flex items-center gap-1">
+                          Internal Achievement
+                          <Receipt className="h-3.5 w-3.5 text-green-600" />
+                        </p>
                         <p className="text-2xl font-bold">Rs {comparisonData.summary.totalInternalAchievement.toLocaleString()}</p>
+                        <p className="text-[11px] text-green-700 mt-0.5">Click to view invoices</p>
                       </div>
                       <TrendingUp className="h-8 w-8 text-green-600" />
                     </div>
@@ -904,9 +978,16 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
                           <p className="text-sm text-gray-600">External Target</p>
                           <p className="text-xl font-semibold">Rs {period.externalTarget.toLocaleString()}</p>
                         </div>
-                        <div>
-                          <p className="text-sm text-gray-600">Internal Achievement</p>
-                          <p className="text-xl font-semibold">Rs {period.internalAchievement.toLocaleString()}</p>
+                        <div
+                          className="cursor-pointer rounded-md -m-1 p-1 hover:bg-green-50"
+                          onClick={openAchievementInvoices}
+                          title="Click to see the invoices behind this figure"
+                        >
+                          <p className="text-sm text-gray-600 flex items-center gap-1">
+                            Internal Achievement
+                            <Receipt className="h-3.5 w-3.5 text-green-600" />
+                          </p>
+                          <p className="text-xl font-semibold underline decoration-dotted decoration-green-500">Rs {period.internalAchievement.toLocaleString()}</p>
                         </div>
                         <div>
                           <p className="text-sm text-gray-600">Achievement %</p>
@@ -1023,6 +1104,54 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Internal Achievement drill-down: invoices behind the figure */}
+      <Dialog open={showAchievementInvoices} onOpenChange={setShowAchievementInvoices}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5 text-green-600" />
+              Invoices — {comparisonMonthLabel} {comparisonYear}
+            </DialogTitle>
+          </DialogHeader>
+          {achievementInvoicesLoading ? (
+            <div className="text-center py-10">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-green-600 mx-auto mb-2"></div>
+              <p className="text-sm text-gray-500">Loading invoices...</p>
+            </div>
+          ) : achievementInvoices.length === 0 ? (
+            <div className="text-center py-10 text-gray-500 text-sm">No invoices found for this period.</div>
+          ) : (
+            <div className="overflow-y-auto">
+              <div className="flex justify-between text-sm font-medium text-gray-500 px-3 py-2 border-b sticky top-0 bg-white">
+                <span>Invoice / Customer</span>
+                <span>Value &amp; Date</span>
+              </div>
+              {achievementInvoices.map((inv) => {
+                const d = inv.createdAt ? new Date(inv.createdAt) : null;
+                return (
+                  <div key={inv.id} className="flex justify-between items-start gap-4 px-3 py-2 border-b last:border-0 hover:bg-gray-50">
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{inv.customerName}</p>
+                      <p className="text-xs text-gray-500">#{inv.invoiceNumber || '—'}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="font-semibold text-sm">Rs {inv.total.toLocaleString()}</p>
+                      <p className="text-xs text-gray-500">
+                        {d ? `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '—'}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="flex justify-between items-center px-3 py-3 mt-1 border-t-2 font-semibold text-sm">
+                <span>{achievementInvoices.length} invoice(s)</span>
+                <span>Rs {achievementInvoices.reduce((s, i) => s + i.total, 0).toLocaleString()}</span>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
     );
   } catch (error) {
