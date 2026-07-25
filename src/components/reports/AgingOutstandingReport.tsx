@@ -128,6 +128,8 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
       const asOfEnd = `${asOfDate}T23:59:59`;
       const asOf = new Date(asOfEnd);
 
+      const isAll = selectedAgency === '__all__';
+
       const invoices = await fetchAllSupabaseRows<{
         id: string;
         invoice_number: string | null;
@@ -136,13 +138,14 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
         agency_id: string;
         total: number;
         created_at: string | null;
-      }>(() =>
-        supabase
+      }>(() => {
+        let q = supabase
           .from('invoices')
           .select('id, invoice_number, customer_id, customer_name, agency_id, total, created_at')
-          .eq('agency_id', selectedAgency)
-          .lte('created_at', asOfEnd)
-      );
+          .lte('created_at', asOfEnd);
+        if (!isAll) q = q.eq('agency_id', selectedAgency);
+        return q;
+      });
 
       const invoiceIds = invoices.map(invoice => invoice.id);
       if (invoiceIds.length === 0) {
@@ -150,17 +153,23 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
         return;
       }
 
-      const selectedAgencyName = agencies.find(agency => agency.id === selectedAgency)?.name || user.agencyName || '';
-      const agencyPrefix = getAgencyPrefix(selectedAgencyName);
+      // Display numbers are assigned per agency (each agency has its own prefix
+      // and sequence), so "All Agencies" still produces sensible numbers.
+      const agencyNameById = new Map(agencies.map(a => [a.id, a.name]));
       const invoiceDisplayNumbers = new Map<string, string>();
+      const perAgencyCounter = new Map<string, number>();
       invoices
         .slice()
         .sort((a, b) => {
           const dateCompare = new Date(a.created_at || '').getTime() - new Date(b.created_at || '').getTime();
           return dateCompare || a.id.localeCompare(b.id);
         })
-        .forEach((invoice, index) => {
-          invoiceDisplayNumbers.set(invoice.id, `${agencyPrefix}${String(index + 1).padStart(3, '0')}`);
+        .forEach((invoice) => {
+          const agName = agencyNameById.get(invoice.agency_id) || user.agencyName || '';
+          const prefix = getAgencyPrefix(agName);
+          const next = (perAgencyCounter.get(invoice.agency_id) || 0) + 1;
+          perAgencyCounter.set(invoice.agency_id, next);
+          invoiceDisplayNumbers.set(invoice.id, `${prefix}${String(next).padStart(3, '0')}`);
         });
 
       const allocations = await fetchAllSupabaseRows<{
@@ -369,7 +378,9 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
   };
 
   const exportCSV = () => {
-    const selectedAgencyName = agencies.find(agency => agency.id === selectedAgency)?.name || user.agencyName || 'Selected Agency';
+    const selectedAgencyName = selectedAgency === '__all__'
+      ? 'All Agencies'
+      : (agencies.find(agency => agency.id === selectedAgency)?.name || user.agencyName || 'Selected Agency');
     const headers = [
       'Customer',
       '0-30',
@@ -447,6 +458,7 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
                     <SelectValue placeholder="Select Agency" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="__all__">All Agencies</SelectItem>
                     {agencies.map((agency) => (
                       <SelectItem key={agency.id} value={agency.id}>
                         {agency.name}

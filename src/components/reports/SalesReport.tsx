@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, Download, Search, TrendingUp } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import { useToast } from '@/hooks/use-toast';
 import { getDisplayInvoiceNumber } from '@/utils/invoiceNumber';
 
@@ -25,6 +26,7 @@ interface InvoiceRow {
   displayNumber: string;
   customerId: string;
   customerName: string;
+  agencyName: string;
   total: number;
   createdAt: string;
 }
@@ -32,6 +34,7 @@ interface InvoiceRow {
 interface CustomerSummary {
   customerId: string;
   customerName: string;
+  agencyName: string;
   invoices: InvoiceRow[];
   totalValue: number;
 }
@@ -69,23 +72,30 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
     try {
       const from = `${startDate}T00:00:00`;
       const to = `${endDate}T23:59:59`;
+      const isAll = selectedAgency === '__all__';
 
-      const { data, error } = await supabase
-        .from('invoices')
-        .select('id, invoice_number, customer_id, customer_name, total, created_at, agency_id')
-        .eq('agency_id', selectedAgency)
-        .gte('created_at', from)
-        .lte('created_at', to)
-        .order('customer_name', { ascending: true });
+      const data = await fetchAllSupabaseRows<{
+        id: string; invoice_number: string | null; customer_id: string | null;
+        customer_name: string | null; total: number; created_at: string; agency_id: string;
+      }>(() => {
+        let query = supabase
+          .from('invoices')
+          .select('id, invoice_number, customer_id, customer_name, total, created_at, agency_id')
+          .gte('created_at', from)
+          .lte('created_at', to)
+          .order('customer_name', { ascending: true });
+        if (!isAll) query = query.eq('agency_id', selectedAgency);
+        return query;
+      });
 
-      if (error) throw error;
-
+      const agencyNameById = new Map(agencies.map(a => [a.id, a.name]));
       const invoiceList: InvoiceRow[] = (data || []).map((inv, idx) => ({
         id: inv.id,
         invoiceNumber: inv.invoice_number || '',
-        displayNumber: getDisplayInvoiceNumber(inv.invoice_number, idx + 1, agencyName, inv.agency_id),
+        displayNumber: getDisplayInvoiceNumber(inv.invoice_number, idx + 1, agencyNameById.get(inv.agency_id) || agencyName, inv.agency_id),
         customerId: inv.customer_id || '',
         customerName: inv.customer_name || 'Unknown',
+        agencyName: agencyNameById.get(inv.agency_id) || agencyName || 'Unknown',
         total: Number(inv.total),
         createdAt: inv.created_at,
       }));
@@ -95,7 +105,7 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
       for (const inv of invoiceList) {
         const key = inv.customerId || inv.customerName;
         if (!map.has(key)) {
-          map.set(key, { customerId: inv.customerId, customerName: inv.customerName, invoices: [], totalValue: 0 });
+          map.set(key, { customerId: inv.customerId, customerName: inv.customerName, agencyName: inv.agencyName, invoices: [], totalValue: 0 });
         }
         const entry = map.get(key)!;
         entry.invoices.push(inv);
@@ -133,25 +143,26 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
     // Since different customers have different invoices, we just list each customer's invoices per row
 
     // Row per invoice, grouped by customer, with subtotal rows
-    const headerCols = ['Customer Name', 'Invoice Number', 'Invoice Date', 'Invoice Value (LKR)'];
+    const headerCols = ['Customer Name', 'Agency', 'Invoice Number', 'Invoice Date', 'Invoice Value (LKR)'];
     rows.push(headerCols);
 
     for (const cust of customers) {
       for (const inv of cust.invoices) {
         rows.push([
           cust.customerName,
+          inv.agencyName,
           inv.displayNumber,
           new Date(inv.createdAt).toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
           inv.total.toFixed(2),
         ]);
       }
       // Subtotal row per customer
-      rows.push([cust.customerName, `Total (${cust.invoices.length} invoice${cust.invoices.length !== 1 ? 's' : ''})`, '', cust.totalValue.toFixed(2)]);
+      rows.push([cust.customerName, cust.agencyName, `Total (${cust.invoices.length} invoice${cust.invoices.length !== 1 ? 's' : ''})`, '', cust.totalValue.toFixed(2)]);
       rows.push([]); // blank separator
     }
 
     // Grand total
-    rows.push(['GRAND TOTAL', '', '', grandTotal.toFixed(2)]);
+    rows.push(['GRAND TOTAL', '', '', '', grandTotal.toFixed(2)]);
 
     // Pivot sheet: rows = customers, columns = each invoice number
     // Collect all invoice display numbers in order
@@ -221,6 +232,7 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
                     <SelectValue placeholder="Select agency" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="__all__">All Agencies</SelectItem>
                     {agencies.map(a => (
                       <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
                     ))}
@@ -295,6 +307,7 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
                   <thead>
                     <tr className="bg-gray-50 border-b">
                       <th className="text-left px-4 py-3 font-semibold text-gray-700">Customer</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">Agency</th>
                       <th className="text-right px-4 py-3 font-semibold text-gray-700">Invoices</th>
                       <th className="text-right px-4 py-3 font-semibold text-gray-700">Total Value (LKR)</th>
                       <th className="px-4 py-3"></th>
@@ -302,15 +315,15 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
                   </thead>
                   <tbody>
                     {filtered.map(cust => (
-                      <>
+                      <Fragment key={cust.customerId || cust.customerName}>
                         <tr
-                          key={cust.customerId || cust.customerName}
                           className="border-b hover:bg-gray-50 cursor-pointer"
                           onClick={() => setExpandedCustomer(
                             expandedCustomer === cust.customerId ? null : cust.customerId
                           )}
                         >
                           <td className="px-4 py-3 font-medium text-gray-900">{cust.customerName}</td>
+                          <td className="px-4 py-3 text-gray-600">{cust.agencyName}</td>
                           <td className="px-4 py-3 text-right text-gray-600">{cust.invoices.length}</td>
                           <td className="px-4 py-3 text-right font-semibold text-green-700">
                             {cust.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -322,6 +335,7 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
                         {expandedCustomer === cust.customerId && cust.invoices.map(inv => (
                           <tr key={inv.id} className="bg-blue-50 border-b">
                             <td className="px-4 py-2 pl-10 text-gray-600 text-xs">{inv.displayNumber}</td>
+                            <td className="px-4 py-2 text-gray-500 text-xs">{inv.agencyName}</td>
                             <td className="px-4 py-2 text-right text-gray-500 text-xs">
                               {new Date(inv.createdAt).toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' })}
                             </td>
@@ -331,10 +345,11 @@ const SalesReport = ({ user, onBack }: SalesReportProps) => {
                             <td></td>
                           </tr>
                         ))}
-                      </>
+                      </Fragment>
                     ))}
                     <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
                       <td className="px-4 py-3">Grand Total</td>
+                      <td className="px-4 py-3"></td>
                       <td className="px-4 py-3 text-right">{totalInvoices}</td>
                       <td className="px-4 py-3 text-right text-green-700">
                         {grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}

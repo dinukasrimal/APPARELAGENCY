@@ -26,6 +26,8 @@ interface DailyLogEntry {
   orderNumber?: number;
   storefrontPhoto?: string;
   amount?: number;
+  salesOrderId?: string;      // set on invoices converted from a sales order
+  daysToConvert?: number;     // days between that sales order and this invoice
 }
 
 interface TimeRoutePath {
@@ -151,7 +153,15 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
   // Handle image click to open modal
   const handleImageClick = (imageUrl: string, entryName: string, entryType: string) => {
-    const entryTypeLabel = entryType === 'customer' ? 'Customer' : 'Non-Productive Visit';
+    const labels: Record<string, string> = {
+      customer: 'Customer',
+      non_productive: 'Non-Productive Visit',
+      invoice: 'Invoice',
+      collection: 'Collection',
+      sales_order: 'Sales Order',
+      delivery: 'Delivery',
+    };
+    const entryTypeLabel = labels[entryType] || 'Customer';
     setSelectedImage({ url: imageUrl, title: `${entryTypeLabel}: ${entryName}` });
     setImageModalOpen(true);
   };
@@ -295,12 +305,54 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
     }
   };
 
+  // Attach the customer storefront photo to every entry that has a customer
+  // (invoice / collection / sales order / delivery — not just customer visits),
+  // and compute days-to-convert for invoices created from a sales order.
+  const enrichEntries = async (entries: DailyLogEntry[], agencyFilter: string) => {
+    const norm = (s?: string) => (s || '').toLowerCase().trim();
+
+    // 1. Customer photos, keyed by name (daily log is scoped to one agency)
+    const custRows = await fetchAllSupabaseRows<{ name: string | null; storefront_photo: string | null }>(
+      () => supabase.from('customers').select('name, storefront_photo').eq('agency_id', agencyFilter)
+    );
+    const photoByName = new Map<string, string>();
+    custRows.forEach((c) => {
+      if (c.storefront_photo) photoByName.set(norm(c.name), c.storefront_photo);
+    });
+
+    // 2. Sales-order creation dates for invoices converted from a sales order
+    const soIds = Array.from(new Set(
+      entries.filter((e) => e.type === 'invoice' && e.salesOrderId).map((e) => e.salesOrderId!)
+    ));
+    const soCreatedById = new Map<string, string>();
+    if (soIds.length > 0) {
+      const soRows = await fetchAllSupabaseRows<{ id: string; created_at: string | null }>(
+        () => supabase.from('sales_orders').select('id, created_at').in('id', soIds)
+      );
+      soRows.forEach((s) => { if (s.created_at) soCreatedById.set(s.id, s.created_at); });
+    }
+
+    entries.forEach((e) => {
+      if (!e.storefrontPhoto) {
+        const p = photoByName.get(norm(e.name));
+        if (p) e.storefrontPhoto = p;
+      }
+      if (e.type === 'invoice' && e.salesOrderId) {
+        const soAt = soCreatedById.get(e.salesOrderId);
+        if (soAt) {
+          const diff = e.timestamp.getTime() - new Date(soAt).getTime();
+          e.daysToConvert = Math.max(0, Math.round(diff / (24 * 60 * 60 * 1000)));
+        }
+      }
+    });
+  };
+
   const fetchDailyLogs = async (dateStr: string) => {
     setLoading(true);
     setTimeRoutes([]);
     try {
       const entries: DailyLogEntry[] = [];
-      
+
       // Convert local date to UTC for proper database filtering
       const localDate = new Date(dateStr + 'T00:00:00');
       const utcStartDate = new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
@@ -516,7 +568,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       // Fetch invoices
       let invoiceQuery = supabase
         .from('invoices')
-        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total')
+        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total, sales_order_id')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDate)
         .lte('created_at', endDate)
@@ -544,7 +596,8 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           agencyName: agency?.name || 'Unknown Agency',
           userId: invoice.created_by,
           userName: user?.name || 'Unknown User',
-          amount
+          amount,
+          salesOrderId: invoice.sales_order_id || undefined
         });
       });
 
@@ -609,12 +662,15 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         });
       });
 
+      // Attach customer photos + days-to-convert before sorting
+      await enrichEntries(entries, agencyFilter);
+
       // Sort entries by timestamp and assign order numbers
       entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       entries.forEach((entry, index) => {
         entry.orderNumber = index + 1;
       });
-      
+
       setLogEntries(entries);
     } catch (error) {
       console.error('Error fetching daily logs:', error);
@@ -838,7 +894,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       let invoiceQuery = supabase
         .from('invoices')
-        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total')
+        .select('id, customer_name, latitude, longitude, created_at, agency_id, created_by, total, sales_order_id')
         .eq('agency_id', agencyFilter)
         .gte('created_at', startDateTime)
         .lte('created_at', endDateTime)
@@ -866,7 +922,8 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           agencyName: agency?.name || 'Unknown Agency',
           userId: invoice.created_by,
           userName: user?.name || 'Unknown User',
-          amount
+          amount,
+          salesOrderId: invoice.sales_order_id || undefined
         });
       });
 
@@ -931,12 +988,15 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         });
       });
 
+      // Attach customer photos + days-to-convert before sorting
+      await enrichEntries(entries, agencyFilter);
+
       // Sort entries by timestamp and assign order numbers
       entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       entries.forEach((entry, index) => {
         entry.orderNumber = index + 1;
       });
-      
+
       setLogEntries(entries);
       setTimeRoutes(routesForRange);
     } catch (error) {
@@ -1278,7 +1338,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                               <Icon className="h-4 w-4" style={{ color: getEntryColor(entry.type) }} />
                             </div>
                             {/* Storefront Photo Thumbnail */}
-                            {entry.storefrontPhoto && (entry.type === 'customer' || entry.type === 'non_productive') && (
+                            {entry.storefrontPhoto && (
                               <div 
                                 className="relative cursor-pointer group flex-shrink-0"
                                 onClick={(e) => { e.stopPropagation(); handleImageClick(entry.storefrontPhoto!, entry.name, entry.type); }}
@@ -1300,7 +1360,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                                 <Badge variant="outline" className="text-xs">
                                   {entry.type.replace('_', ' ').toUpperCase()}
                                 </Badge>
-                                {entry.storefrontPhoto && (entry.type === 'customer' || entry.type === 'non_productive') && (
+                                {entry.storefrontPhoto && (
                                   <Badge variant="secondary" className="text-xs">
                                     📷 Photo
                                   </Badge>
@@ -1312,6 +1372,12 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                                 {user.role === 'superuser' && entry.userName && <div>User: {entry.userName}</div>}
                               </div>
                             </div>
+                            {entry.type === 'invoice' && entry.daysToConvert !== undefined && (
+                              <div className="text-right shrink-0" title="Days taken to convert the sales order into this invoice">
+                                <div className="text-sm font-bold text-indigo-600">{entry.daysToConvert}d</div>
+                                <div className="text-[10px] text-gray-500 leading-tight">SO → invoice</div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1431,7 +1497,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                       </div>
 
                       {/* Storefront Photo Thumbnail */}
-                      {entry.storefrontPhoto && (entry.type === 'customer' || entry.type === 'non_productive') && (
+                      {entry.storefrontPhoto && (
                         <div 
                           className="relative cursor-pointer group flex-shrink-0"
                           onClick={(e) => { e.stopPropagation(); handleImageClick(entry.storefrontPhoto!, entry.name, entry.type); }}
@@ -1453,7 +1519,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                           <Badge variant="outline">
                             {entry.type.replace('_', ' ').toUpperCase()}
                           </Badge>
-                          {entry.storefrontPhoto && (entry.type === 'customer' || entry.type === 'non_productive') && (
+                          {entry.storefrontPhoto && (
                             <Badge variant="secondary" className="text-xs">
                               📷 Photo
                             </Badge>
@@ -1476,6 +1542,12 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                         <div className="text-sm text-gray-500">
                           {entry.timestamp.toLocaleDateString()}
                         </div>
+                        {entry.type === 'invoice' && entry.daysToConvert !== undefined && (
+                          <div className="mt-1" title="Days taken to convert the sales order into this invoice">
+                            <span className="text-sm font-bold text-indigo-600">{entry.daysToConvert}d</span>
+                            <span className="text-[10px] text-gray-500 ml-1">SO → invoice</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
