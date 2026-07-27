@@ -40,6 +40,8 @@ export interface ExternalInventoryTransaction {
   external_id: string | null;
   notes: string | null;
   agency_id: string;
+  unit_price?: number | null;
+  approval_status?: string | null;
 }
 
 export interface ExternalInventoryByType {
@@ -61,8 +63,48 @@ export interface ExternalInventoryMetrics {
   totalTransactions: number;
 }
 
+// ── Grouping helpers, mirroring buildAgencyStockSummaryFromTransactions so the
+//    per-item movement history matches the aggregated stock exactly. The item
+//    the UI shows is grouped by normalized base-name + size (colors merged), so
+//    the history must group raw transactions the same way. ────────────────────
+const _extractFirstLevelSize = (productName: string, sizeField: string): string => {
+  if (sizeField && sizeField !== 'Default') return sizeField.toUpperCase();
+  const numericSizeMatch = productName.match(/\s+(\d+)$/);
+  if (numericSizeMatch) return numericSizeMatch[1];
+  const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
+  if (letterSizeMatch) return letterSizeMatch[1].toUpperCase();
+  const afterColorSizeMatch = productName.match(/-[A-Z]+\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|\d+)$/i);
+  if (afterColorSizeMatch) return afterColorSizeMatch[1].toUpperCase();
+  return 'Default';
+};
+const _normalizeBaseName = (name: string | null | undefined): string => {
+  if (!name) return '';
+  let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
+  base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
+  base = base.replace(/[-\s]+$/, '').trim();
+  base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
+  return base;
+};
+const _normalizeSize = (size: string | null | undefined): string => {
+  if (!size) return '';
+  const s = size.toUpperCase().trim();
+  if (s === 'DEFAULT' || /FREE\s*SIZE/.test(s) || /ONE\s*SIZE/.test(s)) return '';
+  return s.replace(/\s+/g, '').replace(/–/g, '-');
+};
+const _extractSizeFromName = (name: string | null | undefined): string => {
+  if (!name) return '';
+  const match = name.match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
+  return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
+};
+// Second-level group key (ignores color, exactly like the summary builder).
+const _itemGroupKey = (displayName: string, firstLevelSize: string): string => {
+  const baseName = _normalizeBaseName(displayName);
+  const sizeKey = _normalizeSize(firstLevelSize) || _extractSizeFromName(displayName) || 'NOSIZE';
+  return `name:${baseName}|size:${sizeKey}`;
+};
+
 export class ExternalInventoryService {
-  
+
   // Helper method to calculate stock status
   private calculateStockStatus(currentStock: number): 'in_stock' | 'low_stock' | 'out_of_stock' {
     if (currentStock <= 0) return 'out_of_stock';
@@ -374,7 +416,6 @@ export class ExternalInventoryService {
       } else {
         const existing = aggregatedMap.get(key)!;
         const combinedStock = existing.current_stock + item.current_stock;
-        const combinedTotalValue = existing.total_value + item.total_value;
 
         existing.current_stock = combinedStock;
         existing.total_stock_in += item.total_stock_in;
@@ -394,11 +435,16 @@ export class ExternalInventoryService {
           else existing.size = 'MULTI';
         }
 
-        existing.avg_unit_price = combinedStock !== 0
-          ? combinedTotalValue / combinedStock
-          : existing.avg_unit_price ?? item.avg_unit_price;
+        // Average the actual unit prices (always ≥ 0), NOT value/stock — the
+        // latter goes negative when a variant is oversold (negative stock),
+        // which produced bogus negative Avg Price / Total Value.
+        existing.price_sum = (existing.price_sum || 0) + (item.price_sum || 0);
+        existing.price_count = (existing.price_count || 0) + (item.price_count || 0);
+        existing.avg_unit_price = existing.price_count > 0
+          ? existing.price_sum / existing.price_count
+          : (existing.avg_unit_price ?? item.avg_unit_price ?? 0);
 
-        existing.total_value = combinedTotalValue;
+        existing.total_value = combinedStock * existing.avg_unit_price;
         existing.stock_status = this.calculateStockStatus(combinedStock);
       }
     });
@@ -751,7 +797,6 @@ export class ExternalInventoryService {
       } else {
         const existing = aggregatedMap.get(key)!;
         const combinedStock = existing.current_stock + item.current_stock;
-        const combinedTotalValue = existing.total_value + item.total_value;
 
         existing.current_stock = combinedStock;
         existing.total_stock_in += item.total_stock_in;
@@ -770,11 +815,15 @@ export class ExternalInventoryService {
           else existing.size = 'MULTI';
         }
 
-        existing.avg_unit_price = combinedStock !== 0
-          ? combinedTotalValue / combinedStock
-          : existing.avg_unit_price ?? item.avg_unit_price;
+        // Average the actual unit prices (always ≥ 0), NOT value/stock — the
+        // latter goes negative when a variant is oversold (negative stock).
+        existing.price_sum = (existing.price_sum || 0) + (item.price_sum || 0);
+        existing.price_count = (existing.price_count || 0) + (item.price_count || 0);
+        existing.avg_unit_price = existing.price_count > 0
+          ? existing.price_sum / existing.price_count
+          : (existing.avg_unit_price ?? item.avg_unit_price ?? 0);
 
-        existing.total_value = combinedTotalValue;
+        existing.total_value = combinedStock * existing.avg_unit_price;
         existing.stock_status = this.calculateStockStatus(combinedStock);
       }
     });
@@ -824,6 +873,59 @@ export class ExternalInventoryService {
     }
 
     return data || [];
+  }
+
+  // Full movement / transaction history for one DISPLAYED item. Because the item
+  // is an aggregate (base-name + size, colors merged), we fetch every approved
+  // transaction for the agency, regroup with the exact same keys, and return the
+  // ones belonging to this item — so the movements tally with the item's stock
+  // IN / OUT / current stock. `displayName` is item.product_name, `itemSize` is
+  // item.size (the first-level normalized size).
+  async getItemMovementHistory(
+    agencyId: string,
+    displayName: string,
+    itemSize: string
+  ): Promise<ExternalInventoryTransaction[]> {
+    const PAGE = 1000;
+    const all: any[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('external_inventory_management')
+        .select(`
+          id, product_name, product_code, color, size, category,
+          unit_price, quantity, transaction_date, external_source,
+          transaction_type, reference_name, approval_status, user_name, notes
+        `)
+        .eq('agency_id', agencyId)
+        .eq('approval_status', 'approved') // only approved affect stock (matches summary)
+        .order('transaction_date', { ascending: false })
+        .range(from, from + PAGE - 1);
+      if (error) {
+        console.error('Error fetching product movement history:', error);
+        throw error;
+      }
+      all.push(...(data || []));
+      if (!data || data.length < PAGE) break;
+    }
+
+    // Map raw product_name -> products.name (display) exactly like the builder.
+    const uniqueNames = [...new Set(all.map((t) => t.product_name))];
+    const displayByDesc = new Map<string, string>();
+    if (uniqueNames.length > 0) {
+      const { data: prods } = await supabase
+        .from('products')
+        .select('description, name')
+        .in('description', uniqueNames);
+      prods?.forEach((p: any) => { if (p.description) displayByDesc.set(p.description, p.name); });
+    }
+
+    const targetKey = _itemGroupKey(displayName, itemSize);
+
+    return all.filter((t) => {
+      const dn = displayByDesc.get(t.product_name) || t.product_name;
+      const firstLevelSize = _extractFirstLevelSize(t.product_name, t.size);
+      return _itemGroupKey(dn, firstLevelSize) === targetKey;
+    }) as any;
   }
 
   // Get stock breakdown by transaction type

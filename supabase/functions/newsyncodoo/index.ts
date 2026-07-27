@@ -205,7 +205,7 @@ const odooCall = async (
 // domain only in args, not in kwargs
 const fetchRecentInvoices = async (
   auth: OdooAuthContext,
-  limit = 25
+  limit = 300
 ) => {
   return odooCall(
     auth,
@@ -312,6 +312,59 @@ const buildProfileMap = async () => {
   return map;
 };
 
+// Explicit Odoo partner -> agency mappings (authoritative; avoids fragile name
+// matching). Also returns one representative profile per agency so we can still
+// fill user_id / user_name on inserted rows.
+const buildPartnerMappingMap = async () => {
+  const { data } = await supabase
+    .from('odoo_partner_mappings')
+    .select('partner_name, agency_id, agency_name');
+  const map = new Map<string, { agency_id: string; agency_name: string | null }>();
+  data?.forEach((m: any) => {
+    if (m.partner_name && m.agency_id) {
+      map.set(String(m.partner_name).toLowerCase().trim(), {
+        agency_id: m.agency_id,
+        agency_name: m.agency_name || null,
+      });
+    }
+  });
+  return map;
+};
+
+const buildAgencyProfileMap = (profileMap: Map<string, any>) => {
+  const byAgency = new Map<string, any>();
+  profileMap.forEach((profile) => {
+    if (profile.agency_id && !byAgency.has(profile.agency_id)) {
+      byAgency.set(profile.agency_id, profile);
+    }
+  });
+  return byAgency;
+};
+
+// Latest APPROVED stock-adjustment time per agency. Invoices dated on/before this
+// are already accounted for by the physical count, so they must NOT be synced
+// again (doing so double-counts). Returns agency_id -> ISO timestamp.
+const buildAgencyAdjustmentCutoff = async () => {
+  const map = new Map<string, string>();
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data } = await supabase
+      .from('external_inventory_management')
+      .select('agency_id, created_at, transaction_date')
+      .eq('transaction_type', 'adjustment')
+      .eq('approval_status', 'approved')
+      .range(from, from + PAGE - 1);
+    (data || []).forEach((r: any) => {
+      const ts = r.created_at || r.transaction_date;
+      if (!r.agency_id || !ts) return;
+      const cur = map.get(r.agency_id);
+      if (!cur || ts > cur) map.set(r.agency_id, ts);
+    });
+    if (!data || data.length < PAGE) break;
+  }
+  return map;
+};
+
 const chunkArray = <T,>(items: T[], chunkSize = 200): T[][] => {
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += chunkSize) {
@@ -341,6 +394,9 @@ const syncInvoicesToInventory = async () => {
   }
 
   const profileMap = await buildProfileMap();
+  const mappingMap = await buildPartnerMappingMap();
+  const agencyProfileMap = buildAgencyProfileMap(profileMap);
+  const agencyCutoff = await buildAgencyAdjustmentCutoff();
 
   const allLineIds = Array.from(
     new Set(
@@ -390,6 +446,8 @@ const syncInvoicesToInventory = async () => {
   const rowsToInsert: any[] = [];
   let unmatchedPartners = 0;
   let skippedExisting = 0;
+  let skippedPreAdjustment = 0;
+  const unmatchedPartnerNames = new Set<string>();
 
   invoices.forEach((invoice: any) => {
     const partnerName =
@@ -397,16 +455,31 @@ const syncInvoicesToInventory = async () => {
       invoice.partner_id?.[1] ||
       'Unknown Customer';
 
-    const profile = partnerName
-      ? profileMap.get(partnerName.toLowerCase().trim())
-      : undefined;
+    const partnerKey = partnerName ? partnerName.toLowerCase().trim() : '';
+    // 1) explicit partner→agency mapping, else 2) profile name match
+    const mapped = partnerKey ? mappingMap.get(partnerKey) : undefined;
+    const profile = partnerKey ? profileMap.get(partnerKey) : undefined;
 
-    if (!profile?.agency_id) {
+    const agencyId = mapped?.agency_id || profile?.agency_id;
+    if (!agencyId) {
       unmatchedPartners += 1;
+      if (partnerName) unmatchedPartnerNames.add(partnerName);
+      return;
+    }
+    // Skip invoices dated on/before this agency's latest stock adjustment — the
+    // physical count already accounts for them, so re-adding double-counts.
+    const invDate = invoice.invoice_date || invoice.create_date;
+    const cutoff = agencyCutoff.get(agencyId);
+    if (cutoff && invDate && new Date(invDate) <= new Date(cutoff)) {
+      skippedPreAdjustment += 1;
       return;
     }
 
-    const uniqueKey = `${invoice.id}:${profile.agency_id}`;
+    // Resolve a user for the row: the partner's own profile, else any profile of
+    // the mapped agency, else null.
+    const rowProfile = profile || agencyProfileMap.get(agencyId) || null;
+
+    const uniqueKey = `${invoice.id}:${agencyId}`;
     if (existingSet.has(uniqueKey)) {
       skippedExisting += 1;
       return;
@@ -456,9 +529,9 @@ const syncInvoicesToInventory = async () => {
           `ODOO-${invoice.id}`,
         quantity: qty,
         reference_name: partnerName,
-        agency_id: profile.agency_id,
-        user_id: profile.id,
-        user_name: profile.name,
+        agency_id: agencyId,
+        user_id: rowProfile?.id ?? null,
+        user_name: rowProfile?.name ?? (mapped?.agency_name ?? null),
         transaction_date: transactionDate,
         notes: JSON.stringify({
           invoice_id: invoice.id,
@@ -485,7 +558,9 @@ const syncInvoicesToInventory = async () => {
       invoicesFetched: invoices.length,
       insertedTransactions: 0,
       unmatchedPartners,
-      skippedExisting
+      skippedExisting,
+      skippedPreAdjustment,
+      unmatchedPartnerNames: Array.from(unmatchedPartnerNames)
     };
   }
 
@@ -511,7 +586,9 @@ const syncInvoicesToInventory = async () => {
     invoicesFetched: invoices.length,
     insertedTransactions: inserted,
     unmatchedPartners,
-    skippedExisting
+    skippedExisting,
+    skippedPreAdjustment,
+    unmatchedPartnerNames: Array.from(unmatchedPartnerNames)
   };
 };
 
@@ -552,7 +629,7 @@ Deno.serve(async (req) => {
         trigger_metadata: requestContext?.metadata,
         manual_trigger: manualTrigger
       },
-      result.insertedTransactions ?? result.synced_count ?? 0,
+      result.insertedTransactions ?? 0,
       triggerLabel
     );
 

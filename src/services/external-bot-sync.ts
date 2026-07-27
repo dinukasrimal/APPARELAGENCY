@@ -227,23 +227,31 @@ export class ExternalBotSyncService {
     try {
       console.log('🌐 Starting GLOBAL sync from external_bot_project_invoices table');
 
-      // Step 1: Fetch last 25 invoices from external_bot_project_invoices table
-      console.log('📊 Fetching last 25 invoices from external_bot_project_invoices table...');
-      const { data: externalInvoices, error: fetchError } = await supabase
-        .from('external_bot_project_invoices')
-        .select('*')
-        .order('id', { ascending: false })
-        .limit(25); // Only process last 25 invoices as requested
-
-      if (fetchError) {
-        return {
-          success: false,
-          message: 'Failed to fetch invoices from external_bot_project_invoices',
-          error: fetchError.message
-        };
+      // Step 1: Fetch invoices from external_bot_project_invoices. We no longer
+      // cap at the newest 25 — that permanently skipped any invoice that fell
+      // outside the window (e.g. 454–456). We page through the whole table and
+      // rely on the per-invoice dedup below to skip already-synced ones.
+      console.log('📊 Fetching invoices from external_bot_project_invoices table (full, gap-filling)...');
+      const PAGE_SIZE = 1000;
+      const externalInvoices: any[] = [];
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const { data: page, error: fetchError } = await supabase
+          .from('external_bot_project_invoices')
+          .select('*')
+          .order('id', { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+        if (fetchError) {
+          return {
+            success: false,
+            message: 'Failed to fetch invoices from external_bot_project_invoices',
+            error: fetchError.message
+          };
+        }
+        externalInvoices.push(...(page || []));
+        if (!page || page.length < PAGE_SIZE) break;
       }
 
-      if (!externalInvoices || externalInvoices.length === 0) {
+      if (externalInvoices.length === 0) {
         return {
           success: true,
           message: 'No invoices found in external_bot_project_invoices table',
@@ -252,6 +260,22 @@ export class ExternalBotSyncService {
       }
 
       console.log(`✅ Fetched ${externalInvoices.length} invoices from external_bot_project_invoices table`);
+
+      // Pre-load every already-synced external_id so we can skip in-memory instead
+      // of a DB round-trip per invoice.
+      const alreadySynced = new Set<string>();
+      {
+        const SYNC_PAGE = 1000;
+        for (let from = 0; ; from += SYNC_PAGE) {
+          const { data: syncedRows } = await supabase
+            .from('external_inventory_management')
+            .select('external_id')
+            .eq('external_source', 'global_bot')
+            .range(from, from + SYNC_PAGE - 1);
+          (syncedRows || []).forEach((r: any) => { if (r.external_id) alreadySynced.add(String(r.external_id)); });
+          if (!syncedRows || syncedRows.length < SYNC_PAGE) break;
+        }
+      }
 
       // Step 2: Get all user profiles to match partner names with agencies
       const { data: allUsers, error: usersError } = await supabase
@@ -269,6 +293,22 @@ export class ExternalBotSyncService {
 
       console.log(`👥 Found ${allUsers.length} users across agencies`);
 
+      // Step 2b: Explicit Odoo partner → agency mappings (authoritative, avoids
+      // fragile name matching and mixing up agencies).
+      const { data: partnerMappings } = await supabase
+        .from('odoo_partner_mappings' as any)
+        .select('partner_name, agency_id, agency_name');
+      const mappingByPartner = new Map<string, { agency_id: string; agency_name: string | null }>();
+      (partnerMappings || []).forEach((m: any) => {
+        if (m.partner_name && m.agency_id) {
+          mappingByPartner.set(String(m.partner_name).toLowerCase().trim(), {
+            agency_id: m.agency_id,
+            agency_name: m.agency_name || null,
+          });
+        }
+      });
+      console.log(`🔗 Loaded ${mappingByPartner.size} partner→agency mappings`);
+
       // Step 3: Process invoices directly into external_inventory_management with fuzzy matching
       let processedCount = 0;
       let createdTransactions = 0;
@@ -278,34 +318,36 @@ export class ExternalBotSyncService {
       const globalUnmatchedProducts = 0;
 
       for (const invoice of externalInvoices) {
-        // Find matching user by partner_name
-        const matchingUser = allUsers.find(user => 
-          user.name && invoice.partner_name && 
-          user.name.toLowerCase().trim() === invoice.partner_name.toLowerCase().trim()
+        const partnerKey = (invoice.partner_name || '').toLowerCase().trim();
+
+        // 1) Prefer the explicit partner → agency mapping.
+        const mapped = partnerKey ? mappingByPartner.get(partnerKey) : undefined;
+        // 2) Fall back to matching a user profile name (legacy behaviour).
+        const matchingUser = allUsers.find(user =>
+          user.name && invoice.partner_name &&
+          user.name.toLowerCase().trim() === partnerKey
         );
 
-        if (!matchingUser) {
+        const resolvedAgencyId = mapped?.agency_id || matchingUser?.agency_id;
+        const resolvedName = mapped?.agency_name || matchingUser?.name || invoice.partner_name;
+
+        if (!resolvedAgencyId) {
           unmatchedInvoices++;
-          console.log(`⚠️ No user match found for partner: "${invoice.partner_name}"`);
+          console.log(`⚠️ No mapping/user match for partner: "${invoice.partner_name}" (add it in Partner Mapping)`);
           continue;
         }
 
         matchedInvoices++;
-        console.log(`✅ Matched invoice ${invoice.name} -> User: ${matchingUser.name} (Agency: ${matchingUser.agency_id})`);
 
-        // Check if this invoice is already processed for this agency
-        const { data: existingInvoice } = await supabase
-          .from('external_inventory_management')
-          .select('external_id')
-          .eq('agency_id', matchingUser.agency_id)
-          .eq('external_source', 'global_bot')
-          .eq('external_id', invoice.name || invoice.id?.toString())
-          .limit(1);
-
-        if (existingInvoice && existingInvoice.length > 0) {
-          console.log(`  ⚠️ Invoice ${invoice.name} already processed for agency ${matchingUser.agency_id}`);
+        // Skip if already synced (in-memory, no DB round-trip)
+        const externalId = String(invoice.name || invoice.id?.toString() || '');
+        if (externalId && alreadySynced.has(externalId)) {
           continue;
         }
+        // Guard against duplicate staging rows within this same run
+        if (externalId) alreadySynced.add(externalId);
+
+        console.log(`✅ Syncing invoice ${invoice.name} -> Agency: ${resolvedAgencyId} (${mapped ? 'mapping' : 'name match'})`);
 
         // Process invoice order lines with fuzzy matching
         if (!invoice.order_lines || !Array.isArray(invoice.order_lines)) {
@@ -348,8 +390,8 @@ export class ExternalBotSyncService {
             transaction_id: invoice.name,
             quantity: quantity, // Positive for stock IN
             reference_name: invoice.partner_name,
-            agency_id: matchingUser.agency_id,
-            user_name: matchingUser.name,
+            agency_id: resolvedAgencyId,
+            user_name: resolvedName,
             transaction_date: invoice.date_order || new Date().toISOString(),
             notes: JSON.stringify(line),
             external_source: 'global_bot',

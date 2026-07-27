@@ -28,6 +28,7 @@ import {
   CheckSquare,
   Droplet,
   Bell,
+  Link2,
 } from 'lucide-react';
 import { useAgencyFeatureAccess } from '@/hooks/useAgencyFeatureAccess';
 
@@ -39,7 +40,7 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management' | 'agency-pricing-configuration' | 'agency-feature-access' | 'fuel-expenses';
+type ActiveModule = 'dashboard' | 'customers' | 'products' | 'sales' | 'purchase' | 'inventory' | 'targets' | 'reports' | 'user-management' | 'non-productive-visits' | 'time-tracking' | 'company-returns' | 'assets' | 'collections' | 'return-cheques' | 'discount-management' | 'approval-management' | 'agency-pricing-configuration' | 'agency-feature-access' | 'fuel-expenses' | 'partner-mapping';
 
 const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: SidebarProps) => {
   const { agency } = useAgency(user.agencyId);
@@ -61,6 +62,7 @@ const Sidebar = ({ user, activeModule, onModuleChange, isOpen, onToggle }: Sideb
     { id: 'inventory', label: 'Inventory', icon: Warehouse, roles: ['agency', 'superuser', 'agent'] },
     { id: 'targets', label: 'Targets', icon: Target, roles: ['agency', 'superuser'] },
     { id: 'user-management', label: 'User Management', icon: UserCog, roles: ['superuser'] },
+    { id: 'partner-mapping', label: 'Partner Mapping', icon: Link2, roles: ['superuser'] },
     { id: 'approval-management', label: 'Order Approvals', icon: CheckSquare, roles: ['superuser'] },
     { id: 'discount-management', label: 'Discount Management', icon: Percent, roles: ['superuser'] },
     { id: 'agency-feature-access', label: 'Agency Features', icon: Settings, roles: ['superuser'] },

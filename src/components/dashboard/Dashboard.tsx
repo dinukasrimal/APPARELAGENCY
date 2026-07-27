@@ -17,6 +17,7 @@ const NonProductiveVisits = lazy(() => import('@/components/visits/NonProductive
 const TimeTracking = lazy(() => import('@/components/visits/TimeTracking'));
 const QuarterlyTargetsManagement = lazy(() => import('@/components/targets/QuarterlyTargetsManagement'));
 const UserManagement = lazy(() => import('@/components/admin/UserManagement'));
+const OdooPartnerMapping = lazy(() => import('@/components/admin/OdooPartnerMapping'));
 const SuperuserApprovalManagement = lazy(() => import('@/components/sales/SuperuserApprovalManagement'));
 const DiscountManagement = lazy(() => import('@/components/admin/DiscountManagement'));
 const AgencyFeatureAccess = lazy(() => import('@/components/admin/AgencyFeatureAccess'));
@@ -112,6 +113,12 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
         return (
           <Suspense fallback={<ModuleLoader />}>
             <UserManagement user={user} />
+          </Suspense>
+        );
+      case 'partner-mapping':
+        return (
+          <Suspense fallback={<ModuleLoader />}>
+            <OdooPartnerMapping user={user} />
           </Suspense>
         );
       case 'approval-management':

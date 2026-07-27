@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database, CloudLightning, ClipboardList, History, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -51,7 +52,14 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   const [showAdjustmentStatus, setShowAdjustmentStatus] = useState(false);
   const [myAdjustments, setMyAdjustments] = useState<any[]>([]);
   const [loadingMyAdjustments, setLoadingMyAdjustments] = useState(false);
-  
+
+  // Per-product movement history (transaction log)
+  const [historyProduct, setHistoryProduct] = useState<ExternalInventoryItem | null>(null);
+  const [productTransactions, setProductTransactions] = useState<ExternalInventoryTransaction[]>([]);
+  const [productTxLoading, setProductTxLoading] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const HISTORY_PAGE_SIZE = 50;
+
   // Agency selection for superusers
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [selectedAgencyId, setSelectedAgencyId] = useState<string>(user.agencyId || '');
@@ -142,7 +150,9 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     };
     
     filteredItems.forEach(item => {
-      const category = item.category || 'General';
+      // Group the "All Items" overview by SUB-category (e.g. CREDO, SEMINA),
+      // not the top-level category (MENS / GENERAL / BRA).
+      const category = item.sub_category || item.category || 'General';
       if (!grouped[category]) {
         grouped[category] = [];
       }
@@ -227,6 +237,33 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
       return { status: 'In Stock', variant: 'default' as const, icon: Package };
     }
   };
+
+  // Open the movement/transaction history for a product (all stock in/out/adjustments)
+  const openProductHistory = async (item: ExternalInventoryItem) => {
+    setHistoryProduct(item);
+    setProductTransactions([]);
+    setHistoryPage(1);
+    setProductTxLoading(true);
+    try {
+      const agencyId = selectedAgencyId || user.agencyId || '';
+      // Regroups raw transactions exactly like the stock summary so the totals
+      // tally with the item's Stock IN / OUT / Current Stock.
+      const txns = await externalInventoryService.getItemMovementHistory(
+        agencyId,
+        item.product_name,
+        item.size
+      );
+      setProductTransactions(txns);
+    } catch (e) {
+      toast({ title: 'Error', description: 'Failed to load movement history', variant: 'destructive' });
+    } finally {
+      setProductTxLoading(false);
+    }
+  };
+
+  // Signed quantity — stock is derived from the raw quantity sign (positive =
+  // stock in, negative = stock out / adjustment down), matching the summary.
+  const txSign = (t: ExternalInventoryTransaction) => Number(t.quantity) || 0;
 
   // Fetch agencies for superuser selection
   const fetchAgencies = async () => {
@@ -1117,6 +1154,16 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                                 <Badge variant={stockStatus.variant}>
                                   {stockStatus.status}
                                 </Badge>
+
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => openProductHistory(item)}
+                                  className="flex items-center gap-1"
+                                >
+                                  <History className="h-4 w-4" />
+                                  History
+                                </Button>
                               </div>
                             </div>
                           );
@@ -1229,6 +1276,16 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                                     <Badge variant={stockStatus.variant}>
                                       {stockStatus.status}
                                     </Badge>
+
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => openProductHistory(item)}
+                                      className="flex items-center gap-1"
+                                    >
+                                      <History className="h-4 w-4" />
+                                      History
+                                    </Button>
                                   </div>
                                 </div>
                               );
@@ -1496,6 +1553,130 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
           onClose={() => setShowHistory(false)}
         />
       )}
+
+      {/* Per-product movement / transaction history */}
+      <Dialog open={!!historyProduct} onOpenChange={(open) => { if (!open) setHistoryProduct(null); }}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="h-5 w-5" />
+              Movement History — {historyProduct?.product_name}
+            </DialogTitle>
+          </DialogHeader>
+          {historyProduct && (
+            <p className="text-xs text-gray-500 -mt-2">
+              {historyProduct.product_code ? `${historyProduct.product_code} · ` : ''}
+              Current stock: <span className="font-semibold">{historyProduct.current_stock}</span>
+              {(!historyProduct.variant_count || historyProduct.variant_count <= 1)
+                ? ` · ${historyProduct.color || 'Default'} / ${historyProduct.size || 'Default'}`
+                : ` · ${historyProduct.variant_count} variants`}
+            </p>
+          )}
+          {productTxLoading ? (
+            <div className="text-center py-10">
+              <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-gray-400" />
+              <p className="text-sm text-gray-500">Loading movements...</p>
+            </div>
+          ) : productTransactions.length === 0 ? (
+            <div className="text-center py-10 text-gray-500 text-sm">No movements found for this product.</div>
+          ) : (
+            <div className="flex flex-col overflow-hidden">
+              {/* Totals — these tally with the item's Stock IN / OUT / Current */}
+              {(() => {
+                const totalIn = productTransactions.reduce((s, t) => s + Math.max(0, txSign(t)), 0);
+                const totalOut = productTransactions.reduce((s, t) => s + Math.max(0, -txSign(t)), 0);
+                const net = totalIn - totalOut;
+                return (
+                  <div className="flex flex-wrap gap-4 px-3 py-2 mb-2 bg-gray-50 rounded text-sm">
+                    <span>Movements: <span className="font-semibold">{productTransactions.length}</span></span>
+                    <span className="text-green-700">Stock IN: <span className="font-semibold">{totalIn}</span></span>
+                    <span className="text-red-700">Stock OUT: <span className="font-semibold">{totalOut}</span></span>
+                    <span>Net: <span className="font-semibold">{net}</span></span>
+                  </div>
+                );
+              })()}
+
+              <div className="overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-white border-b">
+                    <tr className="text-left text-gray-500">
+                      <th className="px-3 py-2 font-semibold">Date</th>
+                      <th className="px-3 py-2 font-semibold">Type</th>
+                      <th className="px-3 py-2 font-semibold">Source / Reference</th>
+                      <th className="px-3 py-2 font-semibold text-right">Qty</th>
+                      <th className="px-3 py-2 font-semibold text-right">Unit Price</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productTransactions
+                      .slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE)
+                      .map((t) => {
+                        const signed = txSign(t);
+                        const isOut = signed < 0;
+                        return (
+                          <tr key={t.id} className="border-b hover:bg-gray-50">
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              {new Date(t.transaction_date).toLocaleDateString()}<span className="text-gray-400 text-xs ml-1">
+                                {new Date(t.transaction_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="inline-flex items-center gap-1">
+                                {isOut ? <ArrowDown className="h-3 w-3 text-red-600" /> : <ArrowUp className="h-3 w-3 text-green-600" />}
+                                {(t.transaction_type || '').replace(/_/g, ' ')}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-gray-600">
+                              {t.external_source || '—'}
+                              {t.reference_name ? <span className="text-gray-400"> · {t.reference_name}</span> : ''}
+                              <span className="text-xs text-gray-400 block">{t.color || 'Default'} / {t.size || 'Default'}</span>
+                            </td>
+                            <td className={`px-3 py-2 text-right font-semibold ${isOut ? 'text-red-600' : 'text-green-600'}`}>
+                              {isOut ? '' : '+'}{signed}
+                            </td>
+                            <td className="px-3 py-2 text-right text-gray-600">
+                              {t.unit_price ? `LKR ${Number(t.unit_price).toLocaleString()}` : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {productTransactions.length > HISTORY_PAGE_SIZE && (
+                <div className="flex items-center justify-between px-3 py-3 border-t-2 mt-1 text-sm">
+                  <span className="text-gray-600">
+                    Showing {(historyPage - 1) * HISTORY_PAGE_SIZE + 1}–{Math.min(historyPage * HISTORY_PAGE_SIZE, productTransactions.length)} of {productTransactions.length}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                      disabled={historyPage <= 1}
+                    >
+                      Previous
+                    </Button>
+                    <span className="text-gray-600">
+                      Page {historyPage} of {Math.ceil(productTransactions.length / HISTORY_PAGE_SIZE)}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setHistoryPage((p) => Math.min(Math.ceil(productTransactions.length / HISTORY_PAGE_SIZE), p + 1))}
+                      disabled={historyPage >= Math.ceil(productTransactions.length / HISTORY_PAGE_SIZE)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
