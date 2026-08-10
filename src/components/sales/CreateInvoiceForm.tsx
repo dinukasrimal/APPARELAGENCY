@@ -13,6 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { externalInventoryService } from '@/services/external-inventory.service';
 import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
 import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
+import { assertWithinSriLanka } from '@/utils/geoBounds';
 import { Database } from '@/integrations/supabase/types';
 
 interface CreateInvoiceFormProps {
@@ -72,6 +73,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
           );
         });
 
+        assertWithinSriLanka(position.coords.latitude, position.coords.longitude);
         return {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude
@@ -79,7 +81,10 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
       } else {
         throw new Error('Geolocation not supported');
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (String(error?.message || '').includes('outside Sri Lanka')) {
+        throw error; // block saving on a foreign location
+      }
       console.error('GPS Error:', error);
       // Fallback for demo
       return {

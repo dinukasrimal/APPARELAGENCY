@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ArrowLeft, Camera, MapPin, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { isWithinSriLanka } from '@/utils/geoBounds';
 import SignatureCapture from '@/components/sales/SignatureCapture';
 import InAppCamera from '@/components/camera/InAppCamera';
 import { uploadCustomerPhoto, base64ToBlob } from '@/utils/storage';
@@ -30,8 +31,8 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
     shopOwnerBirthday: customer?.shopOwnerBirthday || ''
   });
 
-  const [gpsCoordinates, setGpsCoordinates] = useState(
-    customer?.gpsCoordinates || { latitude: 0, longitude: 0 }
+  const [gpsCoordinates, setGpsCoordinates] = useState<{ latitude: number; longitude: number } | null>(
+    customer?.gpsCoordinates || null
   );
 
   const [capturedPhoto, setCapturedPhoto] = useState<string>(customer?.storefrontPhoto || '');
@@ -230,41 +231,42 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
   };
 
   const getCurrentLocation = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const newCoordinates = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude
-          };
-          console.log('GPS coordinates captured:', newCoordinates);
-          setGpsCoordinates(newCoordinates);
-        },
-        (error) => {
-          console.error('GPS Error:', error);
-          // Fallback to demo coordinates for testing
-          const fallbackCoordinates = {
-            latitude: 28.6139 + Math.random() * 0.01,
-            longitude: 77.2090 + Math.random() * 0.01
-          };
-          console.log('Using fallback coordinates:', fallbackCoordinates);
-          setGpsCoordinates(fallbackCoordinates);
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 300000
-        }
-      );
-    } else {
-      // Fallback for browsers without geolocation
-      const fallbackCoordinates = {
-        latitude: 28.6139 + Math.random() * 0.01,
-        longitude: 77.2090 + Math.random() * 0.01
-      };
-      console.log('Geolocation not supported, using fallback:', fallbackCoordinates);
-      setGpsCoordinates(fallbackCoordinates);
+    if (!navigator.geolocation) {
+      toast({
+        title: 'Location not available',
+        description: 'This device cannot provide GPS. A valid Sri Lanka location is required.',
+        variant: 'destructive',
+      });
+      return;
     }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        // Only accept locations inside Sri Lanka — never store a foreign fix.
+        if (!isWithinSriLanka(lat, lng)) {
+          setGpsCoordinates(null);
+          toast({
+            title: 'Location outside Sri Lanka',
+            description: 'The captured GPS is outside Sri Lanka. Please get an accurate location and try again.',
+            variant: 'destructive',
+          });
+          return;
+        }
+        console.log('GPS coordinates captured:', { latitude: lat, longitude: lng });
+        setGpsCoordinates({ latitude: lat, longitude: lng });
+      },
+      (error) => {
+        console.error('GPS Error:', error);
+        setGpsCoordinates(null);
+        toast({
+          title: 'GPS unavailable',
+          description: 'Could not get your location. Please enable location and try again.',
+          variant: 'destructive',
+        });
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+    );
   };
 
   const handlePhotoCapture = (photoData: string) => {
@@ -461,7 +463,7 @@ const CustomerForm = ({ user, customer, onSubmit, onCancel }: CustomerFormProps)
               </div>
 
               {/* GPS Display */}
-              {(gpsCoordinates.latitude !== 0 || gpsCoordinates.longitude !== 0) && (
+              {gpsCoordinates && (gpsCoordinates.latitude !== 0 || gpsCoordinates.longitude !== 0) && (
                 <div className="text-sm text-gray-600 p-3 bg-green-50 rounded">
                   <div className="flex items-center gap-2">
                     <MapPin className="h-4 w-4 flex-shrink-0" />

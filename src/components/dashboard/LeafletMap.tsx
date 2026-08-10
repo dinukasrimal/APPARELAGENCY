@@ -12,6 +12,8 @@ interface LocationData {
   details?: string;
   agencyName?: string;
   orderNumber?: number;
+  color?: string;   // per-marker color override (e.g. by agency)
+  label?: string;   // text to render inside the marker (e.g. an amount)
 }
 
 interface RoutePath {
@@ -30,14 +32,21 @@ interface LeafletMapProps {
   height?: string;
   routes?: RoutePath[];
   selectedId?: string | null;
+  myLocation?: { latitude: number; longitude: number } | null;
+  showDistricts?: boolean;
 }
 
-const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null }: LeafletMapProps) => {
+// Cache the districts GeoJSON across map instances (loaded once).
+let districtsGeoJsonCache: any = null;
+
+const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null, myLocation = null, showDistricts = false }: LeafletMapProps) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
   const markerByIdRef = useRef<Record<string, L.Marker>>({});
   const routeLayersRef = useRef<L.Polyline[]>([]);
+  const myLocationMarkerRef = useRef<L.Marker | null>(null);
+  const districtsLayerRef = useRef<L.GeoJSON | null>(null);
 
   const getMarkerColor = (type: string) => {
     switch (type) {
@@ -53,12 +62,30 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     }
   };
 
-  const createCustomIcon = (color: string, orderNumber?: number, highlighted = false) => {
-    const size = highlighted ? 30 : 24;
-    const label = orderNumber !== undefined ? String(orderNumber) : '';
+  const createCustomIcon = (color: string, label?: string | number, highlighted = false) => {
+    const text = (label === undefined || label === null) ? '' : String(label);
     const ring = highlighted
       ? 'border: 3px solid #2563EB; box-shadow: 0 0 0 4px rgba(37,99,235,0.35), 0 2px 6px rgba(0,0,0,0.4);'
       : 'border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);';
+
+    // Longer labels (e.g. amounts like "12.5k") render as a rounded pill sized
+    // to the text; short/no labels render as the classic circular dot.
+    if (text.length > 3) {
+      const w = text.length * 8 + 16;
+      const h = highlighted ? 26 : 22;
+      return L.divIcon({
+        className: 'custom-marker',
+        html: `<div style="
+          width:${w}px;height:${h}px;border-radius:${h / 2}px;background-color:${color};${ring}
+          display:flex;align-items:center;justify-content:center;color:#fff;
+          font-size:11px;font-weight:700;font-family:sans-serif;white-space:nowrap;
+        ">${text}</div>`,
+        iconSize: [w, h],
+        iconAnchor: [w / 2, h / 2],
+      });
+    }
+
+    const size = highlighted ? 30 : 24;
     return L.divIcon({
       className: 'custom-marker',
       html: `<div style="
@@ -74,7 +101,7 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
         font-size: ${highlighted ? 13 : 11}px;
         font-weight: 700;
         font-family: sans-serif;
-      ">${label}</div>`,
+      ">${text}</div>`,
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     });
@@ -127,8 +154,9 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     let hasBounds = false;
     
     locations.forEach((location) => {
+      const iconLabel = location.label ?? (location.orderNumber !== undefined ? String(location.orderNumber) : undefined);
       const marker = L.marker([location.latitude, location.longitude], {
-        icon: createCustomIcon(getMarkerColor(location.type), location.orderNumber)
+        icon: createCustomIcon(location.color || getMarkerColor(location.type), iconLabel)
       });
 
       const popupContent = `
@@ -187,11 +215,13 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
   useEffect(() => {
     if (!mapInstanceRef.current) return;
 
+    const iconLabelOf = (l: LocationData) => l.label ?? (l.orderNumber !== undefined ? String(l.orderNumber) : undefined);
+
     // Reset all markers to their normal icon
     locations.forEach((location) => {
       const marker = markerByIdRef.current[location.id];
       if (marker) {
-        marker.setIcon(createCustomIcon(getMarkerColor(location.type), location.orderNumber, false));
+        marker.setIcon(createCustomIcon(location.color || getMarkerColor(location.type), iconLabelOf(location), false));
         marker.setZIndexOffset(0);
       }
     });
@@ -201,12 +231,96 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     const selected = locations.find(l => l.id === selectedId);
     const marker = selectedId ? markerByIdRef.current[selectedId] : null;
     if (selected && marker) {
-      marker.setIcon(createCustomIcon(getMarkerColor(selected.type), selected.orderNumber, true));
+      marker.setIcon(createCustomIcon(selected.color || getMarkerColor(selected.type), iconLabelOf(selected), true));
       marker.setZIndexOffset(1000);
       mapInstanceRef.current.panTo([selected.latitude, selected.longitude]);
       marker.openPopup();
     }
   }, [selectedId, locations]);
+
+  // Live "my location" marker — a pulsing blue dot; pan+zoom to it when updated.
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+
+    if (myLocationMarkerRef.current) {
+      mapInstanceRef.current.removeLayer(myLocationMarkerRef.current);
+      myLocationMarkerRef.current = null;
+    }
+
+    if (!myLocation) return;
+
+    const icon = L.divIcon({
+      className: 'my-location-marker',
+      html: `<div style="position:relative;width:22px;height:22px;">
+        <div style="position:absolute;inset:0;border-radius:50%;background:rgba(37,99,235,0.3);animation:mlpulse 1.6s ease-out infinite;"></div>
+        <div style="position:absolute;top:5px;left:5px;width:12px;height:12px;border-radius:50%;background:#2563EB;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.4);"></div>
+      </div>
+      <style>@keyframes mlpulse{0%{transform:scale(0.6);opacity:1}100%{transform:scale(2.2);opacity:0}}</style>`,
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    });
+
+    const marker = L.marker([myLocation.latitude, myLocation.longitude], { icon, zIndexOffset: 2000 })
+      .bindPopup('You are here');
+    marker.addTo(mapInstanceRef.current);
+    myLocationMarkerRef.current = marker;
+
+    mapInstanceRef.current.setView([myLocation.latitude, myLocation.longitude], 16);
+    marker.openPopup();
+  }, [myLocation]);
+
+  // Sri Lanka district boundaries — light shaded overlay with labels.
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // Remove when toggled off
+    if (!showDistricts) {
+      if (districtsLayerRef.current) {
+        map.removeLayer(districtsLayerRef.current);
+        districtsLayerRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+
+    const render = (geo: any) => {
+      if (cancelled || !mapInstanceRef.current || districtsLayerRef.current) return;
+      const nameOf = (props: any) =>
+        props?.shapeName || props?.name || props?.NAME || props?.DISTRICT || props?.district ||
+        props?.ADM2_EN || props?.DISTRICT_N || props?.DSD_N || 'District';
+      const layer = L.geoJSON(geo, {
+        style: () => ({
+          color: '#64748b',        // slate border
+          weight: 1,
+          fillColor: '#3b82f6',    // light blue fill
+          fillOpacity: 0.08,
+        }),
+        onEachFeature: (feature, lyr) => {
+          const nm = nameOf(feature.properties);
+          lyr.bindTooltip(nm, { sticky: true });
+          (lyr as L.Path).on('mouseover', () => (lyr as L.Path).setStyle({ fillOpacity: 0.2 }));
+          (lyr as L.Path).on('mouseout', () => (lyr as L.Path).setStyle({ fillOpacity: 0.08 }));
+        },
+      });
+      // Keep districts UNDER the markers and non-blocking
+      layer.addTo(mapInstanceRef.current);
+      layer.bringToBack();
+      districtsLayerRef.current = layer;
+    };
+
+    if (districtsGeoJsonCache) {
+      render(districtsGeoJsonCache);
+    } else {
+      fetch('/sri-lanka-districts.geojson')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('not found'))))
+        .then((geo) => { districtsGeoJsonCache = geo; render(geo); })
+        .catch(() => console.warn('District boundaries file /sri-lanka-districts.geojson not found.'));
+    }
+
+    return () => { cancelled = true; };
+  }, [showDistricts]);
 
   return (
     <div className="w-full">

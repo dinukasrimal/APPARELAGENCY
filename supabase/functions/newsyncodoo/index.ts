@@ -428,19 +428,27 @@ const syncInvoicesToInventory = async () => {
     .map((inv: any) => inv.id?.toString())
     .filter(Boolean);
 
+  // Which invoices are already synced? Must PAGINATE — a plain query caps at
+  // 1000 rows, and because invoices have many line rows the cap was hiding most
+  // already-synced invoices, causing them to be re-inserted every run.
   const existingSet = new Set<string>();
   if (invoiceIds.length > 0) {
-    const { data: existing } = await supabase
-      .from('external_inventory_management')
-      .select('external_id, agency_id')
-      .eq('external_source', 'newsyncodoo')
-      .in('external_id', invoiceIds);
-
-    existing?.forEach((record: any) => {
-      if (record.external_id && record.agency_id) {
-        existingSet.add(`${record.external_id}:${record.agency_id}`);
-      }
-    });
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data: existing, error } = await supabase
+        .from('external_inventory_management')
+        .select('external_id, agency_id')
+        .eq('external_source', 'newsyncodoo')
+        .in('external_id', invoiceIds)
+        .range(from, from + PAGE - 1);
+      if (error) break;
+      (existing || []).forEach((record: any) => {
+        if (record.external_id && record.agency_id) {
+          existingSet.add(`${record.external_id}:${record.agency_id}`);
+        }
+      });
+      if (!existing || existing.length < PAGE) break;
+    }
   }
 
   const rowsToInsert: any[] = [];

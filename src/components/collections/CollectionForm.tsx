@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, X, MapPin, Navigation } from 'lucide-react';
 import { CollectionFormData, ChequeDetail } from '@/types/collections';
 import { centsToMoney, moneyToCents, roundMoney } from '@/utils/money';
+import { isWithinSriLanka } from '@/utils/geoBounds';
 
 interface CollectionFormProps {
   customerId: string;
@@ -88,6 +89,11 @@ export const CollectionForm: React.FC<CollectionFormProps> = ({
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
+        if (!isWithinSriLanka(latitude, longitude)) {
+          setGpsStatus('error');
+          alert('Your location appears to be outside Sri Lanka. Please get an accurate GPS fix and try again.');
+          return;
+        }
         setFormData(prev => ({
           ...prev,
           gpsCoordinates: { latitude, longitude }

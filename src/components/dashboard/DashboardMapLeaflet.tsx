@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { User } from '@/types/auth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { MapPin, Calendar, Users, ShoppingCart, Receipt, AlertTriangle, ChevronDown, ChevronRight, Filter, DollarSign } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
+import { isWithinSriLanka } from '@/utils/geoBounds';
 import LeafletMap from './LeafletMap';
 
 interface LocationData {
@@ -19,6 +21,8 @@ interface LocationData {
   timestamp: Date;
   details?: string;
   agencyName?: string;
+  color?: string;
+  label?: string;
 }
 
 interface Agency {
@@ -30,13 +34,37 @@ interface DashboardMapLeafletProps {
   user: User;
 }
 
+// Distinct colours for agencies on the map.
+const AGENCY_COLORS = [
+  '#2563EB', '#059669', '#D97706', '#DC2626', '#7C3AED', '#DB2777',
+  '#0891B2', '#CA8A04', '#4F46E5', '#EA580C', '#16A34A', '#9333EA',
+  '#0D9488', '#E11D48', '#65A30D', '#F59E0B', '#3B82F6', '#10B981',
+];
+
+// Compact money format for the amount shown inside a pin (e.g. 12,500 -> 12.5k).
+const formatCompact = (n: number): string => {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + 'k';
+  return String(Math.round(n));
+};
+
 const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   const [locations, setLocations] = useState<LocationData[]>([]);
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [selectedAgencies, setSelectedAgencies] = useState<string[]>([]);
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(['customer', 'non_productive', 'sales_order', 'invoice', 'collection']);
+  // Map shows only customers by default (all time); the user can switch on
+  // sales orders / invoices / collections / non-productive visits via the filter.
+  const [selectedTypes, setSelectedTypes] = useState<string[]>(['customer']);
+  // Customer scope for the map: 'active' = customers invoiced in the last 90 days
+  // (default), 'all' = every customer.
+  const [customerScope, setCustomerScope] = useState<'active' | 'all'>('active');
+  // Live "my location" (GPS)
+  const [myLocation, setMyLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const watchIdRef = useRef<number | null>(null);
+  const [showDistricts, setShowDistricts] = useState(false);
   
   // Separate filters for the list
   const [listStartDate, setListStartDate] = useState(new Date().toISOString().split('T')[0]);
@@ -45,6 +73,15 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   
   const [loading, setLoading] = useState(true);
   const [openAgencies, setOpenAgencies] = useState<string[]>([]);
+
+  // Stable agency -> colour mapping (by name order so colours don't shuffle).
+  const agencyColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    [...agencies]
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      .forEach((a, i) => m.set(a.id, AGENCY_COLORS[i % AGENCY_COLORS.length]));
+    return m;
+  }, [agencies]);
   const [showFilters, setShowFilters] = useState(false);
   const [showListFilters, setShowListFilters] = useState(false);
   const [openDateGroups, setOpenDateGroups] = useState<string[]>([]);
@@ -61,7 +98,7 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
     if (selectedAgencies.length > 0) {
       fetchLocationData();
     }
-  }, [startDate, endDate, selectedTypes, selectedAgencies]);
+  }, [startDate, endDate, selectedTypes, selectedAgencies, customerScope]);
 
   const fetchAgencies = async () => {
     try {
@@ -82,6 +119,51 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
     }
   };
 
+  // Live location: toggle GPS tracking. First fix pans/zooms the map to you;
+  // subsequent updates keep the "you are here" marker current.
+  const toggleLiveLocation = () => {
+    if (myLocation || watchIdRef.current !== null) {
+      // Turn off
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+      watchIdRef.current = null;
+      setMyLocation(null);
+      setLocating(false);
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      alert('Location is not supported by this browser.');
+      return;
+    }
+
+    setLocating(true);
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setLocating(false);
+        setMyLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+      },
+      (err) => {
+        setLocating(false);
+        watchIdRef.current = null;
+        alert(err.code === err.PERMISSION_DENIED
+          ? 'Location permission denied. Enable it in your browser settings.'
+          : 'Could not get your location.');
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+    );
+  };
+
+  // Clean up the geolocation watch on unmount
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+    };
+  }, []);
+
   const fetchLocationData = async () => {
     try {
       const locations: LocationData[] = [];
@@ -98,21 +180,57 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       // Fetch customer locations - NO DATE FILTERING
       if (selectedTypes.includes('customer')) {
         console.log('Fetching customers for agencies:', selectedAgencies);
-        
-        const { data: customers, error } = await supabase
-          .from('customers')
-          .select('id, name, latitude, longitude, created_at, agency_id')
-          .in('agency_id', selectedAgencies)
-          .not('latitude', 'is', null)
-          .not('longitude', 'is', null);
-        
-        if (error) {
-          console.error('Error fetching customers:', error);
-        } else {
-          console.log('Fetched customers:', customers);
-          
+
+        // Last-90-day invoice totals per customer (for the amount shown in the
+        // pin) + the active set (for the Active scope). One query, reused.
+        const window90Start = new Date();
+        window90Start.setDate(window90Start.getDate() - 90);
+        const recentInvoices = await fetchAllSupabaseRows<{ customer_id: string | null; customer_name: string | null; total: number | null; agency_id: string | null }>(() =>
+          supabase
+            .from('invoices')
+            .select('customer_id, customer_name, total, agency_id')
+            .in('agency_id', selectedAgencies)
+            .gte('created_at', window90Start.toISOString())
+        );
+        // Sum by customer_id, and a name fallback SCOPED to the agency so a
+        // customer isn't credited with a same-named customer's invoices from a
+        // different agency (e.g. "Gayan tex" exists under several agencies).
+        const sumById = new Map<string, number>();
+        const sumByAgencyName = new Map<string, number>();
+        recentInvoices.forEach(inv => {
+          const amt = Number(inv.total || 0);
+          if (inv.customer_id) sumById.set(inv.customer_id, (sumById.get(inv.customer_id) || 0) + amt);
+          const nm = (inv.customer_name || '').toLowerCase().trim();
+          if (nm && inv.agency_id) {
+            const key = `${inv.agency_id}:${nm}`;
+            sumByAgencyName.set(key, (sumByAgencyName.get(key) || 0) + amt);
+          }
+        });
+
+        // Paginate — a plain query caps at 1000 rows, dropping some agencies'
+        // customers when "all agencies" is selected.
+        const customers = await fetchAllSupabaseRows<{ id: string; name: string; latitude: number; longitude: number; created_at: string; agency_id: string }>(() =>
+          supabase
+            .from('customers')
+            .select('id, name, latitude, longitude, created_at, agency_id')
+            .in('agency_id', selectedAgencies)
+            .not('latitude', 'is', null)
+            .not('longitude', 'is', null)
+        );
+
+        {
+          console.log('Fetched customers:', customers.length);
+
           customers?.forEach(customer => {
-            // Find agency name from the agencies array
+            const nm = (customer.name || '').toLowerCase().trim();
+            // Prefer customer_id; fall back to name ONLY within the same agency.
+            const amount90 = sumById.get(customer.id)
+              ?? sumByAgencyName.get(`${customer.agency_id}:${nm}`)
+              ?? 0;
+
+            // Active-scope filter: keep only customers invoiced in last 90 days
+            if (customerScope === 'active' && amount90 <= 0) return;
+
             const agency = agencies.find(a => a.id === customer.agency_id);
             locations.push({
               id: customer.id,
@@ -121,7 +239,10 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
               latitude: customer.latitude,
               longitude: customer.longitude,
               timestamp: new Date(customer.created_at),
-              agencyName: agency?.name || 'Unknown Agency'
+              agencyName: agency?.name || 'Unknown Agency',
+              color: agencyColorMap.get(customer.agency_id) || '#EAB308',
+              label: amount90 > 0 ? formatCompact(amount90) : undefined,
+              details: `Last 90 days invoices: LKR ${amount90.toLocaleString()}`,
             });
           });
         }
@@ -246,7 +367,8 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       }
 
       console.log('Final locations data:', locations);
-      setLocations(locations);
+      // Hide any points outside Sri Lanka (bad GPS fixes).
+      setLocations(locations.filter(l => isWithinSriLanka(l.latitude, l.longitude)));
     } catch (error) {
       console.error('Error fetching location data:', error);
     } finally {
@@ -502,18 +624,92 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       {/* Map */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <MapPin className="h-5 w-5" />
-            Location Map ({locations.length} locations)
-            {selectedAgencies.length > 1 && (
-              <Badge variant="secondary">
-                {selectedAgencies.length} agencies
-              </Badge>
-            )}
-          </CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5" />
+              Location Map ({locations.length} locations)
+              {selectedAgencies.length > 1 && (
+                <Badge variant="secondary">
+                  {selectedAgencies.length} agencies
+                </Badge>
+              )}
+            </CardTitle>
+
+            <div className="flex items-center gap-2">
+              {/* My live location */}
+              <Button
+                type="button"
+                size="sm"
+                variant={myLocation ? 'default' : 'outline'}
+                onClick={toggleLiveLocation}
+                className="flex items-center gap-1"
+              >
+                <MapPin className="h-4 w-4" />
+                {locating ? 'Locating…' : myLocation ? 'Stop' : 'My Location'}
+              </Button>
+
+              {/* Sri Lanka districts overlay toggle */}
+              <Button
+                type="button"
+                size="sm"
+                variant={showDistricts ? 'default' : 'outline'}
+                onClick={() => setShowDistricts(v => !v)}
+              >
+                Districts
+              </Button>
+
+              {/* Active / All customer scope toggle */}
+              <div className="inline-flex rounded-lg border bg-gray-100 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setCustomerScope('active')}
+                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                    customerScope === 'active' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Active
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomerScope('all')}
+                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                    customerScope === 'all' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  All
+                </button>
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            {customerScope === 'active'
+              ? 'Showing active customers (invoiced in the last 90 days).'
+              : 'Showing all customers.'}
+          </p>
         </CardHeader>
         <CardContent>
-          <LeafletMap locations={locations} height="500px" />
+          <LeafletMap locations={locations} height="500px" myLocation={myLocation} showDistricts={showDistricts} />
+
+          {/* Agency colour legend */}
+          {selectedTypes.includes('customer') && selectedAgencies.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-medium text-gray-500 mb-2">Agency colours — the number inside a pin is that customer's last-90-day invoice total:</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                {[...agencies]
+                  .filter(a => selectedAgencies.includes(a.id))
+                  .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                  .map(a => (
+                    <div key={a.id} className="flex items-center gap-2">
+                      <span
+                        className="inline-block w-4 h-4 rounded-full border border-white shadow"
+                        style={{ backgroundColor: agencyColorMap.get(a.id) || '#EAB308' }}
+                      />
+                      <span className="text-sm text-gray-700">{a.name}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

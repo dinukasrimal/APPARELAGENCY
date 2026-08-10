@@ -11,6 +11,7 @@ import { supabase } from '@/integrations/supabase/client';
 import LeafletMap from '@/components/dashboard/LeafletMap';
 import ImageModal from '@/components/ui/image-modal';
 import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
+import { isWithinSriLanka } from '@/utils/geoBounds';
 
 interface DailyLogEntry {
   id: string;
@@ -1440,7 +1441,9 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           </CardHeader>
           <CardContent>
               <LeafletMap
-                locations={logEntries.map(entry => ({
+                locations={logEntries
+                  .filter(entry => isWithinSriLanka(entry.latitude, entry.longitude))
+                  .map(entry => ({
                   id: entry.id,
                   type: entry.type,
                 name: `${entry.orderNumber}. ${entry.name}`,

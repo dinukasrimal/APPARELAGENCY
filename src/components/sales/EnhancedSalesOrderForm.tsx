@@ -20,6 +20,7 @@ import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
 import { externalInventoryService, type ExternalInventoryItem } from '@/services/external-inventory.service';
 import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
+import { assertWithinSriLanka } from '@/utils/geoBounds';
 
 // Module-level inventory cache — survives re-mounts (e.g. navigating away and back) for 5 minutes
 const _inventoryCache: Record<string, { data: ExternalInventoryItem[]; expiry: number }> = {};
@@ -705,11 +706,17 @@ const EnhancedSalesOrderForm = ({
         return fallbackCoords;
       }
 
+      // Reject GPS fixes outside Sri Lanka — block saving until a valid fix.
+      assertWithinSriLanka(position.coords.latitude, position.coords.longitude);
       return {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude
       };
-    } catch (error) {
+    } catch (error: any) {
+      // A location-outside-Sri-Lanka error must NOT fall back — re-throw to block.
+      if (String(error?.message || '').includes('outside Sri Lanka')) {
+        throw error;
+      }
       toast({
         title: 'GPS unavailable',
         description: 'Using approximate location to continue saving.',

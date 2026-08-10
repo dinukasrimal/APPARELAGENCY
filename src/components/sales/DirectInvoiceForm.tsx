@@ -21,6 +21,7 @@ import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
 import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
+import { isWithinSriLanka } from '@/utils/geoBounds';
 
 interface DirectInvoiceFormProps {
   user: User;
@@ -453,11 +454,20 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
           );
         });
 
+        if (!isWithinSriLanka(position.coords.latitude, position.coords.longitude)) {
+          setGpsCoordinates({ latitude: 0, longitude: 0 });
+          toast({
+            title: "Location outside Sri Lanka",
+            description: "The captured GPS is outside Sri Lanka. Please get an accurate location and try again.",
+            variant: "destructive",
+          });
+          return;
+        }
         setGpsCoordinates({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude
         });
-        
+
         toast({
           title: "Location captured",
           description: "GPS coordinates captured successfully"
@@ -466,14 +476,11 @@ const DirectInvoiceForm = ({ user, customers, products, onSuccess, onCancel }: D
         throw new Error('Geolocation not supported');
       }
     } catch (error) {
-      // Fallback for demo
-      setGpsCoordinates({
-        latitude: 7.8731 + Math.random() * 0.01,
-        longitude: 80.7718 + Math.random() * 0.01
-      });
+      setGpsCoordinates({ latitude: 0, longitude: 0 });
       toast({
-        title: "Location captured",
-        description: "Demo GPS coordinates captured"
+        title: "GPS unavailable",
+        description: "Could not get your location. Please enable location and try again.",
+        variant: "destructive",
       });
     } finally {
       setGpsCapturing(false);

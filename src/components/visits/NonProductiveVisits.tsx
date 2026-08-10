@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Plus, MapPin, Search, Calendar, ArrowLeft, Users } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { isWithinSriLanka } from '@/utils/geoBounds';
 import CustomerSearch from '@/components/customers/CustomerSearch';
 import AgencySelector from '@/components/common/AgencySelector';
 
@@ -145,34 +146,27 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
 
   const getCurrentLocation = (): Promise<{ latitude: number; longitude: number }> => {
     return new Promise((resolve, reject) => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const coords = {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            };
-            setGpsCoordinates(coords);
-            resolve(coords);
-          },
-          (error) => {
-            console.error('GPS Error:', error);
-            const coords = {
-              latitude: 28.6139 + Math.random() * 0.01,
-              longitude: 77.2090 + Math.random() * 0.01
-            };
-            setGpsCoordinates(coords);
-            resolve(coords);
-          }
-        );
-      } else {
-        const coords = {
-          latitude: 28.6139 + Math.random() * 0.01,
-          longitude: 77.2090 + Math.random() * 0.01
-        };
-        setGpsCoordinates(coords);
-        resolve(coords);
+      if (!navigator.geolocation) {
+        reject(new Error('Location is not available on this device. A valid Sri Lanka location is required.'));
+        return;
       }
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const coords = { latitude: position.coords.latitude, longitude: position.coords.longitude };
+          // Reject fixes outside Sri Lanka — no foreign fallback.
+          if (!isWithinSriLanka(coords.latitude, coords.longitude)) {
+            reject(new Error('Your location appears to be outside Sri Lanka. Please get an accurate GPS fix and try again.'));
+            return;
+          }
+          setGpsCoordinates(coords);
+          resolve(coords);
+        },
+        (error) => {
+          console.error('GPS Error:', error);
+          reject(new Error('Could not get your location. Please enable location and try again.'));
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+      );
     });
   };
 
