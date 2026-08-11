@@ -10,6 +10,7 @@ import { MapPin, Calendar, Users, ShoppingCart, Receipt, AlertTriangle, ChevronD
 import { supabase } from '@/integrations/supabase/client';
 import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import { isWithinSriLanka } from '@/utils/geoBounds';
+import { loadDistrictFeatures, districtForPoint } from '@/utils/districtLookup';
 import LeafletMap from './LeafletMap';
 
 interface LocationData {
@@ -65,6 +66,10 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   const [locating, setLocating] = useState(false);
   const watchIdRef = useRef<number | null>(null);
   const [showDistricts, setShowDistricts] = useState(false);
+  // District-wise sales (last 90 days, from invoices mapped by GPS to a district)
+  const [districtSales, setDistrictSales] = useState<Array<{ district: string; total: number; count: number }>>([]);
+  const [districtSalesTotal, setDistrictSalesTotal] = useState(0);
+  const [districtSalesLoading, setDistrictSalesLoading] = useState(false);
   
   // Separate filters for the list
   const [listStartDate, setListStartDate] = useState(new Date().toISOString().split('T')[0]);
@@ -163,6 +168,75 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       }
     };
   }, []);
+
+  // District-wise sales: attribute each customer's last-90-day invoice total to
+  // the district of that customer's SHOP (matches the map pins). Invoice GPS is
+  // where the sale was recorded (often not the shop), so we use shop location.
+  useEffect(() => {
+    if (selectedAgencies.length === 0) { setDistrictSales([]); setDistrictSalesTotal(0); return; }
+    let cancelled = false;
+    (async () => {
+      setDistrictSalesLoading(true);
+      try {
+        const since = new Date();
+        since.setDate(since.getDate() - 90);
+        const [features, invoices, customers] = await Promise.all([
+          loadDistrictFeatures(),
+          fetchAllSupabaseRows<{ customer_id: string | null; customer_name: string | null; total: number | null; agency_id: string | null }>(() =>
+            supabase
+              .from('invoices')
+              .select('customer_id, customer_name, total, agency_id')
+              .in('agency_id', selectedAgencies)
+              .gte('created_at', since.toISOString())
+          ),
+          fetchAllSupabaseRows<{ id: string; name: string | null; agency_id: string; latitude: number | null; longitude: number | null }>(() =>
+            supabase
+              .from('customers')
+              .select('id, name, agency_id, latitude, longitude')
+              .in('agency_id', selectedAgencies)
+          ),
+        ]);
+        if (cancelled) return;
+
+        // Per-customer 90-day sales (same logic as the map pins).
+        const sumById = new Map<string, number>();
+        const sumByAgencyName = new Map<string, number>();
+        invoices.forEach((inv) => {
+          const amt = Number(inv.total || 0);
+          if (inv.customer_id) sumById.set(inv.customer_id, (sumById.get(inv.customer_id) || 0) + amt);
+          const nm = (inv.customer_name || '').toLowerCase().trim();
+          if (nm && inv.agency_id) {
+            const k = `${inv.agency_id}:${nm}`;
+            sumByAgencyName.set(k, (sumByAgencyName.get(k) || 0) + amt);
+          }
+        });
+
+        const byDistrict = new Map<string, { total: number; count: number }>();
+        let grand = 0;
+        customers.forEach((c) => {
+          const amt = sumById.get(c.id) ?? sumByAgencyName.get(`${c.agency_id}:${(c.name || '').toLowerCase().trim()}`) ?? 0;
+          if (amt <= 0) return; // only shops with sales
+          const lat = Number(c.latitude), lng = Number(c.longitude);
+          const d = isWithinSriLanka(lat, lng) ? (districtForPoint(lat, lng, features) || 'Unknown') : 'Unknown (no GPS)';
+          const cur = byDistrict.get(d) || { total: 0, count: 0 };
+          cur.total += amt; cur.count += 1;
+          byDistrict.set(d, cur);
+          grand += amt;
+        });
+
+        const rows = Array.from(byDistrict.entries())
+          .map(([district, v]) => ({ district: district.replace(/\s+District$/i, ''), total: v.total, count: v.count }))
+          .sort((a, b) => b.total - a.total);
+
+        if (!cancelled) { setDistrictSales(rows); setDistrictSalesTotal(grand); }
+      } catch {
+        if (!cancelled) { setDistrictSales([]); setDistrictSalesTotal(0); }
+      } finally {
+        if (!cancelled) setDistrictSalesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedAgencies]);
 
   const fetchLocationData = async () => {
     try {
@@ -708,6 +782,67 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
                     </div>
                   ))}
               </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* District-wise Sales (last 90 days) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <MapPin className="h-5 w-5" />
+              District-wise Sales (Last 90 Days)
+            </span>
+            <span className="text-base font-bold text-green-700">
+              Total: LKR {districtSalesTotal.toLocaleString()}
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {districtSalesLoading ? (
+            <div className="text-center py-8 text-gray-500 text-sm">Calculating district sales…</div>
+          ) : districtSales.length === 0 ? (
+            <div className="text-center py-8 text-gray-500 text-sm">No invoiced sales with GPS in the last 90 days.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="px-3 py-2 font-semibold">District</th>
+                    <th className="px-3 py-2 font-semibold text-right">Shops</th>
+                    <th className="px-3 py-2 font-semibold text-right">Sales (LKR)</th>
+                    <th className="px-3 py-2 font-semibold text-right">% of Total</th>
+                    <th className="px-3 py-2 font-semibold w-40">Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {districtSales.map((row) => {
+                    const pct = districtSalesTotal > 0 ? (row.total / districtSalesTotal) * 100 : 0;
+                    return (
+                      <tr key={row.district} className="border-b hover:bg-gray-50">
+                        <td className="px-3 py-2 font-medium text-gray-900">{row.district}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{row.count}</td>
+                        <td className="px-3 py-2 text-right font-semibold text-green-700">{row.total.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right">{pct.toFixed(1)}%</td>
+                        <td className="px-3 py-2">
+                          <div className="h-2 w-full bg-gray-100 rounded">
+                            <div className="h-2 rounded bg-blue-500" style={{ width: `${Math.min(100, pct)}%` }} />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
+                    <td className="px-3 py-2">Total</td>
+                    <td className="px-3 py-2 text-right">{districtSales.reduce((s, r) => s + r.count, 0)}</td>
+                    <td className="px-3 py-2 text-right text-green-700">{districtSalesTotal.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right">100%</td>
+                    <td className="px-3 py-2"></td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           )}
         </CardContent>

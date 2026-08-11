@@ -5,9 +5,11 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Calendar as CalendarIcon, Clock, MapPin, Users, ShoppingCart, Receipt, AlertTriangle, Download, ChevronLeft, ChevronRight, DollarSign, Image as ImageIcon, ArrowLeft, Truck } from 'lucide-react';
+import { Calendar as CalendarIcon, Clock, MapPin, Users, ShoppingCart, Receipt, AlertTriangle, Download, ChevronLeft, ChevronRight, DollarSign, Image as ImageIcon, ArrowLeft, Truck, Trash2 } from 'lucide-react';
 import { Calendar } from '@/components/ui/calendar';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
 import LeafletMap from '@/components/dashboard/LeafletMap';
 import ImageModal from '@/components/ui/image-modal';
 import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
@@ -78,6 +80,71 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
   const [selectedImage, setSelectedImage] = useState<{ url: string; title: string } | null>(null);
   const [timeRoutes, setTimeRoutes] = useState<TimeRoutePath[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
+  const [entryToDelete, setEntryToDelete] = useState<DailyLogEntry | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const { toast } = useToast();
+
+  // Only a superuser with access to all agencies may delete activities.
+  const canDelete = user.role === 'superuser';
+
+  // Re-run the current view's fetch after a delete.
+  const refetchCurrent = () => {
+    if (viewMode === 'calendar' && selectedDate) {
+      const y = selectedDate.getFullYear();
+      const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const d = String(selectedDate.getDate()).padStart(2, '0');
+      fetchDailyLogs(`${y}-${m}-${d}`);
+      fetchMonthlyLogDates();
+    } else {
+      fetchDateRangeLogs();
+    }
+  };
+
+  // Delete an activity's underlying record(s), based on its type.
+  const deleteEntry = async (entry: DailyLogEntry) => {
+    setIsDeleting(true);
+    try {
+      if (entry.type === 'clock_in' || entry.type === 'clock_out') {
+        // entry.id is `${timeTrackingId}-in` / `-out`
+        const timeId = entry.id.replace(/-(in|out)$/, '');
+        const { error } = await supabase.from('time_tracking').delete().eq('id', timeId);
+        if (error) throw error;
+      } else if (entry.type === 'customer') {
+        const { error } = await supabase.from('customers').delete().eq('id', entry.id);
+        if (error) throw error;
+      } else if (entry.type === 'non_productive') {
+        const { error } = await supabase.from('non_productive_visits').delete().eq('id', entry.id);
+        if (error) throw error;
+      } else if (entry.type === 'sales_order') {
+        await supabase.from('sales_order_items').delete().eq('sales_order_id', entry.id);
+        const { error } = await supabase.from('sales_orders').delete().eq('id', entry.id);
+        if (error) throw error;
+      } else if (entry.type === 'invoice') {
+        // Clear dependents first, then the invoice.
+        await supabase.from('collection_allocations').delete().eq('invoice_id', entry.id);
+        await (supabase as any).from('deliveries').delete().eq('invoice_id', entry.id);
+        await supabase.from('invoice_items').delete().eq('invoice_id', entry.id);
+        const { error } = await supabase.from('invoices').delete().eq('id', entry.id);
+        if (error) throw error;
+      } else if (entry.type === 'collection') {
+        await supabase.from('collection_allocations').delete().eq('collection_id', entry.id);
+        await supabase.from('collection_cheques').delete().eq('collection_id', entry.id);
+        const { error } = await supabase.from('collections').delete().eq('id', entry.id);
+        if (error) throw error;
+      } else if (entry.type === 'delivery') {
+        const delId = entry.id.replace(/^delivery-/, '');
+        const { error } = await (supabase as any).from('deliveries').delete().eq('id', delId);
+        if (error) throw error;
+      }
+      toast({ title: 'Deleted', description: `${entry.type.replace('_', ' ')} activity removed.` });
+      setEntryToDelete(null);
+      refetchCurrent();
+    } catch (e: any) {
+      toast({ title: 'Delete failed', description: e.message || 'Could not delete this activity', variant: 'destructive' });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   useEffect(() => {
     if (user.role === 'superuser') {
@@ -1379,6 +1446,16 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                                 <div className="text-[10px] text-gray-500 leading-tight">SO → invoice</div>
                               </div>
                             )}
+                            {canDelete && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setEntryToDelete(entry); }}
+                                className="shrink-0 text-red-500 hover:text-red-700 p-1"
+                                title="Delete this activity"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            )}
                           </div>
                         );
                       })}
@@ -1552,6 +1629,16 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                           </div>
                         )}
                       </div>
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setEntryToDelete(entry); }}
+                          className="shrink-0 text-red-500 hover:text-red-700 p-1"
+                          title="Delete this activity"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -1570,6 +1657,35 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           title={selectedImage.title}
         />
       )}
+
+      {/* Delete activity confirmation (superuser only) */}
+      <AlertDialog open={!!entryToDelete} onOpenChange={(open) => { if (!open) setEntryToDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete activity</AlertDialogTitle>
+            <AlertDialogDescription>
+              {entryToDelete && (
+                <>
+                  This permanently deletes the <strong>{entryToDelete.type.replace('_', ' ')}</strong> activity
+                  {entryToDelete.name ? <> for <strong>{entryToDelete.name}</strong></> : null}
+                  {(entryToDelete.type === 'invoice' || entryToDelete.type === 'sales_order' || entryToDelete.type === 'collection')
+                    ? ' and its related line items/allocations.' : '.'} This cannot be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); if (entryToDelete) deleteEntry(entryToDelete); }}
+              disabled={isDeleting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {isDeleting ? 'Deleting…' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
