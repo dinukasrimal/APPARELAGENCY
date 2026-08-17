@@ -212,13 +212,16 @@ async function buildPdf(data: PdfData): Promise<Blob | null> {
     }
 
     const item = data.items[i];
+    // Coerce every cell to a string so no undefined/null field can reach
+    // doc.text() (which throws) — guards against edge-case item data.
+    const num = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v : 0);
     const vals = [
       String(i + 1),
-      item.productName,
-      `${item.color}, ${item.size}`,
-      `LKR ${item.unitPrice.toLocaleString()}`,
-      String(item.quantity),
-      `LKR ${item.total.toLocaleString()}`,
+      String(item.productName ?? ''),
+      `${item.color ?? ''}, ${item.size ?? ''}`,
+      `LKR ${num(item.unitPrice).toLocaleString()}`,
+      String(item.quantity ?? 0),
+      `LKR ${num(item.total).toLocaleString()}`,
     ];
 
     hv('normal', 9);

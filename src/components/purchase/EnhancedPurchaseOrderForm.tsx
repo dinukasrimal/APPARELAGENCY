@@ -389,6 +389,7 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: 
           gpsLat: gpsCoordinates.latitude || undefined,
           gpsLng: gpsCoordinates.longitude || undefined,
         }).then(async pdfUrl => {
+          if (!pdfUrl) console.error('[PO] PDF generation returned null for updated order', orderId);
           const { data: setting } = await supabase
             .from('app_settings')
             .select('value')
@@ -398,7 +399,7 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: 
           phones.forEach((phone: string) => {
             sendSMS(phone, SmsTemplates.purchaseOrderUpdated(agencyName, orderId.slice(0, 8).toUpperCase(), total, pdfUrl ?? undefined));
           });
-        });
+        }).catch(err => console.error('[PO] PDF/SMS pipeline failed for updated order', orderId, err));
 
       } else {
         // Create new order
@@ -454,6 +455,7 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: 
           gpsLat: gpsCoordinates.latitude || undefined,
           gpsLng: gpsCoordinates.longitude || undefined,
         }).then(async pdfUrl => {
+          if (!pdfUrl) console.error('[PO] PDF generation returned null for new order', orderId);
           const { data: setting } = await supabase
             .from('app_settings')
             .select('value')
@@ -463,7 +465,7 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: 
           phones.forEach((phone: string) => {
             sendSMS(phone, SmsTemplates.purchaseOrderCreated(agencyName, orderId.slice(0, 8).toUpperCase(), total, pdfUrl ?? undefined));
           });
-        });
+        }).catch(err => console.error('[PO] PDF/SMS pipeline failed for new order', orderId, err));
       }
 
       onSuccess();

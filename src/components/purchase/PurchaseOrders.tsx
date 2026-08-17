@@ -47,12 +47,23 @@ const PurchaseOrders = ({ user }: PurchaseOrdersProps) => {
 
       if (ordersError) throw ordersError;
 
-      // Fetch purchase order items
-      const { data: itemsData, error: itemsError } = await supabase
-        .from('purchase_order_items')
-        .select('*');
+      // Fetch purchase order items (paginated — PostgREST caps unpaginated
+      // selects at 1000 rows, which silently dropped items once the table
+      // grew past that, most visibly for the most recently created orders)
+      const itemsData: any[] = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: page, error: itemsError } = await supabase
+          .from('purchase_order_items')
+          .select('*')
+          .range(from, from + pageSize - 1);
 
-      if (itemsError) throw itemsError;
+        if (itemsError) throw itemsError;
+        if (!page || page.length === 0) break;
+
+        itemsData.push(...page);
+        if (page.length < pageSize) break;
+      }
 
       // Transform orders with items
       const transformedOrders: PurchaseOrder[] = (ordersData || []).map(order => {
