@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Search, User as UserIcon, FileText, DollarSign, Plus, ArrowLeft, MapPin, Eye } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import { useToast } from '@/hooks/use-toast';
 import { CollectionForm } from './CollectionForm';
 import { CollectionDetails } from './CollectionDetails';
@@ -76,8 +77,13 @@ const Collections = ({ user }: CollectionsProps) => {
       console.time('[Collections] total load');
 
       // Build all three queries upfront
-      let customersQuery = supabase.from('customers').select('*');
-      if (selectedAgencyId) customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
+      // Built fresh per page: an unpaginated select stops at 1000 rows, which
+      // silently dropped customers when no single agency was selected.
+      const buildCustomersQuery = () => {
+        let query = supabase.from('customers').select('*');
+        if (selectedAgencyId) query = query.eq('agency_id', selectedAgencyId);
+        return query;
+      };
 
       let invoicesQuery = supabase.from('invoices').select('*');
       if (selectedAgencyId) invoicesQuery = invoicesQuery.eq('agency_id', selectedAgencyId);
@@ -94,7 +100,8 @@ const Collections = ({ user }: CollectionsProps) => {
 
       // Fire all three in parallel
       const [customersResult, invoicesResult, collectionsResult] = await Promise.all([
-        customersQuery.order('name'),
+        fetchAllSupabaseRows<any>(() => buildCustomersQuery().order('name').order('id'))
+          .then(rows => ({ data: rows, error: null })),
         invoicesQuery.order('created_at', { ascending: false }),
         collectionsQuery.order('created_at', { ascending: false }),
       ]);

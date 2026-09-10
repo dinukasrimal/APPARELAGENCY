@@ -333,8 +333,13 @@ const ProductGrid = ({ products, user, onAdd, onProductUpdate, isLoading = false
                         
                         {/* Product Name */}
                         <div className="flex-1">
-                          <h3 className="font-medium text-gray-900">{product.name}</h3>
-                          
+                          <h3 className="font-medium text-gray-900 flex items-center gap-2">
+                            {product.name}
+                            {!product.isActive && (
+                              <Badge variant="destructive" className="text-xs">Inactive</Badge>
+                            )}
+                          </h3>
+
                           {/* Colors and Sizes */}
                           <div className="flex gap-4 mt-1">
                             {product.colors.length > 0 && (

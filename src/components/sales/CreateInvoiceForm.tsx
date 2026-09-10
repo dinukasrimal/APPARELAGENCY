@@ -12,7 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { externalInventoryService } from '@/services/external-inventory.service';
 import { getNextInvoiceNumber } from '@/utils/invoiceNumber';
-import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
+import { getPersistentRequestId, clearPersistentRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
 import { assertWithinSriLanka } from '@/utils/geoBounds';
 import { Database } from '@/integrations/supabase/types';
 
@@ -59,7 +59,6 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
   const submitLockRef = useRef(false);
   // Stable idempotency key for this form instance — reused on retries so a lost
   // response cannot create a duplicate invoice.
-  const requestIdRef = useRef<string>(newRequestId());
   const { toast } = useToast();
 
   const captureGPS = async (): Promise<{ latitude: number; longitude: number }> => {
@@ -142,6 +141,11 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
 
     setIsSubmitting(true);
 
+    // Scoped to this sales order and amount so every retry of the same
+    // submission reuses one key, even if the form was closed and reopened.
+    const idempotencyScope = `invoice:so:${salesOrder.id}:${total.toFixed(2)}`;
+    const requestId = getPersistentRequestId(idempotencyScope);
+
     try {
       // Capture GPS coordinates when creating invoice
       toast({
@@ -172,7 +176,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
         signature,
         invoice_number: invoiceNumber,
         created_by: user.id,
-        client_request_id: requestIdRef.current
+        client_request_id: requestId
       };
 
       // Only include sales_order_id if it's a valid UUID
@@ -196,7 +200,7 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
           const { data: existing, error: fetchError } = await supabase
             .from('invoices')
             .select()
-            .eq('client_request_id', requestIdRef.current)
+            .eq('client_request_id', requestId)
             .single();
           if (fetchError || !existing) throw (fetchError || invoiceError);
           invoice = existing;
@@ -339,6 +343,9 @@ const CreateInvoiceForm = ({ user, salesOrder, invoicedItems = [], onSubmit, onC
         gpsCoordinates: coords,
         signature
       };
+
+      // Saved for good — the next invoice for this order starts a fresh key.
+      clearPersistentRequestId(idempotencyScope);
 
       onSubmit(invoiceResponseData);
     } catch (error) {

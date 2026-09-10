@@ -202,7 +202,8 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
       <CreateReturnForm
         user={user}
         customers={customers}
-        products={products}
+        invoices={invoices}
+        returns={returns}
         onSubmit={handleCreateReturn}
         onCancel={() => setShowCreateForm(false)}
       />

@@ -13,6 +13,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { sendSMS, SmsTemplates } from '@/services/sms.service';
 import { generateAndUploadPurchaseOrderPdf } from '@/services/invoice-pdf.service';
+import { getExcludedProductIdsForAgency, filterActiveProducts } from '@/utils/productVisibility';
 
 interface EnhancedPurchaseOrderFormProps {
   user: User;
@@ -58,10 +59,11 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: 
 
   const fetchProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .order('name');
+      let query = supabase.from('products').select('*').order('name');
+      if (user.role !== 'superuser') {
+        query = query.eq('is_active', true);
+      }
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -75,10 +77,15 @@ const EnhancedPurchaseOrderForm = ({ user, onSuccess, onCancel, editingOrder }: 
         sellingPrice: Number(product.selling_price),
         billingPrice: Number(product.billing_price),
         image: product.image || null,
-        description: product.description
+        description: product.description,
+        isActive: product.is_active ?? true
       }));
 
-      setProducts(transformedProducts);
+      const excluded = user.role !== 'superuser' && user.agencyId
+        ? await getExcludedProductIdsForAgency(user.agencyId)
+        : new Set<string>();
+
+      setProducts(filterActiveProducts(transformedProducts, excluded));
     } catch (error) {
       console.error('Error fetching products:', error);
       toast({

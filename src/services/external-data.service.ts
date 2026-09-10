@@ -131,6 +131,19 @@ export class ExternalDataService {
    */
   private async findMatchingExternalCustomerName(userName: string): Promise<string | null> {
     try {
+      // An explicit alias always wins — it's the escape hatch for names the
+      // fuzzy matching below cannot bridge (e.g. "IMAS AGENCY" -> "MR.IMAS").
+      const { data: alias } = await supabase
+        .from('external_target_aliases')
+        .select('external_customer_name')
+        .ilike('local_name', userName.trim())
+        .maybeSingle();
+
+      if (alias?.external_customer_name) {
+        console.log(`Alias match: "${userName}" -> "${alias.external_customer_name}"`);
+        return alias.external_customer_name;
+      }
+
       // First try exact match
       const { data: exactMatch } = await externalSupabase
         .from('sales_targets')

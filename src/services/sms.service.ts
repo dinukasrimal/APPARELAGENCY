@@ -1,14 +1,19 @@
 import { supabase } from '@/integrations/supabase/client';
 
-export async function sendSMS(phone: string | undefined | null, message: string): Promise<void> {
-  if (!phone) return;
+export async function sendSMS(phone: string | undefined | null, message: string): Promise<boolean> {
+  if (!phone) return false;
   try {
     const { error } = await supabase.functions.invoke('send-sms', {
       body: { to: phone, message },
     });
-    if (error) console.error('[SMS] Failed to send:', error);
+    if (error) {
+      console.error('[SMS] Failed to send:', error);
+      return false;
+    }
+    return true;
   } catch (err) {
     console.error('[SMS] Error:', err);
+    return false;
   }
 }
 
@@ -27,6 +32,9 @@ export const SmsTemplates = {
 
   purchaseOrderUpdated: (agencyName: string, orderId: string, total: number, pdfUrl?: string) =>
     `Dear Team, please note that Purchase Order ${orderId} from ${agencyName} has been revised. Updated Total: LKR ${total.toLocaleString()}.${pdfUrl ? ` View updated PDF: ${pdfUrl}` : ''} Kindly review the changes. - DAG Clothing Pvt Ltd`,
+
+  priceListSent: (name: string, agencyName: string, pdfUrl: string) =>
+    `Dear ${name}, here is your updated price list from ${agencyName}. View/download: ${pdfUrl} Thank you for choosing DAG Clothing!`,
 
   collectionRecorded: (
     name: string,

@@ -10,6 +10,7 @@ export interface Product {
   billingPrice: number; // For purchase orders
   image?: string;
   description?: string;
+  isActive: boolean;
 }
 
 export interface ProductVariant {

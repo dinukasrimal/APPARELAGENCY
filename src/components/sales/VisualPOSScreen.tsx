@@ -13,6 +13,8 @@ import { ArrowLeft, MapPin, AlertTriangle, ShoppingCart, Plus, Minus, Trash } fr
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
+import { getExcludedProductIdsForAgency, filterActiveProducts } from '@/utils/productVisibility';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 interface VisualPOSScreenProps {
   user: User;
@@ -68,14 +70,18 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
 
   const fetchCustomers = async () => {
     try {
-      let query = supabase.from('customers').select('*');
-      
-      if (user.role !== 'superuser' && user.agencyId) {
-        query = query.eq('agency_id', user.agencyId);
-      }
+      // Paged — an unpaginated select stops at 1000 rows, so a superuser
+      // (who is not filtered to one agency) lost customers off the end.
+      const data = await fetchAllSupabaseRows<any>(() => {
+        let query = supabase.from('customers').select('*');
 
-      const { data, error } = await query;
-      if (error) throw error;
+        if (user.role !== 'superuser' && user.agencyId) {
+          query = query.eq('agency_id', user.agencyId);
+        }
+
+        // Unique sort so paging cannot skip or repeat rows.
+        return query.order('id');
+      });
 
       const formattedCustomers = data.map(customer => ({
         id: customer.id,
@@ -99,10 +105,11 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
 
   const fetchProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .order('name');
+      let query = supabase.from('products').select('*').order('name');
+      if (user.role !== 'superuser') {
+        query = query.eq('is_active', true);
+      }
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -116,13 +123,19 @@ const VisualPOSScreen = ({ user, onSubmit, onCancel }: VisualPOSScreenProps) => 
         sellingPrice: Number(product.selling_price),
         billingPrice: Number(product.billing_price),
         image: product.image || null,
-        description: product.description
+        description: product.description,
+        isActive: product.is_active ?? true
       }));
 
-      setProducts(formattedProducts);
-      
+      const excluded = user.role !== 'superuser' && user.agencyId
+        ? await getExcludedProductIdsForAgency(user.agencyId)
+        : new Set<string>();
+      const visibleProducts = filterActiveProducts(formattedProducts, excluded);
+
+      setProducts(visibleProducts);
+
       // Extract unique categories
-      const uniqueCategories = [...new Set(formattedProducts.map(p => p.category))];
+      const uniqueCategories = [...new Set(visibleProducts.map(p => p.category))];
       setCategories(uniqueCategories);
     } catch (error) {
       console.error('Error fetching products:', error);

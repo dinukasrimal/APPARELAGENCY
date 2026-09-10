@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { AlertCircle, Camera, MapPin, Package, Plus, Search, Calendar, User as UserIcon } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import { useToast } from '@/hooks/use-toast';
 import InAppCamera from '@/components/camera/InAppCamera';
 import CustomerSearch from '@/components/customers/CustomerSearch';
@@ -267,10 +268,16 @@ const Assets = memo(({ user }: AssetsProps) => {
   const fetchCustomers = async () => {
     try {
       console.log('Assets: Fetching customers for user:', user);
-      const { data, error } = await supabase
-        .from('customers')
-        .select('id, name, address, phone, secondary_phone, agency_id, latitude, longitude, created_at, created_by')
-        .order('name');
+      // Paged: an unpaginated select stops at 1000 rows, so a superuser
+      // (not filtered to one agency) silently lost customers off the end.
+      const { data, error } = await fetchAllSupabaseRows<any>(() =>
+        supabase
+          .from('customers')
+          .select('id, name, address, phone, secondary_phone, agency_id, latitude, longitude, created_at, created_by')
+          .order('name')
+          .order('id')
+      ).then(rows => ({ data: rows, error: null as any }))
+        .catch(err => ({ data: null as any, error: err }));
 
       if (error) {
         console.error('Error fetching customers:', error);

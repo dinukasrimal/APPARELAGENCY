@@ -3,9 +3,10 @@ import { User } from '@/types/auth';
 import { Product } from '@/types/product';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { clearProductVisibilityCache } from '@/utils/productVisibility';
 import ProductSidebar from './ProductSidebar';
 import ProductGrid from './ProductGrid';
-import ProductForm from './ProductForm';
+import ProductForm, { ProductFormSubmitData } from './ProductForm';
 
 interface ProductSidebarViewProps {
   user: User;
@@ -15,6 +16,7 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editingExcludedAgencyIds, setEditingExcludedAgencyIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [currentView, setCurrentView] = useState<'categories' | 'subcategories' | 'products'>('categories');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -46,7 +48,36 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
     // This effect will help sync the view state if needed
   }, [selectedCategory, selectedSubCategory]);
 
-  const handleAddProduct = async (productData: Omit<Product, 'id'>) => {
+  // Diffs the checked agency list against what the product started with and
+  // writes only the delta to agency_product_exclusions.
+  const syncAgencyExclusions = async (
+    productId: string,
+    nextExcludedAgencyIds: string[],
+    previousExcludedAgencyIds: string[]
+  ) => {
+    const toAdd = nextExcludedAgencyIds.filter(id => !previousExcludedAgencyIds.includes(id));
+    const toRemove = previousExcludedAgencyIds.filter(id => !nextExcludedAgencyIds.includes(id));
+
+    if (toAdd.length > 0) {
+      const { error } = await supabase.from('agency_product_exclusions').insert(
+        toAdd.map(agencyId => ({ agency_id: agencyId, product_id: productId, created_by: user.id }))
+      );
+      if (error) throw error;
+    }
+
+    if (toRemove.length > 0) {
+      const { error } = await supabase
+        .from('agency_product_exclusions')
+        .delete()
+        .eq('product_id', productId)
+        .in('agency_id', toRemove);
+      if (error) throw error;
+    }
+
+    clearProductVisibilityCache();
+  };
+
+  const handleAddProduct = async (productData: ProductFormSubmitData) => {
     try {
       setIsLoading(true);
       const { data, error } = await supabase
@@ -60,12 +91,15 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
           selling_price: productData.sellingPrice,
           billing_price: productData.billingPrice,
           image: productData.image,
-          description: productData.description
+          description: productData.description,
+          is_active: productData.isActive
         }])
         .select()
         .single();
 
       if (error) throw error;
+
+      await syncAgencyExclusions(data.id, productData.excludedAgencyIds, []);
 
       toast({
         title: "Success",
@@ -87,7 +121,7 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
     }
   };
 
-  const handleUpdateProduct = async (productData: Omit<Product, 'id'>) => {
+  const handleUpdateProduct = async (productData: ProductFormSubmitData) => {
     if (!editingProduct) return;
 
     try {
@@ -103,11 +137,14 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
           selling_price: productData.sellingPrice,
           billing_price: productData.billingPrice,
           image: productData.image,
-          description: productData.description
+          description: productData.description,
+          is_active: productData.isActive
         })
         .eq('id', editingProduct.id);
 
       if (error) throw error;
+
+      await syncAgencyExclusions(editingProduct.id, productData.excludedAgencyIds, editingExcludedAgencyIds);
 
       toast({
         title: "Success",
@@ -163,19 +200,34 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
     }
   };
 
-  const startEdit = (product: Product) => {
+  const startEdit = async (product: Product) => {
     setEditingProduct(product);
     setShowCreateForm(true);
+
+    const { data, error } = await supabase
+      .from('agency_product_exclusions')
+      .select('agency_id')
+      .eq('product_id', product.id);
+
+    if (error) {
+      console.error('Error fetching agency exclusions:', error);
+      setEditingExcludedAgencyIds([]);
+      return;
+    }
+
+    setEditingExcludedAgencyIds((data || []).map(row => row.agency_id));
   };
 
   const handleAddClick = () => {
     setEditingProduct(null);
+    setEditingExcludedAgencyIds([]);
     setShowCreateForm(true);
   };
 
   const handleCancelForm = () => {
     setShowCreateForm(false);
     setEditingProduct(null);
+    setEditingExcludedAgencyIds([]);
   };
 
   if (showCreateForm) {
@@ -185,6 +237,7 @@ const ProductSidebarView = ({ user }: ProductSidebarViewProps) => {
         onSubmit={editingProduct ? handleUpdateProduct : handleAddProduct}
         onCancel={handleCancelForm}
         userRole={user.role}
+        initialExcludedAgencyIds={editingExcludedAgencyIds}
       />
     );
   }

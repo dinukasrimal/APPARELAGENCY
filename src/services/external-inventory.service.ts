@@ -67,8 +67,14 @@ export interface ExternalInventoryMetrics {
 //    per-item movement history matches the aggregated stock exactly. The item
 //    the UI shows is grouped by normalized base-name + size (colors merged), so
 //    the history must group raw transactions the same way. ────────────────────
+// Packaging suffixes like "(2 PACK)" trail the size token (e.g. "TRUNK L (2
+// PACK)"), so every end-anchored size/name regex below must strip them first
+// or it silently fails to find the size — stranding "Default"-tagged stock
+// count rows in their own bucket instead of merging with the sized rows.
+const _stripPackagingSuffix = (name: string): string => name.replace(/\s*\([^)]*\)\s*$/, '').trim();
 const _extractFirstLevelSize = (productName: string, sizeField: string): string => {
   if (sizeField && sizeField !== 'Default') return sizeField.toUpperCase();
+  productName = _stripPackagingSuffix(productName);
   const numericSizeMatch = productName.match(/\s+(\d+)$/);
   if (numericSizeMatch) return numericSizeMatch[1];
   const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
@@ -79,7 +85,7 @@ const _extractFirstLevelSize = (productName: string, sizeField: string): string 
 };
 const _normalizeBaseName = (name: string | null | undefined): string => {
   if (!name) return '';
-  let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
+  let base = _stripPackagingSuffix(name.replace(/^\[[^\]]+\]\s*/, '').trim());
   base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
   base = base.replace(/[-\s]+$/, '').trim();
   base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
@@ -93,7 +99,7 @@ const _normalizeSize = (size: string | null | undefined): string => {
 };
 const _extractSizeFromName = (name: string | null | undefined): string => {
   if (!name) return '';
-  const match = name.match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
+  const match = _stripPackagingSuffix(name).match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
   return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
 };
 // Second-level group key (ignores color, exactly like the summary builder).
@@ -103,6 +109,55 @@ const _itemGroupKey = (displayName: string, firstLevelSize: string): string => {
   return `name:${baseName}|size:${sizeKey}`;
 };
 
+// ── Public stock resolution ────────────────────────────────────────────────
+// The canonical identity of an inventory line: normalized base product name +
+// size, with colours merged — the exact key the stock summary groups by. Any
+// screen that needs "how much stock does this agency have of product X in size
+// Y" must resolve it through here, so the number it shows is always the same
+// number the Inventory screen shows for that product.
+export const inventoryGroupKey = (productName?: string | null, size?: string | null): string =>
+  _itemGroupKey(productName || '', size || '');
+
+// Turns a stock summary (from getStockSummary / getAgencyStockSummary) into a
+// lookup keyed by inventoryGroupKey, so callers read the summary's own
+// current_stock rather than re-deriving stock with their own matching rules.
+export const buildStockLookup = (items: ExternalInventoryItem[]): Map<string, number> => {
+  const lookup = new Map<string, number>();
+  items.forEach((item) => {
+    const stock = Number(item.current_stock) || 0;
+    // A merged row can carry the label 'MULTI' instead of a real size; treat it
+    // like 'Default' so the size is recovered from the name, keeping the key
+    // identical to the one the row was actually grouped under.
+    const size = (item.size || '').toUpperCase() === 'MULTI' ? '' : item.size;
+    lookup.set(inventoryGroupKey(item.product_name, size), stock);
+    // product_name is the display name (products.name); index the raw
+    // transaction name too so rows with no products mapping still resolve.
+    if (item.original_product_name) {
+      const rawKey = inventoryGroupKey(item.original_product_name, size);
+      if (!lookup.has(rawKey)) lookup.set(rawKey, stock);
+    }
+  });
+  return lookup;
+};
+
+// Stock for one catalog product/size, resolved against a lookup built above.
+// Tries the product's name then its description, since an inventory line's
+// display name comes from whichever of the two matched the transaction.
+export const lookupProductStock = (
+  lookup: Map<string, number>,
+  product: { name?: string | null; description?: string | null },
+  size?: string | null
+): number => {
+  const byName = lookup.get(inventoryGroupKey(product.name, size));
+  if (byName !== undefined) return byName;
+  const byDescription = product.description
+    ? lookup.get(inventoryGroupKey(product.description, size))
+    : undefined;
+  // Not in the summary at all means no stock movements were ever recorded for
+  // it, which is exactly how the Inventory screen treats it: no line, no stock.
+  return byDescription ?? 0;
+};
+
 export class ExternalInventoryService {
 
   // Helper method to calculate stock status
@@ -110,6 +165,22 @@ export class ExternalInventoryService {
     if (currentStock <= 0) return 'out_of_stock';
     if (currentStock <= 5) return 'low_stock';
     return 'in_stock';
+  }
+
+  // Product names (matching external_inventory_management.product_name) that a
+  // superuser has flagged as retired — excluded from every inventory summary
+  // and total, without deleting the underlying transaction history.
+  private async getIgnoredProductNames(): Promise<Set<string>> {
+    const { data, error } = await supabase
+      .from('inventory_ignored_products')
+      .select('product_name');
+
+    if (error) {
+      console.warn('Error fetching ignored inventory products:', error);
+      return new Set();
+    }
+
+    return new Set((data || []).map(row => row.product_name));
   }
 
   // No longer needed - using direct relationship via product_name = products.description
@@ -178,7 +249,7 @@ export class ExternalInventoryService {
       throw firstPage.error;
     }
 
-    const data: any[] = firstPage.data || [];
+    let data: any[] = firstPage.data || [];
     const totalCount = firstPage.count ?? data.length;
 
     // Fetch remaining pages
@@ -201,6 +272,16 @@ export class ExternalInventoryService {
     }
 
     if (!data || data.length === 0) {
+      return [];
+    }
+
+    // Drop retired/renamed products that a superuser has explicitly flagged —
+    // their transaction history stays in the DB, just not in this summary.
+    const ignoredProductNames = await this.getIgnoredProductNames();
+    if (ignoredProductNames.size > 0) {
+      data = data.filter(item => !ignoredProductNames.has(item.product_name));
+    }
+    if (data.length === 0) {
       return [];
     }
 
@@ -231,22 +312,26 @@ export class ExternalInventoryService {
       if (sizeField && sizeField !== 'Default') {
         return sizeField.toUpperCase();
       }
-      
+
+      // Packaging suffixes like "(2 PACK)" trail the size token, so strip them
+      // before these end-anchored regexes or the size is never recovered.
+      productName = _stripPackagingSuffix(productName);
+
       const numericSizeMatch = productName.match(/\s+(\d+)$/);
       if (numericSizeMatch) {
         return numericSizeMatch[1];
       }
-      
+
       const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
       if (letterSizeMatch) {
         return letterSizeMatch[1].toUpperCase();
       }
-      
+
       const afterColorSizeMatch = productName.match(/-[A-Z]+\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|\d+)$/i);
       if (afterColorSizeMatch) {
         return afterColorSizeMatch[1].toUpperCase();
       }
-      
+
       return 'Default';
     };
 
@@ -257,21 +342,23 @@ export class ExternalInventoryService {
           .replace('BEIGH', 'BEIGE')
           .replace('GREY', 'GRAY');
       }
-      
+
+      productName = _stripPackagingSuffix(productName);
+
       const colorAfterDashMatch = productName.match(/-([A-Z]+)\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
       if (colorAfterDashMatch) {
         return colorAfterDashMatch[1].toUpperCase()
           .replace('BEIGH', 'BEIGE')
           .replace('GREY', 'GRAY');
       }
-      
+
       const colorAfterDashNoSizeMatch = productName.match(/-([A-Z]+)$/i);
       if (colorAfterDashNoSizeMatch) {
         return colorAfterDashNoSizeMatch[1].toUpperCase()
           .replace('BEIGH', 'BEIGE')
           .replace('GREY', 'GRAY');
       }
-      
+
       return 'Default';
     };
 
@@ -388,7 +475,7 @@ export class ExternalInventoryService {
     initialItems.forEach(item => {
       const normalizeBaseName = (name: string | null | undefined) => {
         if (!name) return '';
-        let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
+        let base = _stripPackagingSuffix(name.replace(/^\[[^\]]+\]\s*/, '').trim());
         base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
         base = base.replace(/[-\s]+$/, '').trim();
         base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
@@ -403,7 +490,7 @@ export class ExternalInventoryService {
       };
       const extractSizeFromName = (name: string | null | undefined) => {
         if (!name) return '';
-        const match = name.match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
+        const match = _stripPackagingSuffix(name).match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
         return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
       };
 
@@ -516,7 +603,7 @@ export class ExternalInventoryService {
       throw firstPage.error;
     }
 
-    const transactions: any[] = firstPage.data || [];
+    let transactions: any[] = firstPage.data || [];
     const totalCount = firstPage.count ?? transactions.length;
 
     // Fetch remaining pages if needed
@@ -555,6 +642,16 @@ export class ExternalInventoryService {
       return [];
     }
 
+    // Drop retired/renamed products that a superuser has explicitly flagged —
+    // their transaction history stays in the DB, just not in this summary.
+    const ignoredProductNames = await this.getIgnoredProductNames();
+    if (ignoredProductNames.size > 0) {
+      transactions = transactions.filter(item => !ignoredProductNames.has(item.product_name));
+    }
+    if (transactions.length === 0) {
+      return [];
+    }
+
     // Get unique product names and fetch their corresponding products table data  
     const uniqueProductNames = [...new Set(transactions.map(item => item.product_name))];
     
@@ -583,25 +680,29 @@ export class ExternalInventoryService {
       if (sizeField && sizeField !== 'Default') {
         return sizeField.toUpperCase();
       }
-      
+
+      // Packaging suffixes like "(2 PACK)" trail the size token, so strip them
+      // before these end-anchored regexes or the size is never recovered.
+      productName = _stripPackagingSuffix(productName);
+
       // Extract numeric sizes (28, 30, 32, 34, etc.)
       const numericSizeMatch = productName.match(/\s+(\d+)$/);
       if (numericSizeMatch) {
         return numericSizeMatch[1];
       }
-      
+
       // Extract letter sizes (XS, S, M, L, XL, 2XL, 3XL, XXL, XXXL)
       const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
       if (letterSizeMatch) {
         return letterSizeMatch[1].toUpperCase();
       }
-      
+
       // Handle patterns like "BRITNY-BLACK 2XL" where size might be after color
       const afterColorSizeMatch = productName.match(/-[A-Z]+\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|\d+)$/i);
       if (afterColorSizeMatch) {
         return afterColorSizeMatch[1].toUpperCase();
       }
-      
+
       return 'Default';
     };
 
@@ -614,7 +715,9 @@ export class ExternalInventoryService {
           .replace('BEIGH', 'BEIGE')
           .replace('GREY', 'GRAY');
       }
-      
+
+      productName = _stripPackagingSuffix(productName);
+
       // Extract color from product name patterns
       // Pattern 1: "PRODUCT-COLOR SIZE" (e.g., "SOLACE-BEIGH 28")
       const colorAfterDashMatch = productName.match(/-([A-Z]+)\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
@@ -623,7 +726,7 @@ export class ExternalInventoryService {
           .replace('BEIGH', 'BEIGE')
           .replace('GREY', 'GRAY');
       }
-      
+
       // Pattern 2: "PRODUCT-COLOR" without size (e.g., "SHORTS-BLACK")
       const colorAfterDashNoSizeMatch = productName.match(/-([A-Z]+)$/i);
       if (colorAfterDashNoSizeMatch) {
@@ -631,7 +734,7 @@ export class ExternalInventoryService {
           .replace('BEIGH', 'BEIGE')
           .replace('GREY', 'GRAY');
       }
-      
+
       return 'Default';
     };
 
@@ -770,7 +873,7 @@ export class ExternalInventoryService {
     initialItems.forEach(item => {
       const normalizeBaseName = (name: string | null | undefined) => {
         if (!name) return '';
-        let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
+        let base = _stripPackagingSuffix(name.replace(/^\[[^\]]+\]\s*/, '').trim());
         base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
         base = base.replace(/[-\s]+$/, '').trim();
         base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
@@ -784,7 +887,7 @@ export class ExternalInventoryService {
       };
       const extractSizeFromName = (name: string | null | undefined) => {
         if (!name) return '';
-        const match = name.match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
+        const match = _stripPackagingSuffix(name).match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
         return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
       };
 
@@ -944,7 +1047,11 @@ export class ExternalInventoryService {
     return data || [];
   }
 
-  // Get current stock for a specific product (only approved transactions)
+  // Get current stock for a specific product (only approved transactions).
+  // NOTE: this matches product_name/color/size exactly, so it does NOT see rows
+  // recorded with 'Default' color/size (stock counts, Odoo syncs) or names with
+  // packaging suffixes — its number can differ from the Inventory screen. For
+  // anything user-facing use buildStockLookup + lookupProductStock instead.
   async getCurrentStock(
     agencyId: string, 
     productName: string, 

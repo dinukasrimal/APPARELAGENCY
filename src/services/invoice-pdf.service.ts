@@ -61,9 +61,12 @@ async function fetchLogoBase64(): Promise<string | null> {
   }
 }
 
-// Inter font TTF files via jsDelivr (MIT licensed, freely embeddable)
-const FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/npm/@fontsource/inter@5.0.16/files/inter-latin-400-normal.woff';
-const FONT_BOLD_URL    = 'https://cdn.jsdelivr.net/npm/@fontsource/inter@5.0.16/files/inter-latin-700-normal.woff';
+// Inter font TTF files via jsDelivr (MIT licensed, freely embeddable).
+// Must be raw TTF, not WOFF — jsPDF's addFont() has no WOFF decompression
+// support, so a WOFF file parses as garbage and throws "Cannot read
+// properties of undefined (reading 'widths')" the first time it's measured.
+const FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/fontsource/fonts/inter@5.0.16/latin-400-normal.ttf';
+const FONT_BOLD_URL    = 'https://cdn.jsdelivr.net/fontsource/fonts/inter@5.0.16/latin-700-normal.ttf';
 
 async function buildPdf(data: PdfData): Promise<Blob | null> {
   const jspdfModule = await import(/* @vite-ignore */ 'jspdf');
@@ -84,10 +87,10 @@ async function buildPdf(data: PdfData): Promise<Blob | null> {
   let fontName = 'helvetica';
   if (regularB64 && boldB64) {
     try {
-      doc.addFileToVFS('Inter-Regular.woff', regularB64);
-      doc.addFileToVFS('Inter-Bold.woff', boldB64);
-      doc.addFont('Inter-Regular.woff', 'Inter', 'normal');
-      doc.addFont('Inter-Bold.woff', 'Inter', 'bold');
+      doc.addFileToVFS('Inter-Regular.ttf', regularB64);
+      doc.addFileToVFS('Inter-Bold.ttf', boldB64);
+      doc.addFont('Inter-Regular.ttf', 'Inter', 'normal');
+      doc.addFont('Inter-Bold.ttf', 'Inter', 'bold');
       fontName = 'Inter';
     } catch (_) {
       fontName = 'helvetica';
@@ -618,6 +621,179 @@ export async function generateDotMatrixBlob(data: InvoicePdfData): Promise<Blob 
     console.error('[PDF] Dot-matrix error:', err);
     return null;
   }
+}
+
+// ── PRICE LIST PDF ───────────────────────────────────────────────────────
+// Category-grouped catalog listing, with agency-specific pricing already
+// resolved per product before this is called (see getProductPriceForAgency).
+
+export interface PriceListPdfData {
+  customerId: string;
+  customerName: string;
+  agencyName: string;
+  date: string;
+  priceTypeLabel: string;
+  categories: {
+    category: string;
+    products: { name: string; color: string; size: string; price: number }[];
+  }[];
+}
+
+async function buildPriceListPdf(data: PriceListPdfData): Promise<Blob | null> {
+  const jspdfModule = await import(/* @vite-ignore */ 'jspdf');
+  const JsPDF = (jspdfModule as any).default ?? (jspdfModule as any).jsPDF;
+  const doc = new JsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+
+  const PW = 210, PH = 297;
+  const ML = 14, MR = 14, MT = 12;
+  const CW = PW - ML - MR;
+
+  const [regularB64, boldB64] = await Promise.all([
+    fetchAsBase64(FONT_REGULAR_URL),
+    fetchAsBase64(FONT_BOLD_URL),
+  ]);
+
+  let fontName = 'helvetica';
+  if (regularB64 && boldB64) {
+    try {
+      doc.addFileToVFS('Inter-Regular.ttf', regularB64);
+      doc.addFileToVFS('Inter-Bold.ttf', boldB64);
+      doc.addFont('Inter-Regular.ttf', 'Inter', 'normal');
+      doc.addFont('Inter-Bold.ttf', 'Inter', 'bold');
+      fontName = 'Inter';
+    } catch (_) {
+      fontName = 'helvetica';
+    }
+  }
+
+  const hv = (style: 'normal' | 'bold' = 'normal', size = 10) => {
+    doc.setFont(fontName, style);
+    doc.setFontSize(size);
+  };
+  const rgb = (r: number, g: number, b: number) => doc.setTextColor(r, g, b);
+
+  let y = MT;
+
+  const logo = await fetchLogoBase64();
+  if (logo) {
+    try { doc.addImage(logo, 'PNG', ML, y, 18, 18); } catch (_) { /* skip if format unsupported */ }
+  }
+
+  hv('bold', 14); rgb(33, 33, 33);
+  doc.text(COMPANY_NAME, ML + 22, y + 6);
+  hv('normal', 8.5); rgb(90, 90, 90);
+  doc.text(COMPANY_ADDRESS, ML + 22, y + 12);
+  hv('normal', 8.5);
+  [`Phone: ${COMPANY_PHONE}`, `Email: ${COMPANY_EMAIL}`, `Web:   ${COMPANY_WEBSITE}`]
+    .forEach((line, i) => doc.text(line, PW - MR, y + 5 + i * 5, { align: 'right' }));
+
+  rgb(33, 33, 33);
+  y += 23;
+
+  doc.setDrawColor(51, 51, 51);
+  doc.setLineWidth(0.6);
+  doc.line(ML, y, PW - MR, y);
+  y += 7;
+
+  hv('bold', 16);
+  doc.text('PRICE LIST', ML, y);
+  y += 7;
+
+  const metaRows: [string, string][] = [
+    ['Date:', data.date],
+    ['Agency:', data.agencyName],
+    ['Customer:', data.customerName],
+    ['Price Type:', data.priceTypeLabel],
+  ];
+  for (const [label, val] of metaRows) {
+    hv('bold', 9.5); rgb(51, 51, 51);
+    doc.text(label, ML, y);
+    hv('normal', 9.5);
+    doc.text(val, ML + 28, y);
+    y += 5.5;
+  }
+  y += 3;
+
+  const cols = [
+    { label: 'Product',     w: 90, align: 'left'  as const },
+    { label: 'Color',       w: 30, align: 'left'  as const },
+    { label: 'Size',        w: 25, align: 'left'  as const },
+    { label: 'Price (LKR)', w: 37, align: 'right' as const },
+  ];
+  const PAD = 2;
+  const ROW_H = 6;
+  const HDR_H = 7;
+  const CAT_H = 8;
+
+  const drawColHeader = (startY: number): number => {
+    doc.setFillColor(240, 240, 240);
+    doc.rect(ML, startY, CW, HDR_H, 'F');
+    doc.setDrawColor(51, 51, 51);
+    doc.setLineWidth(0.25);
+    hv('bold', 9);
+    let cx = ML;
+    for (const col of cols) {
+      doc.rect(cx, startY, col.w, HDR_H);
+      const tx = col.align === 'right' ? cx + col.w - PAD : cx + PAD;
+      doc.text(col.label, tx, startY + 4.8, { align: col.align });
+      cx += col.w;
+    }
+    return startY + HDR_H;
+  };
+
+  for (const cat of data.categories) {
+    if (y + CAT_H + HDR_H + ROW_H > PH - 20) { doc.addPage(); y = MT; }
+
+    doc.setFillColor(51, 51, 51);
+    doc.rect(ML, y, CW, CAT_H, 'F');
+    hv('bold', 11); rgb(255, 255, 255);
+    doc.text(cat.category, ML + PAD, y + 5.7);
+    rgb(51, 51, 51);
+    y += CAT_H + 2;
+
+    y = drawColHeader(y);
+    doc.setLineWidth(0.25);
+
+    for (const p of cat.products) {
+      if (y + ROW_H > PH - 20) {
+        doc.addPage();
+        y = MT;
+        y = drawColHeader(y);
+      }
+
+      const vals = [p.name ?? '', p.color ?? '', p.size ?? '', p.price.toLocaleString()];
+      hv('normal', 9);
+      let cx = ML;
+      for (let c = 0; c < cols.length; c++) {
+        doc.rect(cx, y, cols[c].w, ROW_H);
+        const maxW = cols[c].w - PAD * 2;
+        let val = String(vals[c]);
+        while (doc.getTextWidth(val) > maxW && val.length > 1) val = val.slice(0, -1);
+        if (val !== String(vals[c])) val = val.slice(0, -1) + '…';
+        const tx = cols[c].align === 'right' ? cx + cols[c].w - PAD : cx + PAD;
+        doc.text(val, tx, y + 4.1, { align: cols[c].align });
+        cx += cols[c].w;
+      }
+      y += ROW_H;
+    }
+    y += 4;
+  }
+
+  if (y + 6 > PH - MT) { doc.addPage(); y = MT; }
+  hv('normal', 7.5); rgb(140, 140, 140);
+  doc.text(`Generated: ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}`, ML, y);
+
+  return doc.output('blob');
+}
+
+export async function generateAndUploadPriceListPdf(data: PriceListPdfData): Promise<string | null> {
+  // Unlike the other generateAndUpload* functions (used fire-and-forget after
+  // a toast already fired), this one is awaited directly by its caller, which
+  // needs the real failure reason to show the user — so it rethrows instead
+  // of swallowing the error.
+  const blob = await buildPriceListPdf(data);
+  if (!blob) return null;
+  return uploadPdf(blob, `price-lists/${data.customerId}.pdf`);
 }
 
 async function uploadPdf(blob: Blob, path: string): Promise<string | null> {

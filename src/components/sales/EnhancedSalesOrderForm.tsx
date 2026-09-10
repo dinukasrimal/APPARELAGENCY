@@ -18,8 +18,8 @@ import CustomerSearch from '@/components/customers/CustomerSearch';
 import { useDraftSalesOrder } from '@/hooks/useDraftSalesOrder';
 import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 import { getAgencyPriceType, getProductPriceForAgency, type PriceType } from '@/utils/agencyPricing';
-import { externalInventoryService, type ExternalInventoryItem } from '@/services/external-inventory.service';
-import { newRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
+import { externalInventoryService, buildStockLookup, lookupProductStock, type ExternalInventoryItem } from '@/services/external-inventory.service';
+import { getPersistentRequestId, clearPersistentRequestId, isIdempotencyConflict } from '@/utils/idempotentInsert';
 import { assertWithinSriLanka } from '@/utils/geoBounds';
 
 // Module-level inventory cache — survives re-mounts (e.g. navigating away and back) for 5 minutes
@@ -63,9 +63,6 @@ const EnhancedSalesOrderForm = ({
   const [selectedSubCategory, setSelectedSubCategory] = useState('');
   const [selectedColor, setSelectedColor] = useState('');
   const submitLockRef = useRef(false);
-  // Stable idempotency key for this form instance — reused on retries so a lost
-  // response cannot create a duplicate sales order.
-  const requestIdRef = useRef<string>(newRequestId());
   const [productGridItems, setProductGridItems] = useState<Array<{
     product: Product;
     color: string;
@@ -77,8 +74,7 @@ const EnhancedSalesOrderForm = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [agencyPriceType, setAgencyPriceType] = useState<PriceType>('billing_price');
-  const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
-  const [pendingStockKeys, setPendingStockKeys] = useState<Set<string>>(new Set());
+  const [stockLookup, setStockLookup] = useState<Map<string, number>>(new Map());
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const { toast } = useToast();
   const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
@@ -331,245 +327,27 @@ const EnhancedSalesOrderForm = ({
     }
   }, [selectedCategory, selectedSubCategory, selectedColor, products]);
 
-  const getVariantKey = useCallback((productId: string, color: string, size: string) => {
-    return [productId, color?.trim().toLowerCase() || 'default', size?.trim().toLowerCase() || 'default'].join('::');
-  }, []);
-
-  // Async fetch for a missing variant stock, uses product name fallback
-  const fetchVariantStock = useCallback(async (productId: string, productName: string, color: string, size: string, primaryKey: string) => {
-    if (!user.agencyId) return;
-    setPendingStockKeys(prev => {
-      if (prev.has(primaryKey)) return prev;
-      const next = new Set(prev);
-      next.add(primaryKey);
-      return next;
-    });
-    try {
-      const stock = await externalInventoryService.getCurrentStock(
-        user.agencyId,
-        productName,
-        color || 'Default',
-        size || 'Default'
-      );
-      setInventoryMap(prev => ({ ...prev, [primaryKey]: stock }));
-    } catch (err) {
-      console.error('Failed to fetch fallback stock', err);
-    } finally {
-      setPendingStockKeys(prev => {
-        const next = new Set(prev);
-        next.delete(primaryKey);
-        return next;
-      });
-    }
-  }, [user.agencyId]);
-
   const loadInventory = useCallback(async () => {
     if (!user.agencyId) {
-      setInventoryMap({});
+      setStockLookup(new Map());
       return;
     }
 
     try {
       setInventoryLoading(true);
 
-      // Return cached data if still fresh (avoids re-fetching thousands of transactions on every form open)
+      // Cached so re-opening the form doesn't re-aggregate thousands of transactions
       const cached = _inventoryCache[user.agencyId];
+      let summary: ExternalInventoryItem[];
       if (cached && Date.now() < cached.expiry) {
-        const summary = cached.data;
-        // fall through to the map-building logic below with the cached summary
-        const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
-        const getBaseName = (name: string) => {
-          let base = name;
-          base = base.replace(/^\[[^\]]+\]\s*/, '');
-          base = base.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
-          base = base.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
-          base = base.replace(/-[A-Z]+$/i, '');
-          return normalize(base);
-        };
-        const productsByName = new Map<string, string[]>();
-        const productsByBaseName = new Map<string, string[]>();
-        products.forEach((p) => {
-          const idsFor = (map: Map<string, string[]>, key: string | null | undefined) => {
-            const k = normalize(key);
-            if (!k) return;
-            const existing = map.get(k) || [];
-            if (!existing.includes(p.id)) map.set(k, [...existing, p.id]);
-          };
-          idsFor(productsByName, p.name);
-          idsFor(productsByName, p.description);
-          const baseFromName = p.name ? getBaseName(p.name) : '';
-          if (baseFromName) {
-            const existing = productsByBaseName.get(baseFromName) || [];
-            if (!existing.includes(p.id)) productsByBaseName.set(baseFromName, [...existing, p.id]);
-          }
-          if (p.description) {
-            const baseFromDescription = getBaseName(p.description);
-            if (baseFromDescription) {
-              const existing = productsByBaseName.get(baseFromDescription) || [];
-              if (!existing.includes(p.id)) productsByBaseName.set(baseFromDescription, [...existing, p.id]);
-            }
-          }
-        });
-        const nextMap: Record<string, number> = {};
-        const setStock = (key: string, value: number) => {
-          const current = nextMap[key];
-          if (current === undefined || Math.abs(value) > Math.abs(current)) nextMap[key] = value;
-        };
-        summary.forEach(item => {
-          const normalizedName = normalize(item.product_name);
-          const baseName = getBaseName(item.product_name);
-          const exactMatches = productsByName.get(normalizedName) || [];
-          const baseMatches = productsByBaseName.get(baseName) || [];
-          let candidateIds = Array.from(new Set([...exactMatches, ...baseMatches]));
-          if (candidateIds.length === 0) {
-            const looseMatches = products.filter(p => {
-              const n = normalize(p.name);
-              const d = normalize(p.description);
-              return (n && (normalizedName.includes(n) || n.includes(normalizedName))) ||
-                     (d && (normalizedName.includes(d) || d.includes(normalizedName)));
-            }).map(p => p.id);
-            candidateIds = Array.from(new Set(looseMatches));
-          }
-          if (candidateIds.length === 0) return;
-          const rawColor = (item.color || 'default').toString().toUpperCase();
-          const colorValue = (rawColor === 'MULTI' || rawColor === 'DEFAULT') ? 'default' : rawColor;
-          const sizeValue = (item.size || 'default').toString();
-          const stockValue = Number.isFinite(item.current_stock) ? Number(item.current_stock) : 0;
-          candidateIds.forEach(productId => {
-            setStock(getVariantKey(productId, colorValue, sizeValue), stockValue);
-            setStock(getVariantKey(productId, 'default', sizeValue), stockValue);
-            if (sizeValue.toLowerCase() === 'default') {
-              setStock(getVariantKey(productId, colorValue, 'default'), stockValue);
-              setStock(getVariantKey(productId, 'default', 'default'), stockValue);
-            }
-          });
-        });
-        setInventoryMap(nextMap);
-        setInventoryLoading(false);
-        return;
+        summary = cached.data;
+      } else {
+        // The very same agency-level summary that powers the Inventory screen
+        summary = await externalInventoryService.getAgencyStockSummary(user.agencyId);
+        _inventoryCache[user.agencyId] = { data: summary, expiry: Date.now() + INVENTORY_CACHE_TTL };
       }
 
-      // Use the same aggregated external inventory summary that powers the inventory UI
-      // For order entry we want agency-level stock, not per-user reference_name filtering
-      const summary: ExternalInventoryItem[] = await externalInventoryService.getAgencyStockSummary(user.agencyId);
-      _inventoryCache[user.agencyId] = { data: summary, expiry: Date.now() + INVENTORY_CACHE_TTL };
-
-      const normalize = (value?: string | null) => (value || '').trim().toLowerCase();
-
-      // Helper to remove size/color suffixes and codes to get a base product name
-      const getBaseName = (name: string) => {
-        let base = name;
-        // Remove leading codes like [PXL]
-        base = base.replace(/^\[[^\]]+\]\s*/, '');
-        // Remove patterns like "-COLOR SIZE" at the end
-        base = base.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
-        // Remove trailing sizes like " 2XL" or " XL"
-        base = base.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
-        // Remove trailing "-COLOR"
-        base = base.replace(/-[A-Z]+$/i, '');
-        return normalize(base);
-      };
-
-      // Build lookups from product names/descriptions and base names to product ids
-      const productsByName = new Map<string, string[]>();
-      const productsByBaseName = new Map<string, string[]>();
-
-      products.forEach((p) => {
-        const idsFor = (map: Map<string, string[]>, key: string | null | undefined) => {
-          const k = normalize(key);
-          if (!k) return;
-          const existing = map.get(k) || [];
-          if (!existing.includes(p.id)) {
-            map.set(k, [...existing, p.id]);
-          }
-        };
-
-        idsFor(productsByName, p.name);
-        idsFor(productsByName, p.description);
-
-        const baseFromName = p.name ? getBaseName(p.name) : '';
-        if (baseFromName) {
-          const existing = productsByBaseName.get(baseFromName) || [];
-          if (!existing.includes(p.id)) {
-            productsByBaseName.set(baseFromName, [...existing, p.id]);
-          }
-        }
-
-        if (p.description) {
-          const baseFromDescription = getBaseName(p.description);
-          if (baseFromDescription) {
-            const existing = productsByBaseName.get(baseFromDescription) || [];
-            if (!existing.includes(p.id)) {
-              productsByBaseName.set(baseFromDescription, [...existing, p.id]);
-            }
-          }
-        }
-      });
-
-      const nextMap: Record<string, number> = {};
-
-      const setStock = (key: string, value: number) => {
-        const current = nextMap[key];
-        if (current === undefined || Math.abs(value) > Math.abs(current)) {
-          nextMap[key] = value;
-        }
-      };
-
-      summary.forEach(item => {
-        const normalizedName = normalize(item.product_name);
-        const baseName = getBaseName(item.product_name);
-
-        const exactMatches = productsByName.get(normalizedName) || [];
-        const baseMatches = productsByBaseName.get(baseName) || [];
-
-        let candidateIds = Array.from(new Set([...exactMatches, ...baseMatches]));
-
-        // Fallback: loose matching by name inclusion if nothing matched yet
-        if (candidateIds.length === 0) {
-          const looseMatches = products
-            .filter(p => {
-              const n = normalize(p.name);
-              const d = normalize(p.description);
-              return (
-                (n && (normalizedName.includes(n) || n.includes(normalizedName))) ||
-                (d && (normalizedName.includes(d) || d.includes(normalizedName)))
-              );
-            })
-            .map(p => p.id);
-          candidateIds = Array.from(new Set(looseMatches));
-        }
-
-        // If we still have no matches at all, skip this inventory row
-        if (candidateIds.length === 0) {
-          return;
-        }
-
-        // Align color/size with how the sales form uses them.
-        // If inventory color is MULTI or Default, treat it as "default" so
-        // fallback keys still work for any selected color.
-        const rawColor = (item.color || 'default').toString().toUpperCase();
-        const colorValue = (rawColor === 'MULTI' || rawColor === 'DEFAULT') ? 'default' : rawColor;
-        const sizeValue = (item.size || 'default').toString();
-
-        const stockValue = Number.isFinite(item.current_stock) ? Number(item.current_stock) : 0;
-
-        candidateIds.forEach(productId => {
-          const primaryKey = getVariantKey(productId, colorValue, sizeValue);
-          const colorFallbackKey = getVariantKey(productId, colorValue, 'default');
-          const sizeFallbackKey = getVariantKey(productId, 'default', sizeValue);
-          const defaultKey = getVariantKey(productId, 'default', 'default');
-
-          // Prefer the value with the greatest magnitude so negative stock is preserved
-          setStock(primaryKey, stockValue);
-          setStock(sizeFallbackKey, stockValue);
-          if (sizeValue.toLowerCase() === 'default') {
-            setStock(colorFallbackKey, stockValue);
-            setStock(defaultKey, stockValue);
-          }
-        });
-      });
-
-      setInventoryMap(nextMap);
+      setStockLookup(buildStockLookup(summary));
     } catch (error) {
       console.error('Failed to load inventory stock for sales order form:', error);
       toast({
@@ -580,29 +358,17 @@ const EnhancedSalesOrderForm = ({
     } finally {
       setInventoryLoading(false);
     }
-  }, [getVariantKey, products, toast, user.agencyId]);
+  }, [toast, user.agencyId]);
 
   useEffect(() => {
     loadInventory();
   }, [loadInventory]);
 
-  const getAvailableStock = (productId: string, productName: string, color: string, size: string) => {
-    const primaryKey = getVariantKey(productId, color, size);
-    const colorFallbackKey = getVariantKey(productId, color, 'default');
-    const sizeFallbackKey = getVariantKey(productId, 'default', size);
-    const defaultKey = getVariantKey(productId, 'default', 'default');
-
-    const known = inventoryMap[primaryKey] ??
-      inventoryMap[colorFallbackKey] ??
-      inventoryMap[sizeFallbackKey] ??
-      inventoryMap[defaultKey];
-
-    if (known === undefined && user.agencyId && !pendingStockKeys.has(primaryKey)) {
-      fetchVariantStock(productId, productName, color, size, primaryKey);
-    }
-
-    return known;
-  };
+  // Read straight off the agency stock summary, so this shows the same figure
+  // the Inventory screen shows for that product. Inventory merges colours into
+  // one line per product/size, so colour isn't part of the lookup.
+  const getAvailableStock = (product: Product, size: string) =>
+    lookupProductStock(stockLookup, product, size);
 
   const updateQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
     setProductGridItems(prev => prev.map((item, pIdx) => 
@@ -819,7 +585,13 @@ const EnhancedSalesOrderForm = ({
 
     submitLockRef.current = true;
     setIsSubmitting(true);
-    
+
+    // Scoped to this customer and amount so every retry of the same submission
+    // reuses one key, even if the form was closed and reopened. Only new orders
+    // need it — an edit updates a row that already exists.
+    const idempotencyScope = `sales-order:${selectedCustomer.id}:${total.toFixed(2)}`;
+    const requestId = isEditing ? null : getPersistentRequestId(idempotencyScope);
+
     try {
       // Capture GPS coordinates automatically on save
       toast({
@@ -888,7 +660,7 @@ const EnhancedSalesOrderForm = ({
           latitude: coords.latitude,
           longitude: coords.longitude,
           created_by: user.id,
-          client_request_id: requestIdRef.current
+          client_request_id: requestId
         };
 
         let orderError = null;
@@ -915,7 +687,7 @@ const EnhancedSalesOrderForm = ({
             const { data: existing, error: fetchError } = await supabase
               .from('sales_orders')
               .select()
-              .eq('client_request_id', requestIdRef.current)
+              .eq('client_request_id', requestId)
               .single();
             if (!fetchError && existing) {
               orderData = existing;
@@ -989,6 +761,8 @@ const EnhancedSalesOrderForm = ({
       // Clear draft if not editing
       if (!isEditing) {
         clearDraft();
+        // Saved for good — the next order for this customer starts a fresh key.
+        clearPersistentRequestId(idempotencyScope);
       }
 
       onSuccess();
@@ -1156,19 +930,17 @@ const EnhancedSalesOrderForm = ({
                         <h5 className="font-medium mb-3">{gridItem.product.name}</h5>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                           {gridItem.sizes.map((sizeItem, sizeIndex) => {
-                            const availableStock = getAvailableStock(gridItem.product.id, gridItem.product.name, gridItem.color, sizeItem.size);
+                            const availableStock = getAvailableStock(gridItem.product, sizeItem.size);
                             const stockClass = inventoryLoading
                               ? 'text-gray-400'
-                              : availableStock === undefined
-                                ? 'text-gray-400'
-                                : availableStock <= 0
-                                  ? 'text-red-600'
-                                  : availableStock <= 5
-                                    ? 'text-orange-500'
-                                    : 'text-green-600';
+                              : availableStock <= 0
+                                ? 'text-red-600'
+                                : availableStock <= 5
+                                  ? 'text-orange-500'
+                                  : 'text-green-600';
                             const stockLabel = inventoryLoading
                               ? 'Stock: —'
-                              : `Stock: ${availableStock ?? '—'}`;
+                              : `Stock: ${availableStock}`;
 
                             return (
                               <div key={sizeItem.size} className="space-y-1">

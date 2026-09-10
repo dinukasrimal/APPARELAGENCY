@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ArrowLeft, Plus, Trash2, RotateCcw, Save } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { getExcludedProductIdsForAgency, filterActiveProducts } from '@/utils/productVisibility';
 
 interface EnhancedCompanyReturnsProps {
   user: User;
@@ -54,10 +55,11 @@ const EnhancedCompanyReturns = ({ user, onBack }: EnhancedCompanyReturnsProps) =
   const fetchData = async () => {
     try {
       // Fetch products
-      const { data: productsData, error: productsError } = await supabase
-        .from('products')
-        .select('*')
-        .order('name');
+      let productsQuery = supabase.from('products').select('*').order('name');
+      if (user.role !== 'superuser') {
+        productsQuery = productsQuery.eq('is_active', true);
+      }
+      const { data: productsData, error: productsError } = await productsQuery;
 
       if (productsError) throw productsError;
 
@@ -71,10 +73,15 @@ const EnhancedCompanyReturns = ({ user, onBack }: EnhancedCompanyReturnsProps) =
         sellingPrice: Number(product.selling_price),
         billingPrice: Number(product.billing_price),
         image: product.image || null,
-        description: product.description
+        description: product.description,
+        isActive: product.is_active ?? true
       }));
 
-      setProducts(transformedProducts);
+      const excludedProductIds = user.role !== 'superuser' && user.agencyId
+        ? await getExcludedProductIdsForAgency(user.agencyId)
+        : new Set<string>();
+
+      setProducts(filterActiveProducts(transformedProducts, excludedProductIds));
 
       // Fetch GRNs
       const { data: grnsData, error: grnsError } = await supabase

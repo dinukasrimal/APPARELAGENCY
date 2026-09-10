@@ -1604,42 +1604,60 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
                       <th className="px-3 py-2 font-semibold">Type</th>
                       <th className="px-3 py-2 font-semibold">Source / Reference</th>
                       <th className="px-3 py-2 font-semibold text-right">Qty</th>
+                      <th className="px-3 py-2 font-semibold text-right">Balance</th>
                       <th className="px-3 py-2 font-semibold text-right">Unit Price</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {productTransactions
-                      .slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE)
-                      .map((t) => {
-                        const signed = txSign(t);
-                        const isOut = signed < 0;
-                        return (
-                          <tr key={t.id} className="border-b hover:bg-gray-50">
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              {new Date(t.transaction_date).toLocaleDateString()}<span className="text-gray-400 text-xs ml-1">
-                                {new Date(t.transaction_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2">
-                              <span className="inline-flex items-center gap-1">
-                                {isOut ? <ArrowDown className="h-3 w-3 text-red-600" /> : <ArrowUp className="h-3 w-3 text-green-600" />}
-                                {(t.transaction_type || '').replace(/_/g, ' ')}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2 text-gray-600">
-                              {t.external_source || '—'}
-                              {t.reference_name ? <span className="text-gray-400"> · {t.reference_name}</span> : ''}
-                              <span className="text-xs text-gray-400 block">{t.color || 'Default'} / {t.size || 'Default'}</span>
-                            </td>
-                            <td className={`px-3 py-2 text-right font-semibold ${isOut ? 'text-red-600' : 'text-green-600'}`}>
-                              {isOut ? '' : '+'}{signed}
-                            </td>
-                            <td className="px-3 py-2 text-right text-gray-600">
-                              {t.unit_price ? `LKR ${Number(t.unit_price).toLocaleString()}` : '—'}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    {(() => {
+                      // productTransactions is newest-first; walk oldest -> newest to
+                      // accumulate a running balance, then render in the existing
+                      // newest-first order. The topmost row's balance should equal
+                      // historyProduct.current_stock.
+                      const balanceById = new Map<string, number>();
+                      let running = 0;
+                      for (let i = productTransactions.length - 1; i >= 0; i--) {
+                        running += txSign(productTransactions[i]);
+                        balanceById.set(productTransactions[i].id, running);
+                      }
+
+                      return productTransactions
+                        .slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE)
+                        .map((t) => {
+                          const signed = txSign(t);
+                          const isOut = signed < 0;
+                          const balance = balanceById.get(t.id) ?? 0;
+                          return (
+                            <tr key={t.id} className="border-b hover:bg-gray-50">
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                {new Date(t.transaction_date).toLocaleDateString()}<span className="text-gray-400 text-xs ml-1">
+                                  {new Date(t.transaction_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className="inline-flex items-center gap-1">
+                                  {isOut ? <ArrowDown className="h-3 w-3 text-red-600" /> : <ArrowUp className="h-3 w-3 text-green-600" />}
+                                  {(t.transaction_type || '').replace(/_/g, ' ')}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-gray-600">
+                                {t.external_source || '—'}
+                                {t.reference_name ? <span className="text-gray-400"> · {t.reference_name}</span> : ''}
+                                <span className="text-xs text-gray-400 block">{t.color || 'Default'} / {t.size || 'Default'}</span>
+                              </td>
+                              <td className={`px-3 py-2 text-right font-semibold ${isOut ? 'text-red-600' : 'text-green-600'}`}>
+                                {isOut ? '' : '+'}{signed}
+                              </td>
+                              <td className="px-3 py-2 text-right font-semibold">
+                                {balance}
+                              </td>
+                              <td className="px-3 py-2 text-right text-gray-600">
+                                {t.unit_price ? `LKR ${Number(t.unit_price).toLocaleString()}` : '—'}
+                              </td>
+                            </tr>
+                          );
+                        });
+                    })()}
                   </tbody>
                 </table>
               </div>

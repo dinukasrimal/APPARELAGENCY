@@ -100,17 +100,16 @@ const CategorySizeInvoiceReport = ({ user, onBack }: CategorySizeInvoiceReportPr
   const fetchCustomers = async () => {
     try {
       console.log('Fetching customers...');
-      let query = supabase
-        .from('customers')
-        .select('id, name')
-        .order('name');
-
-      // Filter by agency for non-superusers
-      if (user.role !== 'superuser' && user.agencyId) {
-        query = query.eq('agency_id', user.agencyId);
-      }
-
-      const { data, error } = await query;
+      // Paged: an unpaginated select stops at 1000 rows, so a superuser
+      // (not filtered to one agency) silently lost customers off the end.
+      const { data, error } = await fetchAllSupabaseRows<any>(() => {
+        let query = supabase.from('customers').select('id, name').order('name').order('id');
+        if (user.role !== 'superuser' && user.agencyId) {
+          query = query.eq('agency_id', user.agencyId);
+        }
+        return query;
+      }).then(rows => ({ data: rows, error: null as any }))
+        .catch(err => ({ data: null as any, error: err }));
 
       if (error) {
         console.error('Error fetching customers:', error);

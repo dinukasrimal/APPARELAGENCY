@@ -18,6 +18,7 @@ import InvoiceManagement from './InvoiceManagement';
 import ReturnsManagement from './ReturnsManagement';
 import CreateInvoiceForm from './CreateInvoiceForm';
 import { supabase } from '@/integrations/supabase/client';
+import { getExcludedProductIdsForAgency, filterActiveProducts } from '@/utils/productVisibility';
 
 // Picks the subset of raw DB item rows whose totals sum closest to the order's
 // subtotal.  Required because sales_order_items rows accumulate on every edit
@@ -148,26 +149,34 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       }
       
       // Build supporting queries to run in parallel with orders
-      let customersQuery = supabase
-        .from('customers')
-        .select(`
-          id, name, phone, address, agency_id, latitude, longitude,
-          storefront_photo, signature, created_at, created_by
-        `);
-      if (user.role === 'agent') {
-        customersQuery = customersQuery.eq('created_by', user.id);
-      } else if (user.role === 'agency') {
-        customersQuery = customersQuery.eq('agency_id', user.agencyId);
-      } else if (user.role === 'superuser' && selectedAgencyId) {
-        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
-      }
+      // Built fresh per page: an unpaginated select stops at 1000 rows, which
+      // silently dropped customers for a superuser browsing every agency.
+      const buildCustomersQuery = () => {
+        let query = supabase
+          .from('customers')
+          .select(`
+            id, name, phone, address, agency_id, latitude, longitude,
+            storefront_photo, signature, created_at, created_by
+          `);
+        if (user.role === 'agent') {
+          query = query.eq('created_by', user.id);
+        } else if (user.role === 'agency') {
+          query = query.eq('agency_id', user.agencyId);
+        } else if (user.role === 'superuser' && selectedAgencyId) {
+          query = query.eq('agency_id', selectedAgencyId);
+        }
+        return query;
+      };
 
-      const productsQuery = supabase
+      let productsQuery = supabase
         .from('products')
         .select(`
           id, name, category, sub_category, colors, sizes,
-          selling_price, billing_price, image, description
+          selling_price, billing_price, image, description, is_active
         `);
+      if (user.role !== 'superuser') {
+        productsQuery = productsQuery.eq('is_active', true);
+      }
 
       let returnsQuery = supabase
         .from('returns')
@@ -193,7 +202,8 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       const [ordersResult, agenciesResult, customersResult, productsResult, returnsResult] = await Promise.all([
         ordersQuery.order('created_at', { ascending: false }).limit(1000),
         supabase.from('agencies').select('id, name'),
-        customersQuery.order('name'),
+        fetchAllSupabaseRows<any>(() => buildCustomersQuery().order('name').order('id'))
+          .then(rows => ({ data: rows, error: null })),
         productsQuery,
         returnsQuery.order('created_at', { ascending: false }).limit(100),
       ]);
@@ -317,11 +327,17 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
         sellingPrice: Number(product.selling_price),
         billingPrice: Number(product.billing_price),
         image: product.image || null,
-        description: product.description
+        description: product.description,
+        isActive: product.is_active ?? true
       }));
 
+      const effectiveAgencyId = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
+      const excludedProductIds = user.role !== 'superuser' && effectiveAgencyId
+        ? await getExcludedProductIdsForAgency(effectiveAgencyId)
+        : new Set<string>();
+
       setCustomers(transformedCustomers);
-      setProducts(transformedProducts);
+      setProducts(filterActiveProducts(transformedProducts, excludedProductIds));
 
       // Transform returns with items (show even if no invoice is linked yet)
       const customerReturns = (returnsData || []).filter(ret => ret.customer_id);
@@ -745,6 +761,15 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       });
     }
   };
+
+  // A customer return reduces the outstanding amount on the invoice it was
+  // raised against. fetchInvoicePage derives that figure from the returns refs
+  // fetchData populates, so these must run in order, not in parallel.
+  const refreshAfterReturn = useCallback(async () => {
+    invalidateSalesCache();
+    await fetchData();
+    await fetchInvoicePage();
+  }, [fetchData, fetchInvoicePage]);
 
   const handleOrderSuccess = useCallback(async () => {
     invalidateSalesCache();
@@ -1300,7 +1325,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
             invoices={invoices}
             customers={customers}
             products={products}
-            onRefresh={fetchData}
+            onRefresh={refreshAfterReturn}
           />
         </TabsContent>
       </Tabs>

@@ -29,8 +29,10 @@ interface DailyLogEntry {
   orderNumber?: number;
   storefrontPhoto?: string;
   amount?: number;
-  salesOrderId?: string;      // set on invoices converted from a sales order
-  daysToConvert?: number;     // days between that sales order and this invoice
+  salesOrderId?: string;         // set on invoices/deliveries traced back to a sales order
+  salesOrderAmount?: number;     // that sales order's total (shown on the invoice entry)
+  daysToConvert?: number;        // days from that sales order to this invoice/delivery
+  categoryBreakdown?: { category: string; amount: number }[]; // sales_order / invoice only
 }
 
 interface TimeRoutePath {
@@ -374,8 +376,13 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
   };
 
   // Attach the customer storefront photo to every entry that has a customer
-  // (invoice / collection / sales order / delivery — not just customer visits),
-  // and compute days-to-convert for invoices created from a sales order.
+  // (invoice / collection / sales order / delivery — not just customer visits);
+  // compute days-since-sales-order and the sales order's own value for
+  // invoices/deliveries traced back to one; attach category-wise breakdowns to
+  // sales_order and invoice entries; and drop a sales_order entry whenever an
+  // invoice against it is also in this batch, so a partially-invoiced order
+  // doesn't show as two separate activities — only the invoice entry remains,
+  // carrying both the sales order's value and the invoice's value.
   const enrichEntries = async (entries: DailyLogEntry[], agencyFilter: string) => {
     const norm = (s?: string) => (s || '').toLowerCase().trim();
 
@@ -388,31 +395,108 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
       if (c.storefront_photo) photoByName.set(norm(c.name), c.storefront_photo);
     });
 
-    // 2. Sales-order creation dates for invoices converted from a sales order
+    // 2. Sales orders behind invoices/deliveries traced back to one
     const soIds = Array.from(new Set(
-      entries.filter((e) => e.type === 'invoice' && e.salesOrderId).map((e) => e.salesOrderId!)
+      entries.filter((e) => (e.type === 'invoice' || e.type === 'delivery') && e.salesOrderId)
+        .map((e) => e.salesOrderId!)
     ));
     const soCreatedById = new Map<string, string>();
+    const soTotalById = new Map<string, number>();
     if (soIds.length > 0) {
-      const soRows = await fetchAllSupabaseRows<{ id: string; created_at: string | null }>(
-        () => supabase.from('sales_orders').select('id, created_at').in('id', soIds)
+      const soRows = await fetchAllSupabaseRows<{ id: string; created_at: string | null; total: number | null }>(
+        () => supabase.from('sales_orders').select('id, created_at, total').in('id', soIds)
       );
-      soRows.forEach((s) => { if (s.created_at) soCreatedById.set(s.id, s.created_at); });
+      soRows.forEach((s) => {
+        if (s.created_at) soCreatedById.set(s.id, s.created_at);
+        soTotalById.set(s.id, Number(s.total) || 0);
+      });
     }
+
+    // 3. Category-wise breakdown for sales_order and invoice entries, via each
+    // line item's product -> products.category
+    const soEntryIds = entries.filter((e) => e.type === 'sales_order').map((e) => e.id);
+    const invoiceEntryIds = entries.filter((e) => e.type === 'invoice').map((e) => e.id);
+
+    const soItems = soEntryIds.length > 0
+      ? await fetchAllSupabaseRows<{ sales_order_id: string; product_id: string | null; total: number | null }>(
+          () => supabase.from('sales_order_items').select('sales_order_id, product_id, total').in('sales_order_id', soEntryIds)
+        )
+      : [];
+    const invoiceItems = invoiceEntryIds.length > 0
+      ? await fetchAllSupabaseRows<{ invoice_id: string; product_id: string | null; total: number | null }>(
+          () => supabase.from('invoice_items').select('invoice_id, product_id, total').in('invoice_id', invoiceEntryIds)
+        )
+      : [];
+
+    const productIds = Array.from(new Set(
+      [...soItems, ...invoiceItems].map((i) => i.product_id).filter((id): id is string => !!id)
+    ));
+    const categoryByProductId = new Map<string, string>();
+    if (productIds.length > 0) {
+      const productRows = await fetchAllSupabaseRows<{ id: string; category: string | null }>(
+        () => supabase.from('products').select('id, category').in('id', productIds)
+      );
+      productRows.forEach((p) => { categoryByProductId.set(p.id, p.category || 'Uncategorized'); });
+    }
+
+    const buildBreakdown = (items: { product_id: string | null; total: number | null }[]) => {
+      const byCategory = new Map<string, number>();
+      items.forEach((item) => {
+        const category = (item.product_id && categoryByProductId.get(item.product_id)) || 'Uncategorized';
+        byCategory.set(category, (byCategory.get(category) || 0) + (Number(item.total) || 0));
+      });
+      return Array.from(byCategory.entries())
+        .map(([category, amount]) => ({ category, amount }))
+        .sort((a, b) => b.amount - a.amount);
+    };
+
+    const soItemsByOrder = new Map<string, typeof soItems>();
+    soItems.forEach((i) => {
+      const list = soItemsByOrder.get(i.sales_order_id) || [];
+      list.push(i);
+      soItemsByOrder.set(i.sales_order_id, list);
+    });
+    const invoiceItemsByInvoice = new Map<string, typeof invoiceItems>();
+    invoiceItems.forEach((i) => {
+      const list = invoiceItemsByInvoice.get(i.invoice_id) || [];
+      list.push(i);
+      invoiceItemsByInvoice.set(i.invoice_id, list);
+    });
 
     entries.forEach((e) => {
       if (!e.storefrontPhoto) {
         const p = photoByName.get(norm(e.name));
         if (p) e.storefrontPhoto = p;
       }
-      if (e.type === 'invoice' && e.salesOrderId) {
+      if ((e.type === 'invoice' || e.type === 'delivery') && e.salesOrderId) {
         const soAt = soCreatedById.get(e.salesOrderId);
         if (soAt) {
           const diff = e.timestamp.getTime() - new Date(soAt).getTime();
           e.daysToConvert = Math.max(0, Math.round(diff / (24 * 60 * 60 * 1000)));
         }
+        if (e.type === 'invoice') {
+          e.salesOrderAmount = soTotalById.get(e.salesOrderId);
+        }
+      }
+      if (e.type === 'sales_order') {
+        const items = soItemsByOrder.get(e.id);
+        if (items && items.length > 0) e.categoryBreakdown = buildBreakdown(items);
+      }
+      if (e.type === 'invoice') {
+        const items = invoiceItemsByInvoice.get(e.id);
+        if (items && items.length > 0) e.categoryBreakdown = buildBreakdown(items);
       }
     });
+
+    // 4. A sales order that's (partially or fully) invoiced within this same
+    // batch shouldn't also show as its own activity — keep only the invoice(s).
+    const invoicedSalesOrderIds = new Set(
+      entries.filter((e) => e.type === 'invoice' && e.salesOrderId).map((e) => e.salesOrderId!)
+    );
+    if (invoicedSalesOrderIds.size > 0) {
+      const kept = entries.filter((e) => !(e.type === 'sales_order' && invoicedSalesOrderIds.has(e.id)));
+      entries.splice(0, entries.length, ...kept);
+    }
   };
 
   const fetchDailyLogs = async (dateStr: string) => {
@@ -669,10 +753,10 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         });
       });
 
-      // Fetch deliveries (joined to invoice for customer name)
+      // Fetch deliveries (joined to invoice for customer name, value and originating sales order)
       let deliveryQuery = supabase
         .from('deliveries')
-        .select('id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, agency_id, invoices(customer_name)')
+        .select('id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, agency_id, invoices(customer_name, total, sales_order_id)')
         .eq('agency_id', agencyFilter)
         .gte('delivered_at', startDate)
         .lte('delivered_at', endDate)
@@ -683,6 +767,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       deliveries?.forEach((delivery: any) => {
         const agency = agencies.find(a => a.id === delivery.agency_id);
+        const invoiceAmount = delivery.invoices?.total != null ? Number(delivery.invoices.total) : undefined;
         entries.push({
           id: `delivery-${delivery.id}`,
           type: 'delivery',
@@ -690,8 +775,10 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           latitude: delivery.delivery_latitude,
           longitude: delivery.delivery_longitude,
           timestamp: new Date(delivery.delivered_at),
-          details: `Delivered${delivery.received_by_name ? ` to ${delivery.received_by_name}` : ''}${delivery.status ? ` (${delivery.status})` : ''}`,
-          agencyName: agency?.name || 'Unknown Agency'
+          details: `Delivered${delivery.received_by_name ? ` to ${delivery.received_by_name}` : ''}${delivery.status ? ` (${delivery.status})` : ''}${invoiceAmount !== undefined ? ` — Invoice: LKR ${invoiceAmount.toLocaleString()}` : ''}`,
+          agencyName: agency?.name || 'Unknown Agency',
+          amount: invoiceAmount,
+          salesOrderId: delivery.invoices?.sales_order_id || undefined
         });
       });
 
@@ -995,10 +1082,10 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
         });
       });
 
-      // Fetch deliveries for the range
+      // Fetch deliveries for the range (joined to invoice for customer name, value and originating sales order)
       let deliveryQuery = supabase
         .from('deliveries')
-        .select('id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, agency_id, invoices(customer_name)')
+        .select('id, status, received_by_name, delivery_notes, delivered_at, delivery_latitude, delivery_longitude, agency_id, invoices(customer_name, total, sales_order_id)')
         .eq('agency_id', agencyFilter)
         .gte('delivered_at', startDateTime)
         .lte('delivered_at', endDateTime)
@@ -1009,6 +1096,7 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
 
       deliveries?.forEach((delivery: any) => {
         const agency = agencies.find(a => a.id === delivery.agency_id);
+        const invoiceAmount = delivery.invoices?.total != null ? Number(delivery.invoices.total) : undefined;
         entries.push({
           id: `delivery-${delivery.id}`,
           type: 'delivery',
@@ -1016,8 +1104,10 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
           latitude: delivery.delivery_latitude,
           longitude: delivery.delivery_longitude,
           timestamp: new Date(delivery.delivered_at),
-          details: `Delivered${delivery.received_by_name ? ` to ${delivery.received_by_name}` : ''}${delivery.status ? ` (${delivery.status})` : ''}`,
-          agencyName: agency?.name || 'Unknown Agency'
+          details: `Delivered${delivery.received_by_name ? ` to ${delivery.received_by_name}` : ''}${delivery.status ? ` (${delivery.status})` : ''}${invoiceAmount !== undefined ? ` — Invoice: LKR ${invoiceAmount.toLocaleString()}` : ''}`,
+          agencyName: agency?.name || 'Unknown Agency',
+          amount: invoiceAmount,
+          salesOrderId: delivery.invoices?.sales_order_id || undefined
         });
       });
 
@@ -1437,13 +1527,21 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                               <div className="text-xs text-gray-600">
                                 <div>{entry.timestamp.toLocaleTimeString()}</div>
                                 {entry.details && <div>{entry.details}</div>}
+                                {entry.type === 'invoice' && entry.salesOrderAmount !== undefined && (
+                                  <div>Sales Order: LKR {entry.salesOrderAmount.toLocaleString()}</div>
+                                )}
+                                {entry.categoryBreakdown && entry.categoryBreakdown.length > 0 && (
+                                  <div>
+                                    {entry.categoryBreakdown.map(c => `${c.category}: LKR ${c.amount.toLocaleString()}`).join(' · ')}
+                                  </div>
+                                )}
                                 {user.role === 'superuser' && entry.userName && <div>User: {entry.userName}</div>}
                               </div>
                             </div>
-                            {entry.type === 'invoice' && entry.daysToConvert !== undefined && (
-                              <div className="text-right shrink-0" title="Days taken to convert the sales order into this invoice">
+                            {(entry.type === 'invoice' || entry.type === 'delivery') && entry.daysToConvert !== undefined && (
+                              <div className="text-right shrink-0" title={`Days from the sales order to this ${entry.type}`}>
                                 <div className="text-sm font-bold text-indigo-600">{entry.daysToConvert}d</div>
-                                <div className="text-[10px] text-gray-500 leading-tight">SO → invoice</div>
+                                <div className="text-[10px] text-gray-500 leading-tight">SO → {entry.type === 'delivery' ? 'delivery' : 'invoice'}</div>
                               </div>
                             )}
                             {canDelete && (
@@ -1607,6 +1705,14 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                         </div>
                         <div className="text-sm text-gray-600">
                           <div>{entry.details}</div>
+                          {entry.type === 'invoice' && entry.salesOrderAmount !== undefined && (
+                            <div>Sales Order: LKR {entry.salesOrderAmount.toLocaleString()}</div>
+                          )}
+                          {entry.categoryBreakdown && entry.categoryBreakdown.length > 0 && (
+                            <div>
+                              {entry.categoryBreakdown.map(c => `${c.category}: LKR ${c.amount.toLocaleString()}`).join(' · ')}
+                            </div>
+                          )}
                           {user.role === 'superuser' && entry.userName && (
                             <div>User: {entry.userName}</div>
                           )}
@@ -1622,10 +1728,10 @@ const DailyLogReport = ({ user, onBack }: DailyLogReportProps) => {
                         <div className="text-sm text-gray-500">
                           {entry.timestamp.toLocaleDateString()}
                         </div>
-                        {entry.type === 'invoice' && entry.daysToConvert !== undefined && (
-                          <div className="mt-1" title="Days taken to convert the sales order into this invoice">
+                        {(entry.type === 'invoice' || entry.type === 'delivery') && entry.daysToConvert !== undefined && (
+                          <div className="mt-1" title={`Days from the sales order to this ${entry.type}`}>
                             <span className="text-sm font-bold text-indigo-600">{entry.daysToConvert}d</span>
-                            <span className="text-[10px] text-gray-500 ml-1">SO → invoice</span>
+                            <span className="text-[10px] text-gray-500 ml-1">SO → {entry.type === 'delivery' ? 'delivery' : 'invoice'}</span>
                           </div>
                         )}
                       </div>

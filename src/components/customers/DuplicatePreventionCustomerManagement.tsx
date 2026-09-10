@@ -8,13 +8,17 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Search, MapPin, Phone, Building, AlertTriangle, Eye, Filter, Image as ImageIcon } from 'lucide-react';
+import { Plus, Search, MapPin, Phone, Building, AlertTriangle, Eye, Filter, Image as ImageIcon, Send } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import CustomerForm from './CustomerForm';
 import CustomerInvoiceDetails from './CustomerInvoiceDetails';
 import { uploadCustomerPhoto, base64ToBlob } from '@/utils/storage';
 import ImageModal from '@/components/ui/image-modal';
+import { generateAndUploadPriceListPdf } from '@/services/invoice-pdf.service';
+import { getAgencyPriceType, getProductPriceForAgency, getPriceTypeLabel } from '@/utils/agencyPricing';
+import { getExcludedProductIdsForAgency } from '@/utils/productVisibility';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 
 const CUSTOMER_CACHE_TTL = 2 * 60 * 1000;
 const _customerCache: Record<string, { customers: Customer[]; expiry: number }> = {};
@@ -34,6 +38,7 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
   const [duplicateCheck, setDuplicateCheck] = useState<string>('');
   const [imageModalOpen, setImageModalOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ url: string; title: string } | null>(null);
+  const [sendingPriceListId, setSendingPriceListId] = useState<string | null>(null);
   const { agencies } = useAgencies(); // Fetch all agencies for name lookup
   const { toast } = useToast();
 
@@ -77,26 +82,25 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
       setLoading(true);
       console.time('[Customers] load');
 
-      let query = supabase
-        .from('customers')
-        .select('*')
-        .order('created_at', { ascending: false });
+      // Paged, because PostgREST caps an unpaginated select at 1000 rows — a
+      // superuser sees every agency's customers, which is well past that, so
+      // the tail was silently missing from the list.
+      const buildQuery = () => {
+        let query = supabase
+          .from('customers')
+          .select('*')
+          .order('created_at', { ascending: false })
+          // Unique tiebreaker: paging a non-unique sort can skip or repeat rows.
+          .order('id');
 
-      if (user.role !== 'superuser' && user.agencyId) {
-        query = query.eq('agency_id', user.agencyId);
-      }
+        if (user.role !== 'superuser' && user.agencyId) {
+          query = query.eq('agency_id', user.agencyId);
+        }
 
-      const { data, error } = await query;
+        return query;
+      };
 
-      if (error) {
-        console.error('Error loading customers:', error);
-        toast({
-          title: "Error",
-          description: "Failed to load customers. Please try again.",
-          variant: "destructive",
-        });
-        return;
-      }
+      const data = await fetchAllSupabaseRows<any>(buildQuery);
 
       const transformedCustomers: Customer[] = (data || []).map(customer => ({
         id: customer.id,
@@ -402,6 +406,105 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
     setSelectedCustomer(customer);
   };
 
+  const handleSendPriceList = async (customer: Customer) => {
+    if (!customer.phone) {
+      toast({
+        title: "No phone number",
+        description: "This customer has no phone number on file.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSendingPriceListId(customer.id);
+    try {
+      // Fetch the full product catalog, paginated — PostgREST caps unpaginated
+      // selects at 1000 rows, which would silently truncate the price list.
+      // Only products active both globally and for this customer's agency
+      // belong in a price list sent to that customer.
+      const products: { id: string; name: string; category: string; colors: string[] | null; sizes: string[] | null; selling_price: number; billing_price: number }[] = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: page, error } = await supabase
+          .from('products')
+          .select('id, name, category, colors, sizes, selling_price, billing_price')
+          .eq('is_active', true)
+          .order('category')
+          .order('name')
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+        if (!page || page.length === 0) break;
+
+        products.push(...page);
+        if (page.length < pageSize) break;
+      }
+
+      const excludedProductIds = await getExcludedProductIdsForAgency(customer.agencyId);
+      const visibleProducts = products.filter(p => !excludedProductIds.has(p.id));
+
+      const priceType = await getAgencyPriceType(customer.agencyId);
+
+      const grouped = new Map<string, { name: string; color: string; size: string; price: number }[]>();
+      for (const p of visibleProducts) {
+        const list = grouped.get(p.category) || [];
+        list.push({
+          name: p.name,
+          color: p.colors?.[0] || '',
+          size: p.sizes?.[0] || '',
+          price: getProductPriceForAgency(p, priceType),
+        });
+        grouped.set(p.category, list);
+      }
+      const categories = Array.from(grouped.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([category, categoryProducts]) => ({ category, products: categoryProducts }));
+
+      const pdfUrl = await generateAndUploadPriceListPdf({
+        customerId: customer.id,
+        customerName: customer.name,
+        agencyName: getAgencyName(customer.agencyId),
+        date: new Date().toLocaleDateString('en-LK', { timeZone: 'Asia/Colombo' }),
+        priceTypeLabel: getPriceTypeLabel(priceType),
+        categories,
+      });
+
+      if (!pdfUrl) {
+        toast({
+          title: "Error",
+          description: "Failed to generate the price list PDF. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const smsSent = await sendSMS(customer.phone, SmsTemplates.priceListSent(customer.name, getAgencyName(customer.agencyId), pdfUrl));
+      if (!smsSent) {
+        toast({
+          title: "SMS Failed",
+          description: `The price list PDF was generated, but the text message to ${customer.name} failed to send. Please try again.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "Price List Sent",
+        description: `Price list has been texted to ${customer.name}.`,
+      });
+    } catch (error) {
+      console.error('Error sending price list:', error);
+      const detail = error instanceof Error ? error.message : String(error);
+      toast({
+        title: "Error",
+        description: `Failed to send price list: ${detail}`,
+        variant: "destructive",
+      });
+    } finally {
+      setSendingPriceListId(null);
+    }
+  };
+
   if (selectedCustomer) {
     return (
       <CustomerInvoiceDetails
@@ -639,6 +742,16 @@ const DuplicatePreventionCustomerManagement = ({ user }: CustomerManagementProps
                   className="flex items-center gap-1"
                 >
                   Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleSendPriceList(customer)}
+                  disabled={sendingPriceListId === customer.id}
+                  className="flex items-center gap-1"
+                >
+                  <Send className="h-4 w-4" />
+                  {sendingPriceListId === customer.id ? 'Sending...' : 'Send Price List'}
                 </Button>
               </div>
             </CardContent>

@@ -12,6 +12,11 @@ import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import { isWithinSriLanka } from '@/utils/geoBounds';
 import { loadDistrictFeatures, districtForPoint } from '@/utils/districtLookup';
 import LeafletMap from './LeafletMap';
+import { useToast } from '@/hooks/use-toast';
+import { LocationService } from '@/services/location.service';
+
+// How long to wait for a GPS fix before giving up and telling the user.
+const LOCATE_TIMEOUT_MS = 15000;
 
 interface LocationData {
   id: string;
@@ -64,7 +69,11 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   // Live "my location" (GPS)
   const [myLocation, setMyLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [locating, setLocating] = useState(false);
-  const watchIdRef = useRef<number | null>(null);
+  const watchIdRef = useRef<string | null>(null);
+  const locateTimeoutRef = useRef<number | null>(null);
+  // Bumped on every stop so a permission prompt answered late can't revive a
+  // cancelled attempt.
+  const locateAttemptRef = useRef(0);
   const [showDistricts, setShowDistricts] = useState(false);
   // District-wise sales (last 90 days, from invoices mapped by GPS to a district)
   const [districtSales, setDistrictSales] = useState<Array<{ district: string; total: number; count: number }>>([]);
@@ -78,6 +87,7 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   
   const [loading, setLoading] = useState(true);
   const [openAgencies, setOpenAgencies] = useState<string[]>([]);
+  const { toast } = useToast();
 
   // Stable agency -> colour mapping (by name order so colours don't shuffle).
   const agencyColorMap = useMemo(() => {
@@ -124,47 +134,115 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
     }
   };
 
-  // Live location: toggle GPS tracking. First fix pans/zooms the map to you;
-  // subsequent updates keep the "you are here" marker current.
-  const toggleLiveLocation = () => {
-    if (myLocation || watchIdRef.current !== null) {
-      // Turn off
-      if (watchIdRef.current !== null && navigator.geolocation) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-      }
-      watchIdRef.current = null;
-      setMyLocation(null);
-      setLocating(false);
-      return;
+  const stopLiveLocation = () => {
+    locateAttemptRef.current += 1;
+    if (locateTimeoutRef.current !== null) {
+      window.clearTimeout(locateTimeoutRef.current);
+      locateTimeoutRef.current = null;
     }
-
-    if (!navigator.geolocation) {
-      alert('Location is not supported by this browser.');
-      return;
+    if (watchIdRef.current !== null) {
+      LocationService.clearWatch(watchIdRef.current).catch(() => {
+        // Watch already gone — nothing to clean up.
+      });
     }
-
-    setLocating(true);
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        setLocating(false);
-        setMyLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
-      },
-      (err) => {
-        setLocating(false);
-        watchIdRef.current = null;
-        alert(err.code === err.PERMISSION_DENIED
-          ? 'Location permission denied. Enable it in your browser settings.'
-          : 'Could not get your location.');
-      },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
-    );
+    watchIdRef.current = null;
+    setLocating(false);
   };
 
-  // Clean up the geolocation watch on unmount
+  // Live location: toggle GPS tracking. First fix pans/zooms the map to you;
+  // subsequent updates keep the "you are here" marker current.
+  //
+  // Uses LocationService (the Capacitor plugin) rather than navigator.geolocation:
+  // inside the Android/iOS WebView the raw browser API is never granted
+  // permission, so it hangs with neither callback firing — the button appeared
+  // to do nothing. The plugin asks the OS for permission and falls back to the
+  // browser API on the web.
+  const toggleLiveLocation = async () => {
+    // Treat "still locating" as on, so a second tap cancels a pending attempt
+    // rather than appearing to do nothing.
+    if (myLocation || watchIdRef.current !== null || locating) {
+      stopLiveLocation();
+      setMyLocation(null);
+      return;
+    }
+
+    // On the web, browsers only expose geolocation on a secure origin. Over
+    // plain HTTP the request is refused, sometimes without any callback.
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      toast({
+        title: 'Location needs a secure connection',
+        description: 'Open the app over HTTPS (not http://) to use live location.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const attempt = locateAttemptRef.current + 1;
+    locateAttemptRef.current = attempt;
+    const isCurrent = () => locateAttemptRef.current === attempt;
+
+    setLocating(true);
+
+    // Never leave the button stuck on "Locating…" with no explanation.
+    locateTimeoutRef.current = window.setTimeout(() => {
+      if (!isCurrent()) return;
+      stopLiveLocation();
+      toast({
+        title: 'Could not get your location',
+        description: 'No response from the device. Check that location services are on and this app is allowed to use them.',
+        variant: 'destructive',
+      });
+    }, LOCATE_TIMEOUT_MS);
+
+    const reportFailure = (error: unknown) => {
+      stopLiveLocation();
+      const message = error instanceof Error ? error.message : String(error ?? '');
+      toast({
+        title: 'Could not get your location',
+        description: /permission/i.test(message)
+          ? 'Location permission is blocked. Allow location for this app in your device settings, then try again.'
+          : message || 'Your device could not provide a location.',
+        variant: 'destructive',
+      });
+    };
+
+    try {
+      const watchId = await LocationService.watchPosition(
+        (loc) => {
+          if (!isCurrent()) return;
+          if (locateTimeoutRef.current !== null) {
+            window.clearTimeout(locateTimeoutRef.current);
+            locateTimeoutRef.current = null;
+          }
+          setLocating(false);
+          setMyLocation({ latitude: loc.latitude, longitude: loc.longitude });
+        },
+        (error) => {
+          if (!isCurrent()) return;
+          reportFailure(error);
+        }
+      );
+
+      if (!isCurrent()) {
+        // Cancelled while the permission prompt was open — don't leave a watch running.
+        LocationService.clearWatch(watchId).catch(() => {});
+        return;
+      }
+
+      watchIdRef.current = watchId;
+    } catch (error) {
+      if (isCurrent()) reportFailure(error);
+    }
+  };
+
+  // Clean up the geolocation watch (and any pending timeout) on unmount
   useEffect(() => {
     return () => {
-      if (watchIdRef.current !== null && navigator.geolocation) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
+      if (locateTimeoutRef.current !== null) {
+        window.clearTimeout(locateTimeoutRef.current);
+      }
+      if (watchIdRef.current !== null) {
+        LocationService.clearWatch(watchIdRef.current).catch(() => {});
       }
     };
   }, []);

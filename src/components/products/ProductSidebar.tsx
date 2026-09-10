@@ -82,7 +82,8 @@ const ProductSidebar = ({ onProductsFilter, onCategorySelect, onSubCategorySelec
         sellingPrice: Number(product.selling_price),
         billingPrice: Number(product.billing_price),
         image: product.image || undefined,
-        description: product.description || ''
+        description: product.description || '',
+        isActive: product.is_active ?? true
       }));
 
       setProducts(formattedProducts);

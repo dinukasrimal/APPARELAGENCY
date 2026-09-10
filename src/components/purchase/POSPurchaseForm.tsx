@@ -12,6 +12,7 @@ import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, Command
 import { ArrowLeft, Search, Plus, Minus, Trash, MapPin, ShoppingCart } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { getExcludedProductIdsForAgency, filterActiveProducts } from '@/utils/productVisibility';
 
 interface POSPurchaseFormProps {
   user: User;
@@ -44,10 +45,11 @@ const POSPurchaseForm = ({ user, onSubmit, onCancel }: POSPurchaseFormProps) => 
   const fetchProducts = async () => {
     try {
       setIsLoading(true);
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .order('name');
+      let query = supabase.from('products').select('*').order('name');
+      if (user.role !== 'superuser') {
+        query = query.eq('is_active', true);
+      }
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -61,13 +63,19 @@ const POSPurchaseForm = ({ user, onSubmit, onCancel }: POSPurchaseFormProps) => 
         sellingPrice: Number(product.selling_price),
         billingPrice: Number(product.billing_price),
         image: product.image,
-        description: product.description
+        description: product.description,
+        isActive: product.is_active ?? true
       }));
 
-      setProducts(formattedProducts);
-      
+      const excluded = user.role !== 'superuser' && user.agencyId
+        ? await getExcludedProductIdsForAgency(user.agencyId)
+        : new Set<string>();
+      const visibleProducts = filterActiveProducts(formattedProducts, excluded);
+
+      setProducts(visibleProducts);
+
       // Extract unique categories
-      const uniqueCategories = [...new Set(formattedProducts.map(p => p.category))];
+      const uniqueCategories = [...new Set(visibleProducts.map(p => p.category))];
       setCategories(uniqueCategories);
     } catch (error) {
       console.error('Error fetching products:', error);

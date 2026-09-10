@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Plus, RotateCcw, Eye, ArrowLeft, Trash2, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { getExcludedProductIdsForAgency } from '@/utils/productVisibility';
 
 interface CompanyReturn {
   id: string;
@@ -64,12 +65,19 @@ const SimpleCompanyReturns = ({ user }: SimpleCompanyReturnsProps) => {
 
   const fetchProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('id, name, billing_price');
+      let query = supabase.from('products').select('id, name, billing_price');
+      if (user.role !== 'superuser') {
+        query = query.eq('is_active', true);
+      }
+      const { data, error } = await query;
 
       if (error) throw error;
-      setProducts(data || []);
+
+      const excluded = user.role !== 'superuser' && user.agencyId
+        ? await getExcludedProductIdsForAgency(user.agencyId)
+        : new Set<string>();
+
+      setProducts((data || []).filter(p => !excluded.has(p.id)));
     } catch (error) {
       console.error('Error fetching products:', error);
       toast({

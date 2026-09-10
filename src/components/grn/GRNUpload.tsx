@@ -106,6 +106,7 @@ const GRNUpload = ({ user, onGRNCreated }: GRNUploadProps) => {
         billingPrice: item.billing_price,
         image: item.image || '',
         description: item.description || '',
+        isActive: item.is_active ?? true,
       }));
       
       setProducts(productData);

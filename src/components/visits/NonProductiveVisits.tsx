@@ -11,6 +11,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Plus, MapPin, Search, Calendar, ArrowLeft, Users } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
 import { useToast } from '@/hooks/use-toast';
 import { isWithinSriLanka } from '@/utils/geoBounds';
 import CustomerSearch from '@/components/customers/CustomerSearch';
@@ -65,18 +66,13 @@ const NonProductiveVisits = ({ user }: NonProductiveVisitsProps) => {
 
   const fetchCustomers = async () => {
     try {
-      let customersQuery = supabase
-        .from('customers')
-        .select('*');
-      
-      if (selectedAgencyId) {
-        customersQuery = customersQuery.eq('agency_id', selectedAgencyId);
-      }
-      
-      const { data, error } = await customersQuery
-        .order('name', { ascending: true });
-
-      if (error) throw error;
+      // Paged: an unpaginated select stops at 1000 rows, so a superuser
+      // (not filtered to one agency) silently lost customers off the end.
+      const data = await fetchAllSupabaseRows<any>(() => {
+        let query = supabase.from('customers').select('*');
+        if (selectedAgencyId) query = query.eq('agency_id', selectedAgencyId);
+        return query.order('name', { ascending: true }).order('id');
+      });
 
       const transformedCustomers: Customer[] = (data || []).map(customer => ({
         id: customer.id,

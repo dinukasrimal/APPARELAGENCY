@@ -7,6 +7,7 @@ import { X, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { externalInventoryService, ExternalInventoryItem } from '@/services/external-inventory.service';
+import { getExcludedProductIdsForAgency } from '@/utils/productVisibility';
 
 interface SimpleBulkStockAdjustmentProps {
   user: User;
@@ -53,14 +54,23 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
       
       // Get all products from products table as source of truth
       console.log('🔍 Fetching all products from products table...');
-      const { data: allProducts, error: productsError } = await supabase
+      let productsQuery = supabase
         .from('products')
-        .select('name, description, sub_category')
+        .select('id, name, description, sub_category')
         .order('name');
+      if (user.role !== 'superuser') {
+        productsQuery = productsQuery.eq('is_active', true);
+      }
+      const { data: rawProducts, error: productsError } = await productsQuery;
 
       if (productsError) {
         throw productsError;
       }
+
+      const excludedProductIds = user.role !== 'superuser' && agencyId
+        ? await getExcludedProductIdsForAgency(agencyId)
+        : new Set<string>();
+      const allProducts = (rawProducts || []).filter(p => !excludedProductIds.has(p.id));
 
       console.log(`📦 Found ${allProducts?.length || 0} products in products table`);
 

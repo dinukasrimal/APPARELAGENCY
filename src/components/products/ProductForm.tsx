@@ -8,16 +8,24 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import { ArrowLeft, Plus, X, Upload, Image as ImageIcon } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { useAgencies } from '@/hooks/useAgency';
 import ProductImageUpload from './ProductImageUpload';
+
+export interface ProductFormSubmitData extends Omit<Product, 'id' | 'createdAt'> {
+  excludedAgencyIds: string[];
+}
 
 interface ProductFormProps {
   product?: Product;
-  onSubmit: (productData: Omit<Product, 'id' | 'createdAt'>) => void;
+  onSubmit: (productData: ProductFormSubmitData) => void;
   onCancel: () => void;
   userRole?: 'agency' | 'superuser' | 'agent';
+  initialExcludedAgencyIds?: string[];
 }
 
 const CATEGORIES = [
@@ -34,7 +42,7 @@ const CATEGORIES = [
   'Health & Wellness'
 ];
 
-const ProductForm = ({ product, onSubmit, onCancel, userRole }: ProductFormProps) => {
+const ProductForm = ({ product, onSubmit, onCancel, userRole, initialExcludedAgencyIds }: ProductFormProps) => {
   const [formData, setFormData] = useState({
     name: product?.name || '',
     description: product?.description || '',
@@ -42,7 +50,8 @@ const ProductForm = ({ product, onSubmit, onCancel, userRole }: ProductFormProps
     subCategory: product?.subCategory || '',
     sellingPrice: product?.sellingPrice || 0,
     billingPrice: product?.billingPrice || 0,
-    image: product?.image || null
+    image: product?.image || null,
+    isActive: product?.isActive ?? true
   });
 
   const [colors, setColors] = useState<string[]>(product?.colors || []);
@@ -50,7 +59,15 @@ const ProductForm = ({ product, onSubmit, onCancel, userRole }: ProductFormProps
   const [newColor, setNewColor] = useState('');
   const [newSize, setNewSize] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [excludedAgencyIds, setExcludedAgencyIds] = useState<string[]>(initialExcludedAgencyIds || []);
+  const { agencies } = useAgencies();
   const { toast } = useToast();
+
+  const toggleAgencyExclusion = (agencyId: string) => {
+    setExcludedAgencyIds(prev =>
+      prev.includes(agencyId) ? prev.filter(id => id !== agencyId) : [...prev, agencyId]
+    );
+  };
 
   const addColor = () => {
     if (newColor.trim() && !colors.includes(newColor.trim())) {
@@ -157,7 +174,8 @@ const ProductForm = ({ product, onSubmit, onCancel, userRole }: ProductFormProps
     const productData = {
       ...formData,
       colors,
-      sizes
+      sizes,
+      excludedAgencyIds: formData.isActive ? excludedAgencyIds : []
     };
 
     onSubmit(productData);
@@ -330,6 +348,54 @@ const ProductForm = ({ product, onSubmit, onCancel, userRole }: ProductFormProps
                   onImageUpdate={handleImageUpdate}
                   userRole={userRole}
                 />
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Visibility */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Visibility</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="isActive">Active</Label>
+                  <p className="text-xs text-gray-500">
+                    When off, this product is hidden from every agency's order screens.
+                  </p>
+                </div>
+                <Switch
+                  id="isActive"
+                  checked={formData.isActive}
+                  onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
+                />
+              </div>
+
+              {formData.isActive && (
+                <div className="space-y-2">
+                  <Label>Inactive for specific agencies</Label>
+                  <p className="text-xs text-gray-500">
+                    Product stays active everywhere else, but is hidden from the agencies checked below.
+                  </p>
+                  <div className="max-h-48 overflow-y-auto border rounded-md divide-y">
+                    {agencies.map((agency) => (
+                      <label
+                        key={agency.id}
+                        className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50"
+                      >
+                        <Checkbox
+                          checked={excludedAgencyIds.includes(agency.id)}
+                          onCheckedChange={() => toggleAgencyExclusion(agency.id)}
+                        />
+                        {agency.name}
+                      </label>
+                    ))}
+                    {agencies.length === 0 && (
+                      <p className="px-3 py-2 text-sm text-gray-500">No agencies found.</p>
+                    )}
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>

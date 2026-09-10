@@ -143,8 +143,23 @@ interface EnhancedReportsProps {
 }
 
 const EnhancedReports = ({ user, onBack }: EnhancedReportsProps) => {
-  const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 3);
+    return d.toISOString().split('T')[0];
+  });
+  const [periodMonths, setPeriodMonths] = useState<number | null>(3);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
+
+  // Business trends need months, not days, so the presets are month ranges.
+  const applyPeriodPreset = (months: number) => {
+    const today = new Date();
+    const from = new Date(today);
+    from.setMonth(from.getMonth() - months);
+    setPeriodMonths(months);
+    setStartDate(from.toISOString().split('T')[0]);
+    setEndDate(today.toISOString().split('T')[0]);
+  };
   const [selectedAgency, setSelectedAgency] = useState<string>(user.role === 'superuser' ? '' : user.agencyId || '');
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [metrics, setMetrics] = useState<ReportMetrics>({
@@ -989,13 +1004,26 @@ map.fitBounds([${boundsArr}],{padding:[30,30]});
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-0">
+            <div className="flex flex-wrap gap-2 mb-6">
+              {[3, 6, 9, 12].map((months) => (
+                <Button
+                  key={months}
+                  type="button"
+                  size="sm"
+                  variant={periodMonths === months ? 'default' : 'outline'}
+                  onClick={() => applyPeriodPreset(months)}
+                >
+                  {months} months
+                </Button>
+              ))}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="space-y-3">
                 <label className="block text-base font-semibold text-slate-700">Start Date</label>
                 <Input
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => { setPeriodMonths(null); setStartDate(e.target.value); }}
                   className="h-12 text-base bg-white/90 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
                 />
               </div>
@@ -1005,7 +1033,7 @@ map.fitBounds([${boundsArr}],{padding:[30,30]});
                 <Input
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => { setPeriodMonths(null); setEndDate(e.target.value); }}
                   className="h-12 text-base bg-white/90 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
                 />
               </div>

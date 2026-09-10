@@ -277,21 +277,23 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
           agencyName = selectedAgency?.name || null;
           console.log('🏢 Superuser selected agency:', agencyName);
         } else if (user.role !== 'superuser') {
-          // For regular users, get their agency name via profile
-          console.log('🔍 Fetching user name from profiles table for user ID:', user.id);
-          
+          // Targets are filed against the agency, not the person, so search by
+          // agency_name — matching what the superuser view uses. Falls back to
+          // the profile name only when the profile has no agency recorded.
+          console.log('🔍 Fetching agency name from profiles table for user ID:', user.id);
+
           const { data, error } = await supabase
             .from('profiles')
-            .select('name')
+            .select('agency_name, name')
             .eq('id', user.id)
             .single();
-            
+
           if (error) {
             console.error('Error fetching user profile:', error);
             agencyName = user.name || null;
           } else {
-            console.log('✅ Found user name in profiles:', data.name);
-            agencyName = data.name || null;
+            console.log('✅ Found agency name in profiles:', data.agency_name || data.name);
+            agencyName = data.agency_name || data.name || null;
           }
         }
         
