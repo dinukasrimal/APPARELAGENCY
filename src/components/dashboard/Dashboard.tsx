@@ -7,6 +7,7 @@ import DashboardStats from './DashboardStats';
 import DashboardMapLeaflet from './DashboardMapLeaflet';
 import ExternalInventory from '@/components/inventory/ExternalInventory';
 import ModuleErrorBoundary from '@/components/common/ModuleErrorBoundary';
+import LocationRequestResponder from '@/components/location/LocationRequestResponder';
 
 // Lazy load heavy components to improve initial load time
 const CustomerManagement = lazy(() => import('@/components/customers/DuplicatePreventionCustomerManagement'));
@@ -187,6 +188,9 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 flex w-full">
+      {/* Mounted for the whole session (not tied to a module) so a location
+          check from head office is answered whichever screen is open. */}
+      {user.role !== 'superuser' && <LocationRequestResponder userId={user.id} />}
       <Sidebar 
         user={user}
         activeModule={activeModule}

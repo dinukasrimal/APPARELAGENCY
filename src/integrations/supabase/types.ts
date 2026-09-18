@@ -2373,6 +2373,45 @@ export type Database = {
           },
         ]
       }
+      location_requests: {
+        Row: {
+          accuracy: number | null
+          created_at: string
+          error: string | null
+          id: string
+          latitude: number | null
+          longitude: number | null
+          requested_by: string | null
+          responded_at: string | null
+          status: string
+          target_user_id: string
+        }
+        Insert: {
+          accuracy?: number | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          latitude?: number | null
+          longitude?: number | null
+          requested_by?: string | null
+          responded_at?: string | null
+          status?: string
+          target_user_id: string
+        }
+        Update: {
+          accuracy?: number | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          latitude?: number | null
+          longitude?: number | null
+          requested_by?: string | null
+          responded_at?: string | null
+          status?: string
+          target_user_id?: string
+        }
+        Relationships: []
+      }
       non_productive_visits: {
         Row: {
           agency_id: string

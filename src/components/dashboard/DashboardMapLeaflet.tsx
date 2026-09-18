@@ -14,9 +14,14 @@ import { loadDistrictFeatures, districtForPoint } from '@/utils/districtLookup';
 import LeafletMap from './LeafletMap';
 import { useToast } from '@/hooks/use-toast';
 import { LocationService } from '@/services/location.service';
+import { Capacitor } from '@capacitor/core';
 
 // How long to wait for a GPS fix before giving up and telling the user.
 const LOCATE_TIMEOUT_MS = 15000;
+// How long to wait for an agent's app to answer a location check. Long enough
+// for a GPS fix on the phone plus the round trip; after that the app is
+// presumably closed, so fall back to the last known location.
+const AGENT_LOCATE_TIMEOUT_MS = 45000;
 
 interface LocationData {
   id: string;
@@ -74,6 +79,12 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   // Bumped on every stop so a permission prompt answered late can't revive a
   // cancelled attempt.
   const locateAttemptRef = useRef(0);
+  // Superuser "Locate agent": on-demand check, answered by the agent's open app
+  const [agentOptions, setAgentOptions] = useState<Array<{ id: string; name: string; agencyName: string | null }>>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>('');
+  const [locatingAgent, setLocatingAgent] = useState(false);
+  const [agentLocation, setAgentLocation] = useState<{ latitude: number; longitude: number; label: string } | null>(null);
+  const agentRequestCleanupRef = useRef<(() => void) | null>(null);
   const [showDistricts, setShowDistricts] = useState(false);
   // District-wise sales (last 90 days, from invoices mapped by GPS to a district)
   const [districtSales, setDistrictSales] = useState<Array<{ district: string; total: number; count: number }>>([]);
@@ -104,6 +115,7 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   useEffect(() => {
     if (user.role === 'superuser') {
       fetchAgencies();
+      fetchAgentOptions();
     } else {
       setSelectedAgencies([user.agencyId!]);
     }
@@ -133,6 +145,156 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       console.error('Error fetching agencies:', error);
     }
   };
+
+  const fetchAgentOptions = async () => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, name, agency_name, role')
+      .neq('role', 'superuser')
+      .order('name');
+    if (error) {
+      console.error('Error fetching agents:', error);
+      return;
+    }
+    setAgentOptions((data || []).map((p) => ({ id: p.id, name: p.name, agencyName: p.agency_name })));
+  };
+
+  // Popup labels are HTML, so names from profiles must not be able to inject markup.
+  const escapeHtml = (text: string) =>
+    text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+
+  const timeAgo = (at: Date) => {
+    const mins = Math.round((Date.now() - at.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 48) return `${hours} h ago`;
+    return at.toLocaleDateString();
+  };
+
+  // Where the agent last did something GPS-stamped. Used when their app
+  // doesn't answer, which is the normal case whenever it isn't open.
+  const fetchLastKnownLocation = async (agentId: string) => {
+    const sources: Array<{ label: string; query: PromiseLike<{ data: any[] | null }> ; lat: string; lng: string; at: string }> = [
+      { label: 'invoice', lat: 'latitude', lng: 'longitude', at: 'created_at',
+        query: supabase.from('invoices').select('latitude, longitude, created_at').eq('created_by', agentId)
+          .not('latitude', 'is', null).order('created_at', { ascending: false }).limit(1) },
+      { label: 'sales order', lat: 'latitude', lng: 'longitude', at: 'created_at',
+        query: supabase.from('sales_orders').select('latitude, longitude, created_at').eq('created_by', agentId)
+          .not('latitude', 'is', null).order('created_at', { ascending: false }).limit(1) },
+      { label: 'collection', lat: 'latitude', lng: 'longitude', at: 'created_at',
+        query: supabase.from('collections').select('latitude, longitude, created_at').eq('created_by', agentId)
+          .not('latitude', 'is', null).order('created_at', { ascending: false }).limit(1) },
+      { label: 'visit', lat: 'latitude', lng: 'longitude', at: 'created_at',
+        query: supabase.from('non_productive_visits').select('latitude, longitude, created_at').eq('user_id', agentId)
+          .not('latitude', 'is', null).order('created_at', { ascending: false }).limit(1) },
+      { label: 'clock-in', lat: 'clock_in_latitude', lng: 'clock_in_longitude', at: 'clock_in_time',
+        query: supabase.from('time_tracking').select('clock_in_latitude, clock_in_longitude, clock_in_time').eq('user_id', agentId)
+          .not('clock_in_latitude', 'is', null).order('clock_in_time', { ascending: false }).limit(1) },
+    ];
+
+    const results = await Promise.all(sources.map((s) => s.query));
+    let best: { latitude: number; longitude: number; at: Date; source: string } | null = null;
+    results.forEach((res, i) => {
+      const row = res.data?.[0];
+      if (!row) return;
+      const src = sources[i];
+      const latitude = Number(row[src.lat]);
+      const longitude = Number(row[src.lng]);
+      // 0,0 is what the forms save when GPS failed — not a real place.
+      if (!latitude || !longitude) return;
+      const at = new Date(row[src.at]);
+      if (!best || at > best.at) best = { latitude, longitude, at, source: src.label };
+    });
+    return best as { latitude: number; longitude: number; at: Date; source: string } | null;
+  };
+
+  const locateAgent = async () => {
+    const agent = agentOptions.find((a) => a.id === selectedAgentId);
+    if (!agent) return;
+
+    agentRequestCleanupRef.current?.();
+    setLocatingAgent(true);
+    setAgentLocation(null);
+
+    const { data: request, error } = await supabase
+      .from('location_requests')
+      .insert({ target_user_id: agent.id, requested_by: user.id })
+      .select('id')
+      .single();
+
+    if (error || !request) {
+      setLocatingAgent(false);
+      toast({ title: 'Could not send location check', description: error?.message || 'Please try again.', variant: 'destructive' });
+      return;
+    }
+
+    let settled = false;
+
+    const fallBackToLastKnown = async (reason: string) => {
+      const last = await fetchLastKnownLocation(agent.id);
+      setLocatingAgent(false);
+      if (last) {
+        setAgentLocation({
+          latitude: last.latitude,
+          longitude: last.longitude,
+          label: `<b>${escapeHtml(agent.name)}</b><br/>Last known · ${last.source}<br/>${timeAgo(last.at)}`,
+        });
+        toast({ title: `${agent.name}: showing last known location`, description: `${reason} Last seen at a ${last.source}, ${timeAgo(last.at)}.` });
+      } else {
+        toast({ title: `Could not locate ${agent.name}`, description: `${reason} No earlier GPS-stamped activity either.`, variant: 'destructive' });
+      }
+    };
+
+    const finish = () => {
+      settled = true;
+      window.clearTimeout(timeoutId);
+      supabase.removeChannel(channel);
+      agentRequestCleanupRef.current = null;
+    };
+
+    const channel = supabase
+      .channel(`location-request-${request.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'location_requests', filter: `id=eq.${request.id}` },
+        (payload) => {
+          if (settled) return;
+          const row = payload.new as { status: string; latitude: number | null; longitude: number | null; accuracy: number | null; error: string | null };
+          if (row.status === 'fulfilled' && row.latitude && row.longitude) {
+            finish();
+            setLocatingAgent(false);
+            const accuracy = row.accuracy ? ` · ±${Math.round(row.accuracy)} m` : '';
+            setAgentLocation({
+              latitude: row.latitude,
+              longitude: row.longitude,
+              label: `<b>${escapeHtml(agent.name)}</b><br/>Live · just now${accuracy}`,
+            });
+            toast({ title: `${agent.name} located`, description: 'Current location from their device.' });
+          } else if (row.status === 'failed') {
+            finish();
+            void fallBackToLastKnown(`Their device couldn't get a GPS fix (${row.error || 'unknown error'}).`);
+          }
+        }
+      )
+      .subscribe();
+
+    const timeoutId = window.setTimeout(async () => {
+      if (settled) return;
+      finish();
+      await supabase.from('location_requests').update({ status: 'expired' }).eq('id', request.id).eq('status', 'pending');
+      void fallBackToLastKnown('Their app is not open right now, so their phone could not answer.');
+    }, AGENT_LOCATE_TIMEOUT_MS);
+
+    agentRequestCleanupRef.current = () => {
+      if (settled) return;
+      finish();
+      setLocatingAgent(false);
+    };
+  };
+
+  // Drop any in-flight location check if the dashboard is left
+  useEffect(() => () => agentRequestCleanupRef.current?.(), []);
 
   const stopLiveLocation = () => {
     locateAttemptRef.current += 1;
@@ -166,9 +328,11 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       return;
     }
 
-    // On the web, browsers only expose geolocation on a secure origin. Over
-    // plain HTTP the request is refused, sometimes without any callback.
-    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    // In a browser, geolocation only works on a secure origin — over plain
+    // HTTP the request is refused, sometimes without any callback. The native
+    // app goes through the Capacitor plugin to the OS instead, which has no
+    // such requirement, so only check this on the web.
+    if (!Capacitor.isNativePlatform() && typeof window !== 'undefined' && window.isSecureContext === false) {
       toast({
         title: 'Location needs a secure connection',
         description: 'Open the app over HTTPS (not http://) to use live location.',
@@ -787,7 +951,34 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
               )}
             </CardTitle>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Superuser: ask an agent's app for its current position */}
+              {user.role === 'superuser' && (
+                <div className="flex items-center gap-1">
+                  <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
+                    <SelectTrigger className="h-9 w-[190px]">
+                      <SelectValue placeholder="Select agent…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {agentOptions.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name}{a.agencyName ? ` · ${a.agencyName}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!selectedAgentId || locatingAgent}
+                    onClick={locateAgent}
+                  >
+                    {locatingAgent ? 'Asking…' : 'Locate'}
+                  </Button>
+                </div>
+              )}
+
               {/* My live location */}
               <Button
                 type="button"
@@ -840,7 +1031,7 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
           </p>
         </CardHeader>
         <CardContent>
-          <LeafletMap locations={locations} height="500px" myLocation={myLocation} showDistricts={showDistricts} />
+          <LeafletMap locations={locations} height="500px" myLocation={myLocation} agentLocation={agentLocation} showDistricts={showDistricts} />
 
           {/* Agency colour legend */}
           {selectedTypes.includes('customer') && selectedAgencies.length > 0 && (

@@ -33,19 +33,22 @@ interface LeafletMapProps {
   routes?: RoutePath[];
   selectedId?: string | null;
   myLocation?: { latitude: number; longitude: number } | null;
+  // A located agent (superuser "Locate agent"), shown with its own label.
+  agentLocation?: { latitude: number; longitude: number; label: string } | null;
   showDistricts?: boolean;
 }
 
 // Cache the districts GeoJSON across map instances (loaded once).
 let districtsGeoJsonCache: any = null;
 
-const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null, myLocation = null, showDistricts = false }: LeafletMapProps) => {
+const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null, myLocation = null, agentLocation = null, showDistricts = false }: LeafletMapProps) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
   const markerByIdRef = useRef<Record<string, L.Marker>>({});
   const routeLayersRef = useRef<L.Polyline[]>([]);
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
+  const agentLocationMarkerRef = useRef<L.Marker | null>(null);
   const districtsLayerRef = useRef<L.GeoJSON | null>(null);
 
   const getMarkerColor = (type: string) => {
@@ -269,6 +272,34 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     marker.openPopup();
   }, [myLocation]);
 
+  // Located agent — a red pin with their name and how fresh the fix is.
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+
+    if (agentLocationMarkerRef.current) {
+      mapInstanceRef.current.removeLayer(agentLocationMarkerRef.current);
+      agentLocationMarkerRef.current = null;
+    }
+
+    if (!agentLocation) return;
+
+    const icon = L.divIcon({
+      className: 'agent-location-marker',
+      html: `<div style="width:26px;height:26px;border-radius:50% 50% 50% 0;background:#DC2626;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.45);"></div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 26],
+      popupAnchor: [0, -24],
+    });
+
+    const marker = L.marker([agentLocation.latitude, agentLocation.longitude], { icon, zIndexOffset: 2500 })
+      .bindPopup(agentLocation.label);
+    marker.addTo(mapInstanceRef.current);
+    agentLocationMarkerRef.current = marker;
+
+    mapInstanceRef.current.setView([agentLocation.latitude, agentLocation.longitude], 16);
+    marker.openPopup();
+  }, [agentLocation]);
+
   // Sri Lanka district boundaries — light shaded overlay with labels.
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -327,9 +358,13 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
       <div className="mb-2 text-sm text-green-600">
         ✓ Interactive Leaflet Map (OpenStreetMap - No API key required!)
       </div>
-      <div 
-        ref={mapRef} 
-        className="w-full rounded-lg border border-gray-300"
+      {/* `relative z-0 isolate` gives the map its own stacking context. Leaflet
+          puts its panes and controls at z-index 400-1000, which otherwise
+          compete with the whole page and cover dropdowns (z-50) that open
+          over the map. Contained, they only stack within the map. */}
+      <div
+        ref={mapRef}
+        className="relative z-0 isolate w-full rounded-lg border border-gray-300"
         style={{ height }}
       />
       <div className="mt-2 text-sm text-gray-600">

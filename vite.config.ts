@@ -10,6 +10,12 @@ export default defineConfig(({ mode }) => ({
     host: "::",
     port: 8080,
   },
+  // The droplet serves the build with `vite preview` behind nginx. Vite
+  // rejects requests for hostnames it doesn't recognise, so the public
+  // HTTPS name has to be listed or every proxied request is blocked.
+  preview: {
+    allowedHosts: ["app.dag-apparel.com"],
+  },
   plugins: [
     react(),
     mode === 'development' &&
