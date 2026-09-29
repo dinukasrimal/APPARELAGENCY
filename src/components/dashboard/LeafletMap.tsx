@@ -50,6 +50,10 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
   // Whether this tracking session has already centred the map once
   const hasCenteredOnMyLocationRef = useRef(false);
+  // While live tracking is on the view belongs to the user, so data refreshes
+  // must not pull the map back to fit every pin. A ref (not state) so that a
+  // GPS fix doesn't re-run the marker effect and rebuild every marker.
+  const myLocationActiveRef = useRef(false);
   const agentLocationMarkerRef = useRef<L.Marker | null>(null);
   const districtsLayerRef = useRef<L.GeoJSON | null>(null);
 
@@ -149,8 +153,11 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     routeLayersRef.current = [];
 
     if (locations.length === 0 && routes.length === 0) {
-      // If no locations, just center on Sri Lanka
-      mapInstanceRef.current.setView([7.8731, 80.7718], 8);
+      // If no locations, just center on Sri Lanka — unless the user is
+      // watching their own position, in which case leave their view alone.
+      if (!myLocationActiveRef.current) {
+        mapInstanceRef.current.setView([7.8731, 80.7718], 8);
+      }
       return;
     }
 
@@ -207,8 +214,10 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
       routeLayersRef.current.push(polyline);
     });
 
-    // Fit map to markers
-    if (hasBounds && bounds.isValid()) {
+    // Fit map to markers. Skipped while live tracking is on: the user has
+    // panned/zoomed to look around and a data refresh must not yank the map
+    // back out to show every pin.
+    if (hasBounds && bounds.isValid() && !myLocationActiveRef.current) {
       mapInstanceRef.current.fitBounds(bounds, { padding: [20, 20] });
       if (locations.length === 1 && routes.length === 0) {
         mapInstanceRef.current.setZoom(15);
@@ -250,6 +259,8 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
+
+    myLocationActiveRef.current = !!myLocation;
 
     if (!myLocation) {
       if (myLocationMarkerRef.current) {
