@@ -48,6 +48,8 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
   const markerByIdRef = useRef<Record<string, L.Marker>>({});
   const routeLayersRef = useRef<L.Polyline[]>([]);
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
+  // Whether this tracking session has already centred the map once
+  const hasCenteredOnMyLocationRef = useRef(false);
   const agentLocationMarkerRef = useRef<L.Marker | null>(null);
   const districtsLayerRef = useRef<L.GeoJSON | null>(null);
 
@@ -241,35 +243,52 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     }
   }, [selectedId, locations]);
 
-  // Live "my location" marker — a pulsing blue dot; pan+zoom to it when updated.
+  // Live "my location" marker — a pulsing blue dot. The map is centred only on
+  // the FIRST fix of a tracking session; later fixes just move the dot. GPS
+  // updates arrive every time the user moves, so re-centring on each one made
+  // it impossible to pan away and look at the surrounding area.
   useEffect(() => {
-    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    if (!map) return;
 
-    if (myLocationMarkerRef.current) {
-      mapInstanceRef.current.removeLayer(myLocationMarkerRef.current);
-      myLocationMarkerRef.current = null;
+    if (!myLocation) {
+      if (myLocationMarkerRef.current) {
+        map.removeLayer(myLocationMarkerRef.current);
+        myLocationMarkerRef.current = null;
+      }
+      // Next time tracking starts, centre on that first fix again.
+      hasCenteredOnMyLocationRef.current = false;
+      return;
     }
 
-    if (!myLocation) return;
+    const position: L.LatLngExpression = [myLocation.latitude, myLocation.longitude];
 
-    const icon = L.divIcon({
-      className: 'my-location-marker',
-      html: `<div style="position:relative;width:22px;height:22px;">
-        <div style="position:absolute;inset:0;border-radius:50%;background:rgba(37,99,235,0.3);animation:mlpulse 1.6s ease-out infinite;"></div>
-        <div style="position:absolute;top:5px;left:5px;width:12px;height:12px;border-radius:50%;background:#2563EB;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.4);"></div>
-      </div>
-      <style>@keyframes mlpulse{0%{transform:scale(0.6);opacity:1}100%{transform:scale(2.2);opacity:0}}</style>`,
-      iconSize: [22, 22],
-      iconAnchor: [11, 11],
-    });
+    if (myLocationMarkerRef.current) {
+      // Move the existing marker rather than replacing it, so the popup and
+      // the map view are left exactly as the user put them.
+      myLocationMarkerRef.current.setLatLng(position);
+    } else {
+      const icon = L.divIcon({
+        className: 'my-location-marker',
+        html: `<div style="position:relative;width:22px;height:22px;">
+          <div style="position:absolute;inset:0;border-radius:50%;background:rgba(37,99,235,0.3);animation:mlpulse 1.6s ease-out infinite;"></div>
+          <div style="position:absolute;top:5px;left:5px;width:12px;height:12px;border-radius:50%;background:#2563EB;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.4);"></div>
+        </div>
+        <style>@keyframes mlpulse{0%{transform:scale(0.6);opacity:1}100%{transform:scale(2.2);opacity:0}}</style>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      });
 
-    const marker = L.marker([myLocation.latitude, myLocation.longitude], { icon, zIndexOffset: 2000 })
-      .bindPopup('You are here');
-    marker.addTo(mapInstanceRef.current);
-    myLocationMarkerRef.current = marker;
+      const marker = L.marker(position, { icon, zIndexOffset: 2000 }).bindPopup('You are here');
+      marker.addTo(map);
+      myLocationMarkerRef.current = marker;
+    }
 
-    mapInstanceRef.current.setView([myLocation.latitude, myLocation.longitude], 16);
-    marker.openPopup();
+    if (!hasCenteredOnMyLocationRef.current) {
+      map.setView(position, 16);
+      myLocationMarkerRef.current.openPopup();
+      hasCenteredOnMyLocationRef.current = true;
+    }
   }, [myLocation]);
 
   // Located agent — a red pin with their name and how fresh the fix is.
