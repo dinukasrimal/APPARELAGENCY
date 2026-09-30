@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { externalSupabase, isExternalClientConfigured } from '@/integrations/supabase/external-client';
 import { User } from '@/types/auth';
 import { fetchAllSupabaseRows } from '@/utils/supabasePagination';
+import { monthStartDate, monthEndDate } from '@/utils/dateRange';
 
 // Types for external data (matching local external tables schema)
 export interface ExternalSalesTarget {
@@ -629,11 +630,12 @@ export class ExternalDataService {
         const minMonth = Math.min(...months);
         const maxMonth = Math.max(...months);
         
-        startDate = `${year}-${minMonth.toString().padStart(2, '0')}-01`;
-        // Use calendar last day at 23:59:59 to include full period (local date)
-        const end = new Date(year, maxMonth, 0);
-        const endStr = end.toISOString().split('T')[0];
-        endDate = `${endStr}T23:59:59`;
+        startDate = monthStartDate(year, minMonth);
+        // Date-only: getInvoices turns this into an exclusive "< end + 1 day",
+        // so the last day is included. A time suffix here made the string
+        // unparseable, and the failure was swallowed — dropping the date
+        // filter altogether and counting every invoice ever recorded.
+        endDate = monthEndDate(year, maxMonth);
         
         console.log(`📆 Date range for category achievement: ${startDate} to ${endDate}`);
       }
@@ -960,8 +962,10 @@ export class ExternalDataService {
         let query = supabase
           .from('invoices')
           .select('total, created_at')
-          .gte('created_at', startDate + 'T00:00:00')
-          .lte('created_at', endDate + 'T23:59:59');
+          // Parsed without a 'Z' so they are local-time instants: a month runs
+          // local midnight to local midnight, not UTC.
+          .gte('created_at', new Date(`${startDate}T00:00:00`).toISOString())
+          .lte('created_at', new Date(`${endDate}T23:59:59.999`).toISOString());
 
         if (agencyId) {
           query = query.eq('agency_id', agencyId);
@@ -1105,8 +1109,8 @@ export class ExternalDataService {
         : externalTargets;
 
       if (month) {
-        const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
-        const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+        const startDate = monthStartDate(year, month);
+        const endDate = monthEndDate(year, month);
         const { data: internalSales, error: internalError } = await this.getInternalSalesData(
           user,
           startDate,
@@ -1174,8 +1178,8 @@ export class ExternalDataService {
         } else {
           const minMonth = Math.min(...months);
           const maxMonth = Math.max(...months);
-          startDate = `${year}-${minMonth.toString().padStart(2, '0')}-01`;
-          endDate = new Date(year, maxMonth, 0).toISOString().split('T')[0];
+          startDate = monthStartDate(year, minMonth);
+          endDate = monthEndDate(year, maxMonth);
         }
 
         // Get internal sales for this period

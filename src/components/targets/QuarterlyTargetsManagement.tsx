@@ -14,6 +14,7 @@ import { useExternalTargetsWithAchievements, useExternalConnection } from '@/hoo
 import { ExternalDataService } from '@/services/external-data.service';
 import { supabase } from '@/integrations/supabase/client';
 import { chunkArray, fetchAllSupabaseRows } from '@/utils/supabasePagination';
+import { monthStartDate, monthEndDate } from '@/utils/dateRange';
 import AgencySelector from '@/components/common/AgencySelector';
 import { useAgencies } from '@/hooks/useAgency';
 
@@ -142,8 +143,8 @@ const QuarterlyTargetsManagement = ({ user }: QuarterlyTargetsManagementProps) =
     try {
       const year = parseInt(comparisonYear);
       const month = parseInt(comparisonMonth);
-      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
-      const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+      const startDate = monthStartDate(year, month);
+      const endDate = monthEndDate(year, month);
       const agencyId = user.role === 'superuser' ? selectedAgencyId : user.agencyId;
       const { data } = await ExternalDataService.getInstance().getInternalAchievementInvoices(
         user, startDate, endDate, agencyId
