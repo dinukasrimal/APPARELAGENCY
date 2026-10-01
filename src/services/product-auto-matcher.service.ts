@@ -89,8 +89,10 @@ export class ProductAutoMatcherService {
     let baseName = productName.replace(/^\[[^\]]+\]\s*/, '');
     
     // Remove color and size patterns
-    baseName = baseName.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
-    baseName = baseName.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+    // The separator may be a dash: "SLEEVE LESS VEST -105" is the 105 of that
+    // family just as much as "SLEEVE LESS VEST 105" is.
+    baseName = baseName.replace(/-[A-Z]+[\s-]+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+    baseName = baseName.replace(/[\s-]+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
     baseName = baseName.replace(/-[A-Z]+$/i, '');
     
     return baseName.trim();

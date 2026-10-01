@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { X, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { externalInventoryService, ExternalInventoryItem } from '@/services/external-inventory.service';
+import { externalInventoryService, inventoryGroupKey, ExternalInventoryItem } from '@/services/external-inventory.service';
 import { getExcludedProductIdsForAgency } from '@/utils/productVisibility';
 
 interface SimpleBulkStockAdjustmentProps {
@@ -56,7 +56,7 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
       console.log('🔍 Fetching all products from products table...');
       let productsQuery = supabase
         .from('products')
-        .select('id, name, description, sub_category')
+        .select('id, name, description, sub_category, sizes')
         .order('name');
       if (user.role !== 'superuser') {
         productsQuery = productsQuery.eq('is_active', true);
@@ -82,13 +82,36 @@ const SimpleBulkStockAdjustment = ({ user, onClose, onSubmitted, selectedAgencyI
 
       // Convert all products to CategoryProduct format
       const allProductsMap = new Map<string, CategoryProduct>();
-      
+
+      // Index the inventory by the SAME key the Inventory screen groups by
+      // (normalised base name + size), not by an exact product_name match.
+      // Odoo and the app catalogue often carry different codes for one product
+      // — e.g. "[RW3XL] RUBY-WHTE 3XL" from Odoo vs "[RUW3XL] RUBY-WHTE 3XL"
+      // here. The Inventory screen merges those into one line, but the exact
+      // match found nothing, so this screen showed 0 while Inventory showed the
+      // real stock. Counting 0 against a 0 then produced no change at all, so
+      // the stock count silently did nothing.
+      const inventoryByKey = new Map<string, ExternalInventoryItem[]>();
+      inventoryItems.forEach((item) => {
+        const size = (item.size || '').toUpperCase() === 'MULTI' ? '' : item.size;
+        const keys = new Set([
+          inventoryGroupKey(item.product_name, size),
+          ...(item.original_product_name ? [inventoryGroupKey(item.original_product_name, size)] : []),
+        ]);
+        keys.forEach((k) => {
+          const list = inventoryByKey.get(k) || [];
+          if (!list.includes(item)) list.push(item);
+          inventoryByKey.set(k, list);
+        });
+      });
+
       // Use products table as single source of truth and aggregate inventory data
       allProducts?.forEach(product => {
-        // Find all inventory items that match this product description
-        const matchingInventoryItems = inventoryItems.filter(item => 
-          item.original_product_name === product.description
-        );
+        const productSize = Array.isArray(product.sizes) ? product.sizes[0] : undefined;
+        const matchingInventoryItems =
+          inventoryByKey.get(inventoryGroupKey(product.name, productSize)) ||
+          (product.description ? inventoryByKey.get(inventoryGroupKey(product.description, productSize)) : undefined) ||
+          [];
         
         // Calculate total current stock across all variants
         const totalCurrentStock = matchingInventoryItems.reduce((sum, item) => sum + item.current_stock, 0);

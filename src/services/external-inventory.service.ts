@@ -67,40 +67,85 @@ export interface ExternalInventoryMetrics {
 //    per-item movement history matches the aggregated stock exactly. The item
 //    the UI shows is grouped by normalized base-name + size (colors merged), so
 //    the history must group raw transactions the same way. ────────────────────
-// Packaging suffixes like "(2 PACK)" trail the size token (e.g. "TRUNK L (2
-// PACK)"), so every end-anchored size/name regex below must strip them first
-// or it silently fails to find the size — stranding "Default"-tagged stock
-// count rows in their own bucket instead of merging with the sized rows.
-const _stripPackagingSuffix = (name: string): string => name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+// Packaging suffixes trail the size token, either bracketed ("TRUNK L (2
+// PACK)") or bare ("DAG GIRLS KNICKERS 2-4 3PACK"), so every end-anchored
+// size/name regex below must strip them first or it silently fails to find the
+// size — stranding "Default"-tagged stock count rows in their own bucket
+// instead of merging with the sized rows. The bare form requires a space or
+// dash before the pack count so real words ending in "PACK" survive.
+const _stripPackagingSuffix = (name: string): string =>
+  name
+    .replace(/\s*\([^)]*\)\s*$/, '')
+    .replace(/[\s-]+\d*\s*PACK\s*$/i, '')
+    .trim();
+
+// A trailing size token, however it is attached to the name: "VEST -105",
+// "VEST 105", "APEX - L", "KNICKERS 2-4". Longer letter sizes come first so
+// XXL wins over XL, and the numeric range before the single number.
+const _SIZE_TOKEN = String.raw`XXXL|XXL|4XL|5XL|2XL|3XL|XS|XL|S|M|L|\d{1,3}\s*[-–]\s*\d{1,3}|\d{1,3}`;
+
+// Odoo writes some sizes as XXL/XXXL where the catalogue says 2XL/3XL. They are
+// the same size, so one spelling wins or the product shows up as two lines.
+const _canonicalSizeToken = (token: string): string => {
+  const t = token.toUpperCase().replace(/\s+/g, '').replace(/–/g, '-');
+  if (t === 'XXL') return '2XL';
+  if (t === 'XXXL') return '3XL';
+  return t;
+};
+
 const _extractFirstLevelSize = (productName: string, sizeField: string): string => {
-  if (sizeField && sizeField !== 'Default') return sizeField.toUpperCase();
+  if (sizeField && sizeField !== 'Default') return _canonicalSizeToken(sizeField);
   productName = _stripPackagingSuffix(productName);
-  const numericSizeMatch = productName.match(/\s+(\d+)$/);
-  if (numericSizeMatch) return numericSizeMatch[1];
-  const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
-  if (letterSizeMatch) return letterSizeMatch[1].toUpperCase();
-  const afterColorSizeMatch = productName.match(/-[A-Z]+\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|\d+)$/i);
-  if (afterColorSizeMatch) return afterColorSizeMatch[1].toUpperCase();
+  const sizeMatch = productName.match(new RegExp(`[\\s-]+(${_SIZE_TOKEN})$`, 'i'));
+  if (sizeMatch) return _canonicalSizeToken(sizeMatch[1]);
+  const afterColorSizeMatch = productName.match(new RegExp(`-[A-Z]+\\s+(${_SIZE_TOKEN})$`, 'i'));
+  if (afterColorSizeMatch) return _canonicalSizeToken(afterColorSizeMatch[1]);
   return 'Default';
 };
+// A handful of products reach us under a shortened name that is not in the
+// catalogue — Odoo deducts the sale as "BLACK VEST LESS 65" while the stock
+// arrived as "BLACK VEST SLEEVE LESS 65". Left alone, one product shows up as
+// two inventory lines, the stray one permanently negative and the real one
+// overstated by the same amount. Map the stray base name onto the catalogue
+// one; add an entry here when another stray name turns up.
+const _BASE_NAME_ALIASES: Record<string, string> = {
+  'BLACK VEST LESS': 'BLACK VEST SLEEVE LESS',
+};
+
+// The label for a merged line: never the stray name, always the catalogue one.
+const _canonicalProductName = (name: string | null | undefined): string => {
+  if (!name) return name || '';
+  let canonical = name;
+  for (const [alias, target] of Object.entries(_BASE_NAME_ALIASES)) {
+    canonical = canonical.replace(new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'), target);
+  }
+  return canonical;
+};
+
+// True when this name is one of the stray spellings above, so a merged line can
+// always prefer the catalogue spelling (and its code) for its label.
+const _isAliasedName = (name: string | null | undefined): boolean =>
+  !!name && _canonicalProductName(name) !== name;
+
 const _normalizeBaseName = (name: string | null | undefined): string => {
   if (!name) return '';
   let base = _stripPackagingSuffix(name.replace(/^\[[^\]]+\]\s*/, '').trim());
-  base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
+  base = base.replace(new RegExp(`[\\s-]+(?:${_SIZE_TOKEN})$`, 'i'), '').trim();
   base = base.replace(/[-\s]+$/, '').trim();
   base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
-  return base;
+  return _BASE_NAME_ALIASES[base] ?? base;
 };
 const _normalizeSize = (size: string | null | undefined): string => {
   if (!size) return '';
   const s = size.toUpperCase().trim();
   if (s === 'DEFAULT' || /FREE\s*SIZE/.test(s) || /ONE\s*SIZE/.test(s)) return '';
-  return s.replace(/\s+/g, '').replace(/–/g, '-');
+  return _canonicalSizeToken(s);
 };
 const _extractSizeFromName = (name: string | null | undefined): string => {
   if (!name) return '';
-  const match = _stripPackagingSuffix(name).match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
-  return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
+  const match = _stripPackagingSuffix(name)
+    .match(new RegExp(`(?:^|[\\s-])(XXXL|XXL|4XL|5XL|2XL|3XL|XS|XL|S|M|L|\\d{1,3}\\s*[-–]\\s*\\d{1,3}|\\d{2,3})\\s*$`, 'i'));
+  return match ? _canonicalSizeToken(match[1]) : '';
 };
 // Second-level group key (ignores color, exactly like the summary builder).
 const _itemGroupKey = (displayName: string, firstLevelSize: string): string => {
@@ -117,6 +162,34 @@ const _itemGroupKey = (displayName: string, firstLevelSize: string): string => {
 // number the Inventory screen shows for that product.
 export const inventoryGroupKey = (productName?: string | null, size?: string | null): string =>
   _itemGroupKey(productName || '', size || '');
+
+// The product family a line belongs to, for grouping rows in a list. Shares the
+// name rules above, so a packaging suffix or a dash before the size can't leave
+// the size in the family name and scatter a product's sizes alphabetically.
+export const inventoryBaseName = (productName?: string | null): string =>
+  _normalizeBaseName(productName);
+
+// Sort rank for a size, so a family reads S, M, L, XL, 2XL... and 22, 24, 26...
+// rather than in label order. Three bands, each sorted inside itself: letter
+// sizes in wearing order, plain numbers numerically, then ranges ("10-12") by
+// their first number. Anything unrecognised sorts last.
+const _LETTER_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
+export const inventorySizeRank = (size?: string | null, productName?: string | null): number => {
+  // A merged line's size reads MULTI or Default; its name still carries the size.
+  const s = (_normalizeSize(size) === 'MULTI' ? '' : _normalizeSize(size)) || _extractSizeFromName(productName);
+  if (!s) return Number.MAX_SAFE_INTEGER;
+
+  const letter = _LETTER_SIZES.indexOf(s);
+  if (letter !== -1) return letter;
+
+  const range = s.match(/^(\d+)\s*-\s*\d+$/);
+  if (range) return 2000 + Number(range[1]);
+
+  const n = Number(s);
+  if (!Number.isNaN(n)) return 1000 + n;
+
+  return Number.MAX_SAFE_INTEGER;
+};
 
 // Turns a stock summary (from getStockSummary / getAgencyStockSummary) into a
 // lookup keyed by inventoryGroupKey, so callers read the summary's own
@@ -307,33 +380,9 @@ export class ExternalInventoryService {
       });
     });
 
-    // Helper function to normalize and extract size from product name or size field
-    const extractSize = (productName: string, sizeField: string): string => {
-      if (sizeField && sizeField !== 'Default') {
-        return sizeField.toUpperCase();
-      }
-
-      // Packaging suffixes like "(2 PACK)" trail the size token, so strip them
-      // before these end-anchored regexes or the size is never recovered.
-      productName = _stripPackagingSuffix(productName);
-
-      const numericSizeMatch = productName.match(/\s+(\d+)$/);
-      if (numericSizeMatch) {
-        return numericSizeMatch[1];
-      }
-
-      const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
-      if (letterSizeMatch) {
-        return letterSizeMatch[1].toUpperCase();
-      }
-
-      const afterColorSizeMatch = productName.match(/-[A-Z]+\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|\d+)$/i);
-      if (afterColorSizeMatch) {
-        return afterColorSizeMatch[1].toUpperCase();
-      }
-
-      return 'Default';
-    };
+    // Size resolution lives in _extractFirstLevelSize so the summary, the
+    // movement history and every stock lookup read sizes identically.
+    const extractSize = _extractFirstLevelSize;
 
     // Helper function to normalize color
     const normalizeColor = (color: string, productName: string): string => {
@@ -379,8 +428,8 @@ export class ExternalInventoryService {
     // Helper function to create normalized base product name
     const createBaseProductName = (productName: string): string => {
       let baseName = productName.replace(/^\[[^\]]+\]\s*/, '');
-      baseName = baseName.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
-      baseName = baseName.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+      baseName = baseName.replace(new RegExp(`-[A-Z]+[\\s-]+(?:${_SIZE_TOKEN})$`, 'i'), '');
+      baseName = baseName.replace(new RegExp(`[\\s-]+(?:${_SIZE_TOKEN})$`, 'i'), '');
       baseName = baseName.replace(/-[A-Z]+$/i, '');
       return baseName.trim();
     };
@@ -473,35 +522,25 @@ export class ExternalInventoryService {
     const aggregatedMap = new Map<string, any>();
 
     initialItems.forEach(item => {
-      const normalizeBaseName = (name: string | null | undefined) => {
-        if (!name) return '';
-        let base = _stripPackagingSuffix(name.replace(/^\[[^\]]+\]\s*/, '').trim());
-        base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
-        base = base.replace(/[-\s]+$/, '').trim();
-        base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
-        return base;
-      };
-      const normalizeSize = (size: string | null | undefined) => {
-        if (!size) return '';
-        const s = size.toUpperCase().trim();
-        if (s === 'DEFAULT' || /FREE\s*SIZE/.test(s) || /ONE\s*SIZE/.test(s)) return '';
-        // Normalize size tokens like 1-2, 1 — 2, etc.
-        return s.replace(/\s+/g, '').replace(/–/g, '-');
-      };
-      const extractSizeFromName = (name: string | null | undefined) => {
-        if (!name) return '';
-        const match = _stripPackagingSuffix(name).match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
-        return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
-      };
-
-      const baseName = normalizeBaseName(item.product_name);
-      const sizeKey = normalizeSize(item.size) || extractSizeFromName(item.product_name) || 'NOSIZE';
-
-      const key = `name:${baseName}|size:${sizeKey}`;
+      // One shared key (see _itemGroupKey) so this aggregation, the movement
+      // history and the sale-order stock helper can never disagree.
+      const key = _itemGroupKey(item.product_name, item.size);
       if (!aggregatedMap.has(key)) {
-        aggregatedMap.set(key, { ...item });
+        aggregatedMap.set(key, {
+          ...item,
+          product_name: _canonicalProductName(item.product_name),
+          label_from_alias: _isAliasedName(item.product_name),
+        });
       } else {
         const existing = aggregatedMap.get(key)!;
+
+        // If the line is currently labelled from a stray name like "[BVL65]
+        // BLACK VEST LESS 65", take the catalogue name and code instead.
+        if (existing.label_from_alias && !_isAliasedName(item.product_name)) {
+          existing.product_name = item.product_name;
+          existing.label_from_alias = false;
+        }
+
         const combinedStock = existing.current_stock + item.current_stock;
 
         existing.current_stock = combinedStock;
@@ -674,37 +713,9 @@ export class ExternalInventoryService {
       });
     });
 
-    // Helper function to normalize and extract size from product name or size field
-    const extractSize = (productName: string, sizeField: string): string => {
-      // If size field is not "Default", use it
-      if (sizeField && sizeField !== 'Default') {
-        return sizeField.toUpperCase();
-      }
-
-      // Packaging suffixes like "(2 PACK)" trail the size token, so strip them
-      // before these end-anchored regexes or the size is never recovered.
-      productName = _stripPackagingSuffix(productName);
-
-      // Extract numeric sizes (28, 30, 32, 34, etc.)
-      const numericSizeMatch = productName.match(/\s+(\d+)$/);
-      if (numericSizeMatch) {
-        return numericSizeMatch[1];
-      }
-
-      // Extract letter sizes (XS, S, M, L, XL, 2XL, 3XL, XXL, XXXL)
-      const letterSizeMatch = productName.match(/\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i);
-      if (letterSizeMatch) {
-        return letterSizeMatch[1].toUpperCase();
-      }
-
-      // Handle patterns like "BRITNY-BLACK 2XL" where size might be after color
-      const afterColorSizeMatch = productName.match(/-[A-Z]+\s+(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|\d+)$/i);
-      if (afterColorSizeMatch) {
-        return afterColorSizeMatch[1].toUpperCase();
-      }
-
-      return 'Default';
-    };
+    // Size resolution lives in _extractFirstLevelSize so the summary, the
+    // movement history and every stock lookup read sizes identically.
+    const extractSize = _extractFirstLevelSize;
 
     // Helper function to normalize color
     const normalizeColor = (color: string, productName: string): string => {
@@ -760,10 +771,10 @@ export class ExternalInventoryService {
       
       // Remove color and size patterns
       // Pattern 1: Remove "-COLOR SIZE" at the end
-      baseName = baseName.replace(/-[A-Z]+\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+      baseName = baseName.replace(new RegExp(`-[A-Z]+[\\s-]+(?:${_SIZE_TOKEN})$`, 'i'), '');
       
       // Pattern 2: Remove just size at the end if no color pattern matched
-      baseName = baseName.replace(/\s+(?:\d+|XS|S|M|L|XL|2XL|3XL|XXL|XXXL)$/i, '');
+      baseName = baseName.replace(new RegExp(`[\\s-]+(?:${_SIZE_TOKEN})$`, 'i'), '');
       
       // Pattern 3: Remove just "-COLOR" at the end if no size
       baseName = baseName.replace(/-[A-Z]+$/i, '');
@@ -871,34 +882,25 @@ export class ExternalInventoryService {
     const aggregatedMap = new Map<string, any>();
 
     initialItems.forEach(item => {
-      const normalizeBaseName = (name: string | null | undefined) => {
-        if (!name) return '';
-        let base = _stripPackagingSuffix(name.replace(/^\[[^\]]+\]\s*/, '').trim());
-        base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
-        base = base.replace(/[-\s]+$/, '').trim();
-        base = base.replace(/[-_\s]+/g, ' ').toUpperCase();
-        return base;
-      };
-      const normalizeSize = (size: string | null | undefined) => {
-        if (!size) return '';
-        const s = size.toUpperCase().trim();
-        if (s === 'DEFAULT' || /FREE\s*SIZE/.test(s) || /ONE\s*SIZE/.test(s)) return '';
-        return s.replace(/\s+/g, '').replace(/–/g, '-');
-      };
-      const extractSizeFromName = (name: string | null | undefined) => {
-        if (!name) return '';
-        const match = _stripPackagingSuffix(name).match(/\b(S|M|L|XL|2XL|3XL|4XL|5XL|\d{2,3}|\d+\s*[-–]\s*\d+)\s*$/i);
-        return match ? match[1].toUpperCase().replace(/\s+/g, '').replace(/–/g, '-') : '';
-      };
-
-      const baseName = normalizeBaseName(item.product_name);
-      const sizeKey = normalizeSize(item.size) || extractSizeFromName(item.product_name) || 'NOSIZE';
-
-      const key = `name:${baseName}|size:${sizeKey}`;
+      // One shared key (see _itemGroupKey) so this aggregation, the movement
+      // history and the sale-order stock helper can never disagree.
+      const key = _itemGroupKey(item.product_name, item.size);
       if (!aggregatedMap.has(key)) {
-        aggregatedMap.set(key, { ...item });
+        aggregatedMap.set(key, {
+          ...item,
+          product_name: _canonicalProductName(item.product_name),
+          label_from_alias: _isAliasedName(item.product_name),
+        });
       } else {
         const existing = aggregatedMap.get(key)!;
+
+        // If the line is currently labelled from a stray name like "[BVL65]
+        // BLACK VEST LESS 65", take the catalogue name and code instead.
+        if (existing.label_from_alias && !_isAliasedName(item.product_name)) {
+          existing.product_name = item.product_name;
+          existing.label_from_alias = false;
+        }
+
         const combinedStock = existing.current_stock + item.current_stock;
 
         existing.current_stock = combinedStock;

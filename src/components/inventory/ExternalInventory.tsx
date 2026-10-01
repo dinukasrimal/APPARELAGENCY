@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Package, Search, AlertTriangle, TrendingDown, Plus, ExternalLink, ArrowDown, ArrowUp, RefreshCw, Settings, BarChart3, ChevronRight, Folder, FolderOpen, Globe, Database, CloudLightning, ClipboardList, History, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics } from '@/services/external-inventory.service';
+import { externalInventoryService, ExternalInventoryItem, ExternalInventoryTransaction, ExternalInventoryMetrics, inventoryBaseName, inventorySizeRank } from '@/services/external-inventory.service';
 import { externalBotSyncService } from '@/services/external-bot-sync';
 import SimpleBulkStockAdjustment from './SimpleBulkStockAdjustment';
 import SingleTableStockApproval from './SingleTableStockApproval';
@@ -69,29 +69,6 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
   // Memoized filtered items
   const filteredItems = useMemo(() => {
-    const sizeOrder = (size: string | null | undefined) => {
-      if (!size) return Number.MAX_SAFE_INTEGER;
-      const s = String(size).toUpperCase().trim();
-      const seq1 = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
-      const seq2 = ['28', '30', '32', '34', '36', '38', '40', '42'];
-      const seq3 = ['50', '55', '60', '65', '70', '75', '80', '85', '90', '95', '100'];
-      const seq4 = ['20', '22', '24', '26', '44', '46', '48'];
-      const idx = (arr: string[]) => arr.indexOf(s);
-      const i1 = idx(seq1); if (i1 !== -1) return i1;
-      const i2 = idx(seq2); if (i2 !== -1) return 100 + i2;
-      const i3 = idx(seq3); if (i3 !== -1) return 200 + i3;
-      const i4 = idx(seq4); if (i4 !== -1) return 300 + i4;
-      const n = Number(s);
-      if (!Number.isNaN(n)) return 400 + n;
-      return Number.MAX_SAFE_INTEGER;
-    };
-
-    const normalizeBaseName = (name: string) => {
-      if (!name) return '';
-      let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
-      base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
-      return base;
-    };
 
     const items = inventoryItems.filter(item => {
       const matchesSearch = item.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -116,12 +93,12 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
     });
 
     return items.sort((a, b) => {
-      const baseA = normalizeBaseName(a.product_name || '');
-      const baseB = normalizeBaseName(b.product_name || '');
+      const baseA = inventoryBaseName(a.product_name || '');
+      const baseB = inventoryBaseName(b.product_name || '');
       const baseCmp = baseA.localeCompare(baseB);
       if (baseCmp !== 0) return baseCmp;
-      const ra = sizeOrder(a.size);
-      const rb = sizeOrder(b.size);
+      const ra = inventorySizeRank(a.size, a.product_name);
+      const rb = inventorySizeRank(b.size, b.product_name);
       if (ra !== rb) return ra - rb;
       const nameCmp = (a.product_name || '').localeCompare(b.product_name || '');
       if (nameCmp !== 0) return nameCmp;
@@ -132,22 +109,6 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
   // Group items by category
   const groupedItems = useMemo(() => {
     const grouped: { [key: string]: ExternalInventoryItem[] } = {};
-    const sizeOrder = (size: string | null | undefined) => {
-      if (!size) return Number.MAX_SAFE_INTEGER;
-      const s = String(size).toUpperCase().trim();
-      const seq1 = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
-      const seq2 = ['28', '30', '32', '34', '36', '38', '40', '42'];
-      const seq3 = ['50', '55', '60', '65', '70', '75', '80', '85', '90', '95', '100'];
-      const seq4 = ['20', '22', '24', '26', '44', '46', '48']; // catch any extra numeric sizes
-      const idx = (arr: string[]) => arr.indexOf(s);
-      const i1 = idx(seq1); if (i1 !== -1) return i1;
-      const i2 = idx(seq2); if (i2 !== -1) return 100 + i2;
-      const i3 = idx(seq3); if (i3 !== -1) return 200 + i3;
-      const i4 = idx(seq4); if (i4 !== -1) return 300 + i4;
-      const n = Number(s);
-      if (!Number.isNaN(n)) return 400 + n; // generic numeric fallback
-      return Number.MAX_SAFE_INTEGER;
-    };
     
     filteredItems.forEach(item => {
       // Group the "All Items" overview by SUB-category (e.g. CREDO, SEMINA),
@@ -161,24 +122,15 @@ const ExternalInventory = ({ user }: ExternalInventoryProps) => {
 
     // Sort each category by product family then size (so SEMINA SOLID S, M, L, XL...)
     Object.keys(grouped).forEach(cat => {
-      const normalizeBaseName = (name: string) => {
-        if (!name) return '';
-        // Drop leading codes like "[ABC]"
-        let base = name.replace(/^\[[^\]]+\]\s*/, '').trim();
-        // Drop trailing size tokens (e.g., " XL", " 2XL", " 36")
-        base = base.replace(/\s+(S|M|L|XL|2XL|3XL|4XL|5XL|\d{1,3})$/i, '').trim();
-        return base;
-      };
-
       grouped[cat].sort((a, b) => {
         const nameA = a.product_name || '';
         const nameB = b.product_name || '';
-        const baseA = normalizeBaseName(nameA);
-        const baseB = normalizeBaseName(nameB);
+        const baseA = inventoryBaseName(nameA);
+        const baseB = inventoryBaseName(nameB);
         const baseCmp = baseA.localeCompare(baseB);
         if (baseCmp !== 0) return baseCmp;
-        const ra = sizeOrder(a.size);
-        const rb = sizeOrder(b.size);
+        const ra = inventorySizeRank(a.size, a.product_name);
+        const rb = inventorySizeRank(b.size, b.product_name);
         if (ra !== rb) return ra - rb;
         const nameCmp = nameA.localeCompare(nameB);
         if (nameCmp !== 0) return nameCmp;
