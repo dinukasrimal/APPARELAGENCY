@@ -83,7 +83,8 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
   const [agentOptions, setAgentOptions] = useState<Array<{ id: string; name: string; agencyName: string | null }>>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('');
   const [locatingAgent, setLocatingAgent] = useState(false);
-  const [agentLocation, setAgentLocation] = useState<{ latitude: number; longitude: number; label: string } | null>(null);
+  // One entry per phone that answered (plus the last-known fallback pin).
+  const [agentLocations, setAgentLocations] = useState<Array<{ id: string; latitude: number; longitude: number; label: string }>>([]);
   const agentRequestCleanupRef = useRef<(() => void) | null>(null);
   const [showDistricts, setShowDistricts] = useState(false);
   // District-wise sales (last 90 days, from invoices mapped by GPS to a district)
@@ -215,19 +216,31 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
 
     agentRequestCleanupRef.current?.();
     setLocatingAgent(true);
-    setAgentLocation(null);
+    setAgentLocations([]);
 
-    const { data: request, error } = await supabase
-      .from('location_requests')
-      .insert({ target_user_id: agent.id, requested_by: user.id })
-      .select('id')
-      .single();
+    // Goes through the function rather than inserting directly, because it
+    // also pushes to the agent's phone — which is what reaches them when the
+    // app is closed. An open app still answers over Realtime, below.
+    const { data: response, error } = await supabase.functions.invoke('request-location', {
+      body: { target_user_id: agent.id },
+    });
 
-    if (error || !request) {
+    const request = response as { request_id?: string; pushed_to?: number } | null;
+    if (error || !request?.request_id) {
       setLocatingAgent(false);
       toast({ title: 'Could not send location check', description: error?.message || 'Please try again.', variant: 'destructive' });
       return;
     }
+
+    const requestId = request.request_id;
+    toast({
+      title: `Asking ${agent.name}…`,
+      description: !request.pushed_to
+        ? 'No registered phone, so this only works while their app is open.'
+        : request.pushed_to > 1
+          ? `${request.pushed_to} of their phones were woken; each one that answers gets its own pin.`
+          : 'Their phone has been woken, even if the app is closed.',
+    });
 
     let settled = false;
 
@@ -235,11 +248,12 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       const last = await fetchLastKnownLocation(agent.id);
       setLocatingAgent(false);
       if (last) {
-        setAgentLocation({
+        setAgentLocations([{
+          id: 'last-known',
           latitude: last.latitude,
           longitude: last.longitude,
           label: `<b>${escapeHtml(agent.name)}</b><br/>Last known · ${last.source}<br/>${timeAgo(last.at)}`,
-        });
+        }]);
         toast({ title: `${agent.name}: showing last known location`, description: `${reason} Last seen at a ${last.source}, ${timeAgo(last.at)}.` });
       } else {
         toast({ title: `Could not locate ${agent.name}`, description: `${reason} No earlier GPS-stamped activity either.`, variant: 'destructive' });
@@ -253,27 +267,66 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
       agentRequestCleanupRef.current = null;
     };
 
+    // How many answers we are waiting for: every phone that was pushed to,
+    // plus the agent's app if it happens to be open and answers first.
+    const expected = Math.max(request.pushed_to ?? 0, 1);
+    let located = 0;
+    let failed = 0;
+
     const channel = supabase
-      .channel(`location-request-${request.id}`)
+      .channel(`location-request-${requestId}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'location_requests', filter: `id=eq.${request.id}` },
+        { event: 'INSERT', schema: 'public', table: 'location_request_responses', filter: `request_id=eq.${requestId}` },
         (payload) => {
           if (settled) return;
-          const row = payload.new as { status: string; latitude: number | null; longitude: number | null; accuracy: number | null; error: string | null };
-          if (row.status === 'fulfilled' && row.latitude && row.longitude) {
-            finish();
-            setLocatingAgent(false);
+          const row = payload.new as {
+            id: string; latitude: number | null; longitude: number | null; accuracy: number | null;
+            error: string | null; device_label: string | null; responded_via: string;
+            fix_age_seconds: number | null;
+          };
+
+          if (row.latitude && row.longitude) {
+            located++;
             const accuracy = row.accuracy ? ` · ±${Math.round(row.accuracy)} m` : '';
-            setAgentLocation({
-              latitude: row.latitude,
-              longitude: row.longitude,
-              label: `<b>${escapeHtml(agent.name)}</b><br/>Live · just now${accuracy}`,
-            });
-            toast({ title: `${agent.name} located`, description: 'Current location from their device.' });
-          } else if (row.status === 'failed') {
+            const device = row.device_label || (row.responded_via === 'app' ? 'app in use' : 'their phone');
+            // A fix taken minutes ago must not read as "just now" — that is the
+            // difference between where they are and where they were.
+            const age = row.fix_age_seconds ?? 0;
+            const freshness = age < 90
+              ? 'Live · just now'
+              : age < 3600
+                ? `Last fix · ${Math.round(age / 60)} min old`
+                : `Last fix · ${Math.round(age / 3600)} h old`;
+            setAgentLocations((current) => [
+              // A phone that somehow answers twice replaces its own pin.
+              ...current.filter((pin) => pin.id !== row.id && pin.id !== 'last-known'),
+              {
+                id: row.id,
+                latitude: row.latitude!,
+                longitude: row.longitude!,
+                label: `<b>${escapeHtml(agent.name)}</b><br/>${freshness}${accuracy}<br/><span style="color:#64748b">${escapeHtml(device)}</span>`,
+              },
+            ]);
+            setLocatingAgent(false);
+          } else {
+            failed++;
+          }
+
+          // Keep listening until every phone has had its say, so a second
+          // handset's pin can still appear after the first one lands.
+          if (located + failed >= expected) {
             finish();
-            void fallBackToLastKnown(`Their device couldn't get a GPS fix (${row.error || 'unknown error'}).`);
+            if (located === 0) {
+              void fallBackToLastKnown(`Their phone couldn't get a GPS fix (${row.error || 'unknown error'}).`);
+            } else {
+              toast({
+                title: `${agent.name} located`,
+                description: located > 1
+                  ? `${located} of their phones answered — each is pinned and numbered.`
+                  : 'Current location from their device.',
+              });
+            }
           }
         }
       )
@@ -282,8 +335,18 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
     const timeoutId = window.setTimeout(async () => {
       if (settled) return;
       finish();
-      await supabase.from('location_requests').update({ status: 'expired' }).eq('id', request.id).eq('status', 'pending');
-      void fallBackToLastKnown('Their app is not open right now, so their phone could not answer.');
+      await supabase.from('location_requests').update({ status: 'expired' }).eq('id', requestId).eq('status', 'pending');
+
+      if (located > 0) {
+        // Some phones answered and others didn't; keep what we have.
+        setLocatingAgent(false);
+        toast({
+          title: `${agent.name} located`,
+          description: `${located} of ${expected} phones answered in time.`,
+        });
+        return;
+      }
+      void fallBackToLastKnown('Their phone did not answer — it may be off, out of signal, or the app was force-stopped.');
     }, AGENT_LOCATE_TIMEOUT_MS);
 
     agentRequestCleanupRef.current = () => {
@@ -1031,7 +1094,7 @@ const DashboardMapLeaflet = ({ user }: DashboardMapLeafletProps) => {
           </p>
         </CardHeader>
         <CardContent>
-          <LeafletMap locations={locations} height="500px" myLocation={myLocation} agentLocation={agentLocation} showDistricts={showDistricts} />
+          <LeafletMap locations={locations} height="500px" myLocation={myLocation} agentLocations={agentLocations} showDistricts={showDistricts} />
 
           {/* Agency colour legend */}
           {selectedTypes.includes('customer') && selectedAgencies.length > 0 && (

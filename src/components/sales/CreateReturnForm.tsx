@@ -1,442 +1,578 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { User } from '@/types/auth';
-import { Invoice, Return, ReturnItem } from '@/types/sales';
+import { Return, ReturnItem } from '@/types/sales';
 import { Customer } from '@/types/customer';
+import { Product } from '@/types/product';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { ArrowLeft, Receipt, Search, User as UserIcon } from 'lucide-react';
+import { ArrowLeft, Plus, Search, Trash2, User as UserIcon } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { PriceType, getAgencyPriceType, getProductPriceForAgency } from '@/utils/agencyPricing';
+import { getExcludedProductIdsForAgency } from '@/utils/productVisibility';
+import { useDiscountValidation } from '@/hooks/useDiscountValidation';
 
 interface CreateReturnFormProps {
   user: User;
   customers: Customer[];
-  invoices: Invoice[];
+  products: Product[];
   returns: Return[];
   onSubmit: (returnData: any) => void;
   onCancel: () => void;
 }
 
-const CreateReturnForm = ({ user, customers, invoices, returns, onSubmit, onCancel }: CreateReturnFormProps) => {
+// One product's sizes, with the quantity coming back in each — the same shape
+// the order form uses, so the two screens are worked the same way.
+interface GridItem {
+  product: Product;
+  color: string;
+  sizes: Array<{ size: string; quantity: number }>;
+}
+
+interface DraftLine {
+  key: string;
+  productId: string;
+  productName: string;
+  color: string;
+  size: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+/**
+ * Taking goods back from a customer.
+ *
+ * The customer hands over a bag of stock without knowing which invoice any of
+ * it came from, so this asks for the goods, not for an invoice: pick the
+ * customer, then enter what came back on the same kind of grid used to take an
+ * order. The result is a value, and that value is applied to invoices
+ * afterwards (or left as credit) on the Credit screen.
+ */
+const CreateReturnForm = ({ user, customers, products, returns, onSubmit, onCancel }: CreateReturnFormProps) => {
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
-  // Quantity being returned per invoice line, keyed by invoice_item id
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [itemReasons, setItemReasons] = useState<Record<string, string>>({});
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedSubCategory, setSelectedSubCategory] = useState('');
+  const [selectedColor, setSelectedColor] = useState('');
+  const [gridItems, setGridItems] = useState<GridItem[]>([]);
+  const [lines, setLines] = useState<DraftLine[]>([]);
   const [reason, setReason] = useState('');
-  const [discountType, setDiscountType] = useState<'percentage' | 'amount'>('percentage');
-  const [discountValue, setDiscountValue] = useState(0);
+  const [discountPercentage, setDiscountPercentage] = useState(0);
+  const [priceType, setPriceType] = useState<PriceType>('billing_price');
+  const [visibleProducts, setVisibleProducts] = useState<Product[]>(products);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
 
-  // Filter customers based on user role and search
+  const { agencyDiscountLimit, validateDiscount, loading: discountLoading } = useDiscountValidation(user);
+
+  const selectedCustomer = customers.find(customer => customer.id === selectedCustomerId);
+  // A superuser takes the return on behalf of the customer's own agency, so
+  // pricing and the stock that comes back follow the customer, not the user.
+  const agencyId = selectedCustomer?.agencyId || user.agencyId;
+
+  // Price list and hidden products follow whichever agency owns the customer.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!agencyId) return;
+      const [type, excluded] = await Promise.all([
+        getAgencyPriceType(agencyId),
+        getExcludedProductIdsForAgency(agencyId),
+      ]);
+      if (cancelled) return;
+      setPriceType(type);
+      // A product hidden for this agency can't come back into its stock either.
+      setVisibleProducts(products.filter(product => product.isActive !== false && !excluded.has(product.id)));
+    })();
+    return () => { cancelled = true; };
+  }, [agencyId, products]);
+
   const filteredCustomers = customers.filter(customer => {
     const matchesSearch = customer.name.toLowerCase().includes(customerSearchTerm.toLowerCase()) ||
                          customer.phone.toLowerCase().includes(customerSearchTerm.toLowerCase());
     const matchesAgency = user.role === 'superuser' || customer.agencyId === user.agencyId;
-
     return matchesSearch && matchesAgency;
   });
 
-  const selectedCustomer = customers.find(customer => customer.id === selectedCustomerId);
+  const categories = useMemo(
+    () => [...new Set(visibleProducts.map(product => product.category))].filter(Boolean),
+    [visibleProducts],
+  );
 
-  // Invoices belonging to the chosen customer, newest first
-  const customerInvoices = invoices
-    .filter(invoice => invoice.customerId === selectedCustomerId)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const subCategories = useMemo(
+    () => selectedCategory
+      ? [...new Set(visibleProducts
+          .filter(product => product.category === selectedCategory)
+          .map(product => product.subCategory))].filter(Boolean)
+      : [],
+    [visibleProducts, selectedCategory],
+  );
 
-  const selectedInvoice = customerInvoices.find(invoice => invoice.id === selectedInvoiceId);
+  const colors = useMemo(
+    () => selectedCategory && selectedSubCategory
+      ? [...new Set(visibleProducts
+          .filter(product => product.category === selectedCategory && product.subCategory === selectedSubCategory)
+          .flatMap(product => product.colors || []))].filter(Boolean)
+      : [],
+    [visibleProducts, selectedCategory, selectedSubCategory],
+  );
 
-  // How much of each invoice line has already been returned, so a line can
-  // never be returned twice. Rejected returns don't count against the invoice.
-  const alreadyReturnedByItemId = returns.reduce<Record<string, number>>((acc, ret) => {
-    if (ret.status === 'rejected') return acc;
-    ret.items.forEach(item => {
-      if (item.invoiceItemId) {
-        acc[item.invoiceItemId] = (acc[item.invoiceItemId] || 0) + Number(item.quantityReturned || 0);
+  // Sizes read in wearing order, not alphabetically, as on the order form.
+  const sortSizes = (sizes: string[]) => {
+    const preferred = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+    return [...sizes].sort((a, b) => {
+      const indexA = preferred.indexOf(a.toUpperCase());
+      const indexB = preferred.indexOf(b.toUpperCase());
+      if (indexA !== -1 || indexB !== -1) {
+        return (indexA === -1 ? preferred.length : indexA) - (indexB === -1 ? preferred.length : indexB);
       }
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
     });
-    return acc;
-  }, {});
-
-  const availableToReturn = (invoiceItemId: string, invoicedQuantity: number) =>
-    Math.max(0, invoicedQuantity - (alreadyReturnedByItemId[invoiceItemId] || 0));
-
-  const handleCustomerChange = (customerId: string) => {
-    setSelectedCustomerId(customerId);
-    setSelectedInvoiceId('');
-    setQuantities({});
-    setItemReasons({});
-    setReason('');
   };
 
-  const handleInvoiceChange = (invoiceId: string) => {
-    setSelectedInvoiceId(invoiceId);
-    setQuantities({});
-    setItemReasons({});
-  };
-
-  const updateQuantity = (invoiceItemId: string, invoicedQuantity: number, value: number) => {
-    const capped = Math.max(0, Math.min(value || 0, availableToReturn(invoiceItemId, invoicedQuantity)));
-    setQuantities(prev => ({ ...prev, [invoiceItemId]: capped }));
-  };
-
-  // Return lines are built from the invoice's own lines, so each carries the
-  // invoice_item_id and the price actually invoiced.
-  const returnItems: ReturnItem[] = (selectedInvoice?.items || [])
-    .filter(item => (quantities[item.id] || 0) > 0)
-    .map(item => {
-      const quantityReturned = quantities[item.id];
-      return {
-        id: item.id,
-        invoiceItemId: item.id,
-        productId: item.productId,
-        productName: item.productName,
-        color: item.color,
-        size: item.size,
-        quantityReturned,
-        originalQuantity: item.quantity,
-        unitPrice: item.unitPrice,
-        total: item.unitPrice * quantityReturned,
-        reason: itemReasons[item.id] || ''
-      };
-    });
-
-  const subtotalReturnAmount = returnItems.reduce((sum, item) => sum + item.total, 0);
-  const discountAmount = discountType === 'percentage'
-    ? (subtotalReturnAmount * discountValue) / 100
-    : discountValue;
-  const totalReturnAmount = Math.max(0, subtotalReturnAmount - discountAmount);
-
-  const handleSubmit = async () => {
-    if (!selectedCustomer || !selectedInvoice || !reason || returnItems.length === 0) {
+  useEffect(() => {
+    if (!(selectedCategory && selectedSubCategory && selectedColor)) {
+      setGridItems([]);
       return;
     }
+    const matching = visibleProducts
+      .filter(product =>
+        product.category === selectedCategory &&
+        product.subCategory === selectedSubCategory &&
+        (product.colors || []).includes(selectedColor))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
-    if (submitLockRef.current) return;
+    setGridItems(matching.map(product => ({
+      product,
+      color: selectedColor,
+      sizes: sortSizes(product.sizes?.length ? product.sizes : ['Default']).map(size => ({ size, quantity: 0 })),
+    })));
+  }, [visibleProducts, selectedCategory, selectedSubCategory, selectedColor]);
+
+  const updateGridQuantity = (productIndex: number, sizeIndex: number, quantity: number) => {
+    setGridItems(previous => previous.map((item, i) => (
+      i !== productIndex ? item : {
+        ...item,
+        sizes: item.sizes.map((entry, j) => (j === sizeIndex ? { ...entry, quantity: Math.max(0, quantity) } : entry)),
+      }
+    )));
+  };
+
+  // Moves everything typed into the grid down into the return, then clears the
+  // grid so the next category can be worked through.
+  const addGridToReturn = () => {
+    const additions: DraftLine[] = [];
+    gridItems.forEach(item => {
+      item.sizes.forEach(entry => {
+        if (entry.quantity <= 0) return;
+        additions.push({
+          key: `${item.product.id}-${item.color}-${entry.size}`,
+          productId: item.product.id,
+          productName: item.product.name,
+          color: item.color,
+          size: entry.size,
+          quantity: entry.quantity,
+          unitPrice: getProductPriceForAgency(item.product, priceType),
+        });
+      });
+    });
+
+    if (additions.length === 0) return;
+
+    setLines(previous => {
+      const merged = [...previous];
+      additions.forEach(addition => {
+        // The same product, colour and size added twice is one line, not two.
+        const existing = merged.findIndex(line => line.key === addition.key);
+        if (existing >= 0) {
+          merged[existing] = { ...merged[existing], quantity: merged[existing].quantity + addition.quantity };
+        } else {
+          merged.push(addition);
+        }
+      });
+      return merged;
+    });
+
+    setGridItems(previous => previous.map(item => ({
+      ...item,
+      sizes: item.sizes.map(entry => ({ ...entry, quantity: 0 })),
+    })));
+  };
+
+  const updateLine = (key: string, changes: Partial<DraftLine>) => {
+    setLines(previous => previous.map(line => (line.key === key ? { ...line, ...changes } : line)));
+  };
+
+  const removeLine = (key: string) => {
+    setLines(previous => previous.filter(line => line.key !== key));
+  };
+
+  const productById = (productId: string) => visibleProducts.find(product => product.id === productId);
+
+  const subtotal = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+  const discountAmount = (subtotal * discountPercentage) / 100;
+  const total = Math.max(0, subtotal - discountAmount);
+
+  const discountCheck = validateDiscount(discountPercentage);
+  // Over the agency's limit the goods still come back into stock, but the
+  // credit waits for head office — the same rule an order's discount follows.
+  const needsApproval = discountCheck.requiresApproval;
+
+  const canSubmit =
+    !!selectedCustomerId &&
+    lines.length > 0 &&
+    lines.every(line => line.quantity > 0) &&
+    reason.trim().length > 0 &&
+    !isSubmitting;
+
+  const handleSubmit = () => {
+    if (!canSubmit || submitLockRef.current) return;
     submitLockRef.current = true;
     setIsSubmitting(true);
 
-    const buildReturnData = (latitude: number, longitude: number) => ({
-      invoiceId: selectedInvoice.id,
-      customerId: selectedCustomer.id,
-      customerName: selectedCustomer.name,
-      agencyId: selectedCustomer.agencyId,
+    const returnItems: ReturnItem[] = lines.map(line => ({
+      id: line.key,
+      // Nothing links to an invoice line any more: the goods are identified by
+      // what they are, not by where they were sold.
+      invoiceItemId: null,
+      productId: line.productId,
+      productName: line.productName,
+      color: line.color,
+      size: line.size,
+      quantityReturned: line.quantity,
+      originalQuantity: line.quantity,
+      unitPrice: line.unitPrice,
+      total: line.quantity * line.unitPrice,
+      reason: reason.trim(),
+    }));
+
+    onSubmit({
+      customerId: selectedCustomerId,
+      customerName: selectedCustomer?.name || '',
+      agencyId,
       items: returnItems,
-      subtotal: subtotalReturnAmount,
-      total: totalReturnAmount,
-      discountType,
-      discountValue,
+      subtotal,
+      discountPercentage,
       discountAmount,
-      reason,
-      status: 'approved' as const,
-      gpsCoordinates: { latitude, longitude }
+      total,
+      reason: reason.trim(),
+      requiresApproval: needsApproval,
     });
-
-    try {
-      // Get current location with better error handling
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        if (!navigator.geolocation) {
-          reject(new Error('Geolocation not supported'));
-          return;
-        }
-
-        navigator.geolocation.getCurrentPosition(
-          resolve,
-          reject,
-          {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 300000
-          }
-        );
-      });
-
-      await onSubmit(buildReturnData(position.coords.latitude, position.coords.longitude));
-    } catch (error) {
-      console.error('Error getting location:', error);
-      // Fallback coordinates if location access is denied
-      await onSubmit(buildReturnData(
-        7.8731 + Math.random() * 0.01,
-        80.7718 + Math.random() * 0.01
-      ));
-    } finally {
-      submitLockRef.current = false;
-      setIsSubmitting(false);
-    }
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" onClick={onCancel}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          <ArrowLeft className="h-4 w-4 mr-1" />
           Back to Returns
         </Button>
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Process Return</h2>
-          <p className="text-gray-600">Select the customer and the invoice being returned against</p>
-        </div>
+        <h3 className="text-lg font-semibold">Take a return</h3>
       </div>
 
-      {/* Customer Selection */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <UserIcon className="h-5 w-5" />
-            Step 1: Select Customer
+          <CardTitle className="text-base flex items-center gap-2">
+            <UserIcon className="h-4 w-4" />
+            Customer
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search customers by name or phone..."
+              placeholder="Search by name or phone"
+              className="pl-8"
               value={customerSearchTerm}
-              onChange={(e) => setCustomerSearchTerm(e.target.value)}
-              className="pl-10"
+              onChange={(event) => setCustomerSearchTerm(event.target.value)}
             />
           </div>
-
-          <Select value={selectedCustomerId} onValueChange={handleCustomerChange}>
+          <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
             <SelectTrigger>
               <SelectValue placeholder="Select a customer" />
             </SelectTrigger>
             <SelectContent>
-              {filteredCustomers.map((customer) => (
+              {filteredCustomers.slice(0, 50).map(customer => (
                 <SelectItem key={customer.id} value={customer.id}>
-                  {customer.name} - {customer.phone}
+                  {customer.name} · {customer.phone}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-
-          {selectedCustomer && (
-            <div className="p-3 bg-blue-50 rounded-lg">
-              <h4 className="font-medium text-blue-900">Selected Customer:</h4>
-              <p className="text-blue-800">{selectedCustomer.name}</p>
-              <p className="text-sm text-blue-700">{selectedCustomer.phone} • {selectedCustomer.address}</p>
-            </div>
-          )}
         </CardContent>
       </Card>
 
-      {/* Invoice Selection */}
-      {selectedCustomer && (
+      {selectedCustomerId && (
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Receipt className="h-5 w-5" />
-              Step 2: Select Invoice
-            </CardTitle>
+            <CardTitle className="text-base">What came back</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {customerInvoices.length === 0 ? (
-              <p className="text-sm text-gray-600">
-                No invoices found for this customer, so there is nothing to return against.
-              </p>
-            ) : (
-              <>
-                <Select value={selectedInvoiceId} onValueChange={handleInvoiceChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select the invoice being returned against" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {customerInvoices.map((invoice) => (
-                      <SelectItem key={invoice.id} value={invoice.id}>
-                        {invoice.invoiceNumber} • {invoice.createdAt.toLocaleDateString()} • LKR {invoice.total.toLocaleString()}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                {selectedInvoice && (
-                  <div className="p-3 bg-green-50 rounded-lg text-sm">
-                    <div className="flex justify-between">
-                      <span className="font-medium text-green-900">{selectedInvoice.invoiceNumber}</span>
-                      <span className="text-green-800">{selectedInvoice.createdAt.toLocaleDateString()}</span>
-                    </div>
-                    <div className="flex justify-between mt-1 text-green-800">
-                      <span>Invoice total:</span>
-                      <span>LKR {selectedInvoice.total.toLocaleString()}</span>
-                    </div>
-                    {selectedInvoice.outstandingAmount !== undefined && (
-                      <div className="flex justify-between text-green-800">
-                        <span>Outstanding:</span>
-                        <span>LKR {selectedInvoice.outstandingAmount.toLocaleString()}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Return Items Entry — driven by the invoice's own lines */}
-      {selectedInvoice && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Step 3: Select Items to Return</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse border border-gray-200 text-sm">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="border border-gray-200 p-3 text-left">Product</th>
-                    <th className="border border-gray-200 p-3 text-left">Colour / Size</th>
-                    <th className="border border-gray-200 p-3 text-right">Unit Price</th>
-                    <th className="border border-gray-200 p-3 text-right">Invoiced</th>
-                    <th className="border border-gray-200 p-3 text-right">Returned</th>
-                    <th className="border border-gray-200 p-3 text-right">Available</th>
-                    <th className="border border-gray-200 p-3 text-right">Qty to Return</th>
-                    <th className="border border-gray-200 p-3 text-right">Line Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedInvoice.items.map((item) => {
-                    const alreadyReturned = alreadyReturnedByItemId[item.id] || 0;
-                    const available = availableToReturn(item.id, item.quantity);
-                    const quantity = quantities[item.id] || 0;
-                    return (
-                      <tr key={item.id} className={available === 0 ? 'bg-gray-50 text-gray-400' : ''}>
-                        <td className="border border-gray-200 p-3">{item.productName}</td>
-                        <td className="border border-gray-200 p-3">{item.color} / {item.size}</td>
-                        <td className="border border-gray-200 p-3 text-right">LKR {item.unitPrice.toLocaleString()}</td>
-                        <td className="border border-gray-200 p-3 text-right">{item.quantity}</td>
-                        <td className="border border-gray-200 p-3 text-right">{alreadyReturned}</td>
-                        <td className="border border-gray-200 p-3 text-right font-medium">{available}</td>
-                        <td className="border border-gray-200 p-3 text-right">
-                          <Input
-                            type="number"
-                            min="0"
-                            max={available}
-                            disabled={available === 0}
-                            value={quantity}
-                            onChange={(e) => updateQuantity(item.id, item.quantity, Number(e.target.value))}
-                            className="w-24 text-center ml-auto"
-                          />
-                        </td>
-                        <td className="border border-gray-200 p-3 text-right">
-                          LKR {(item.unitPrice * quantity).toLocaleString()}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+          <CardContent className="space-y-3">
+            <div>
+              <p className="mb-2 text-sm font-semibold">Category</p>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4">
+                {categories.map(category => (
+                  <Card
+                    key={category}
+                    className={`cursor-pointer transition-all hover:shadow-md ${
+                      selectedCategory === category ? 'bg-blue-50 ring-2 ring-blue-500' : ''
+                    }`}
+                    onClick={() => {
+                      setSelectedCategory(category);
+                      setSelectedSubCategory('');
+                      setSelectedColor('');
+                    }}
+                  >
+                    <CardContent className="p-3 text-center">
+                      <h3 className="text-sm font-semibold">{category}</h3>
+                      <p className="mt-1 text-xs text-gray-500">
+                        {visibleProducts.filter(product => product.category === category).length} products
+                      </p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
             </div>
 
-            {returnItems.length > 0 && (
+            {selectedCategory && (
+              <div>
+                <p className="mb-2 text-sm font-semibold">Sub category</p>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4">
+                  {subCategories.map(subCategory => (
+                    <Card
+                      key={subCategory}
+                      className={`cursor-pointer transition-all hover:shadow-md ${
+                        selectedSubCategory === subCategory ? 'bg-blue-50 ring-2 ring-blue-500' : ''
+                      }`}
+                      onClick={() => {
+                        setSelectedSubCategory(subCategory);
+                        setSelectedColor('');
+                      }}
+                    >
+                      <CardContent className="p-3 text-center">
+                        <h3 className="text-sm font-semibold">{subCategory}</h3>
+                        <p className="mt-1 text-xs text-gray-500">
+                          {visibleProducts.filter(product =>
+                            product.category === selectedCategory && product.subCategory === subCategory).length} products
+                        </p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedSubCategory && (
+              <div>
+                <p className="mb-2 text-sm font-semibold">Colour</p>
+                <div className="flex flex-wrap gap-2">
+                  {colors.map(color => (
+                    <Badge
+                      key={color}
+                      variant={selectedColor === color ? 'default' : 'outline'}
+                      className={`cursor-pointer px-4 py-2 text-sm transition-all hover:scale-105 ${
+                        selectedColor === color ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'
+                      }`}
+                      onClick={() => setSelectedColor(color)}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="h-3 w-3 rounded-full border border-gray-300"
+                          style={{ backgroundColor: color.toLowerCase() }}
+                        />
+                        {color}
+                      </span>
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {gridItems.length > 0 && (
               <div className="space-y-3">
-                <h4 className="font-medium text-sm text-gray-800">Reason per item (optional)</h4>
-                {returnItems.map((item) => (
-                  <div key={item.id} className="border rounded-lg p-3 space-y-2">
-                    <div className="flex justify-between">
-                      <p className="font-medium">{item.productName}</p>
-                      <p className="text-sm text-gray-600">
-                        {item.quantityReturned} × LKR {item.unitPrice.toLocaleString()} = LKR {item.total.toLocaleString()}
-                      </p>
+                <p className="text-sm font-semibold">How many came back?</p>
+                <div className="max-h-96 space-y-3 overflow-y-auto">
+                  {gridItems.map((item, productIndex) => (
+                    <div key={item.product.id} className="rounded-lg border p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <h5 className="text-sm font-medium">{item.product.name}</h5>
+                        <span className="text-xs text-muted-foreground">
+                          LKR {getProductPriceForAgency(item.product, priceType).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                        {item.sizes.map((entry, sizeIndex) => (
+                          <div key={entry.size} className="space-y-1">
+                            <label className="text-xs text-muted-foreground">{entry.size}</label>
+                            <Input
+                              type="number"
+                              min={0}
+                              placeholder="Qty"
+                              className="h-9"
+                              value={entry.quantity || ''}
+                              onChange={(event) =>
+                                updateGridQuantity(productIndex, sizeIndex, Number(event.target.value) || 0)
+                              }
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <Textarea
-                      placeholder="Explain why this item is being returned"
-                      value={itemReasons[item.id] || ''}
-                      onChange={(e) => setItemReasons(prev => ({ ...prev, [item.id]: e.target.value }))}
-                    />
-                  </div>
-                ))}
+                  ))}
+                </div>
+
+                <Button className="w-full" onClick={addGridToReturn}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add to return
+                </Button>
+              </div>
+            )}
+
+            {lines.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                Pick a category, sub category and colour, then enter how many of each size came back.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+                      <th className="py-2">Product</th>
+                      <th className="py-2">Colour</th>
+                      <th className="py-2">Size</th>
+                      <th className="py-2 text-right">Qty</th>
+                      <th className="py-2 text-right">Price</th>
+                      <th className="py-2 text-right">Total</th>
+                      <th className="py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.map(line => {
+                      const product = productById(line.productId);
+                      return (
+                        <tr key={line.key} className="border-b last:border-0">
+                          <td className="py-2 pr-2">{line.productName}</td>
+                          <td className="py-2 pr-2">
+                            <Select value={line.color} onValueChange={(value) => updateLine(line.key, { color: value })}>
+                              <SelectTrigger className="h-8 w-28"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {(product?.colors?.length ? product.colors : ['Default']).map(color => (
+                                  <SelectItem key={color} value={color}>{color}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </td>
+                          <td className="py-2 pr-2">
+                            <Select value={line.size} onValueChange={(value) => updateLine(line.key, { size: value })}>
+                              <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {(product?.sizes?.length ? product.sizes : ['Default']).map(size => (
+                                  <SelectItem key={size} value={size}>{size}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </td>
+                          <td className="py-2 pr-2 text-right">
+                            <Input
+                              type="number"
+                              min={1}
+                              className="h-8 w-20 text-right"
+                              value={line.quantity}
+                              onChange={(event) => updateLine(line.key, { quantity: Math.max(0, Number(event.target.value) || 0) })}
+                            />
+                          </td>
+                          <td className="py-2 pr-2 text-right text-muted-foreground">
+                            {line.unitPrice.toLocaleString()}
+                          </td>
+                          <td className="py-2 pr-2 text-right font-medium">
+                            {(line.quantity * line.unitPrice).toLocaleString()}
+                          </td>
+                          <td className="py-2 text-right">
+                            <Button variant="ghost" size="sm" onClick={() => removeLine(line.key)}>
+                              <Trash2 className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </CardContent>
         </Card>
       )}
 
-      {/* Return Summary */}
-      {returnItems.length > 0 && (
+      {lines.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Step 4: Return Summary</CardTitle>
+            <CardTitle className="text-base">Value of this return</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <label className="text-sm font-medium text-gray-700">Overall Return Reason:</label>
-              <Textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Provide an overall reason for this return..."
-                className="mt-1"
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <label className="text-sm font-medium">Discount %</label>
+                {!discountLoading && agencyDiscountLimit !== null && user.role !== 'superuser' && (
+                  <p className="text-xs text-muted-foreground">Your limit is {agencyDiscountLimit}%</p>
+                )}
+              </div>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                className="h-9 w-28 text-right"
+                value={discountPercentage}
+                disabled={discountLoading}
+                onChange={(event) =>
+                  setDiscountPercentage(Math.max(0, Math.min(100, Number(event.target.value) || 0)))
+                }
               />
             </div>
 
-            <div className="space-y-3 p-3 bg-red-50 rounded">
+            {discountPercentage > 0 && discountCheck.message && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {discountCheck.message}. The goods still go back into your stock now; the credit can be applied
+                once head office approves.
+              </p>
+            )}
+
+            <div className="space-y-1 border-t pt-3 text-sm">
               <div className="flex justify-between">
-                <span className="font-medium">Returning against:</span>
-                <span>{selectedInvoice?.invoiceNumber}</span>
+                <span>Subtotal</span>
+                <span>LKR {subtotal.toLocaleString()}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="font-medium">Items to Return:</span>
-                <span>{returnItems.length}</span>
-              </div>
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between">
-                  <span>Subtotal:</span>
-                  <span>LKR {subtotalReturnAmount.toLocaleString()}</span>
+              {discountPercentage > 0 && (
+                <div className="flex justify-between text-amber-700">
+                  <span>Discount ({discountPercentage}%)</span>
+                  <span>-LKR {discountAmount.toLocaleString()}</span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <Select value={discountType} onValueChange={(v) => setDiscountType(v as 'percentage' | 'amount')}>
-                    <SelectTrigger className="w-36">
-                      <SelectValue placeholder="Discount type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="percentage">Percent (%)</SelectItem>
-                      <SelectItem value="amount">Fixed (LKR)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    type="number"
-                    min="0"
-                    max={discountType === 'percentage' ? 100 : undefined}
-                    value={discountValue}
-                    onChange={(e) => setDiscountValue(Number(e.target.value))}
-                    className="w-32"
-                  />
-                  <span className="text-sm text-gray-600">
-                    Discount: LKR {discountAmount.toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex justify-between text-lg font-bold text-red-600">
-                  <span>Total Return Amount:</span>
-                  <span>LKR {totalReturnAmount.toLocaleString()}</span>
-                </div>
-              </div>
-              {selectedInvoice?.outstandingAmount !== undefined && (
-                <p className="text-xs text-gray-600">
-                  Outstanding on {selectedInvoice.invoiceNumber} will drop from
-                  {' '}LKR {selectedInvoice.outstandingAmount.toLocaleString()} to
-                  {' '}LKR {Math.max(0, selectedInvoice.outstandingAmount - totalReturnAmount).toLocaleString()}.
-                </p>
               )}
+              <div className="flex justify-between text-base font-semibold">
+                <span>Credit to the customer</span>
+                <span>LKR {total.toLocaleString()}</span>
+              </div>
             </div>
 
-            <div className="flex gap-2 justify-end">
-              <Button variant="outline" onClick={onCancel}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSubmit}
-                disabled={isSubmitting || !selectedInvoice || returnItems.length === 0 || !reason.trim()}
-                className="bg-red-600 hover:bg-red-700"
-              >
-                {isSubmitting ? 'Processing...' : 'Process Return'}
-              </Button>
+            <div>
+              <label className="text-sm font-medium">Reason</label>
+              <Textarea
+                placeholder="Why are these goods coming back?"
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
             </div>
           </CardContent>
         </Card>
       )}
+
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        <Button onClick={handleSubmit} disabled={!canSubmit}>
+          {isSubmitting ? 'Saving…' : `Take return · LKR ${total.toLocaleString()}`}
+        </Button>
+      </div>
     </div>
   );
 };

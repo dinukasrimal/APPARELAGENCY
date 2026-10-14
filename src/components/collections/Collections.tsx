@@ -208,10 +208,12 @@ const Collections = ({ user }: CollectionsProps) => {
       const customerInvoices = invoices.filter(inv => inv.customerId === customerId && roundMoney(inv.outstandingAmount ?? inv.total) > 0);
       const customerCollections = collections.filter(col => col.customerId === customerId);
 
-      // Fetch approved/processed returns for this customer
+      // A return's value only reduces what the customer owes once it has been
+      // applied to an invoice; until then it is credit sitting in hand. So this
+      // reads the allocations, and tracks what is still unapplied separately.
       const { data: returnsData, error: returnsError } = await supabase
         .from('returns')
-        .select('id, invoice_id, total, status')
+        .select('id, total, status, return_credit_allocations(invoice_id, amount)')
         .eq('customer_id', customerId)
         .in('status', ['approved', 'processed']);
 
@@ -219,6 +221,20 @@ const Collections = ({ user }: CollectionsProps) => {
         console.warn('Returns fetch issue:', returnsError);
       }
       const customerReturns = returnsData || [];
+
+      const creditByInvoice: Record<string, number> = {};
+      let unappliedCredit = 0;
+      type CreditRow = { total: number | null; return_credit_allocations: Array<{ invoice_id: string; amount: number }> | null };
+      (customerReturns as CreditRow[]).forEach((ret) => {
+        let applied = 0;
+        (ret.return_credit_allocations || []).forEach((allocation) => {
+          const amount = Number(allocation.amount || 0);
+          applied += amount;
+          creditByInvoice[allocation.invoice_id] = (creditByInvoice[allocation.invoice_id] || 0) + amount;
+        });
+        unappliedCredit += Math.max(0, Number(ret.total || 0) - applied);
+      });
+      const totalCreditApplied = roundMoney(Object.values(creditByInvoice).reduce((sum, amount) => sum + amount, 0));
 
       // Calculate payments with proper date validation
       const today = new Date();
@@ -256,7 +272,7 @@ const Collections = ({ user }: CollectionsProps) => {
 
       // Calculate totals
       const totalInvoiced = roundMoney(customerInvoices.reduce((sum, inv) => sum + inv.total, 0));
-      const totalReturns = roundMoney(customerReturns.reduce((sum, ret) => sum + (ret.total || 0), 0));
+      const totalReturns = totalCreditApplied;
       const totalRealizedPayments = roundMoney(totalCashCollected + totalRealizedChequePayments + totalCashDiscounts);
       
       // Outstanding calculation:
@@ -286,9 +302,7 @@ const Collections = ({ user }: CollectionsProps) => {
       // Create invoice summaries with proper collection calculations
       const invoiceSummaries: InvoiceSummary[] = customerInvoices.map((invoice) => {
           const collectedAmount = roundMoney(allocationsByInvoiceId[invoice.id] || 0);
-          const invoiceReturns = roundMoney(customerReturns
-            .filter((ret) => ret.invoice_id === invoice.id)
-            .reduce((sum, ret) => sum + (ret.total || 0), 0));
+          const invoiceReturns = roundMoney(creditByInvoice[invoice.id] || 0);
           const outstandingAmount = Math.max(0, roundMoney(invoice.total - collectedAmount - invoiceReturns));
 
           return {
@@ -317,6 +331,7 @@ const Collections = ({ user }: CollectionsProps) => {
           outstandingWithoutCheques: outstandingAmount, // Same as outstanding amount now  
           returnedChequesAmount,
           returnedChequesCount,
+          unappliedCredit: roundMoney(unappliedCredit),
           invoices: invoiceSummaries,
           totalReturns
         });
@@ -705,7 +720,15 @@ const Collections = ({ user }: CollectionsProps) => {
                 <div className="text-xl font-bold text-emerald-600">
                   LKR {(customerInvoiceSummary.totalReturns || 0).toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">Approved Returns</div>
+                <div className="text-sm text-gray-600">Return credit applied</div>
+              </div>
+              {/* Credit in hand. It is deliberately not taken off the
+                  outstanding figure: it only counts once someone applies it. */}
+              <div className="text-center p-4 bg-amber-50 rounded-lg">
+                <div className="text-xl font-bold text-amber-600">
+                  LKR {(customerInvoiceSummary.unappliedCredit || 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600">Credit not yet applied</div>
               </div>
             </div>
 

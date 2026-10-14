@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { User } from '@/types/auth';
 import { Invoice, Return } from '@/types/sales';
 import { Customer } from '@/types/customer';
@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Search, Eye, Plus, RotateCcw } from 'lucide-react';
 import CreateReturnForm from './CreateReturnForm';
+import ReturnCreditPanel from './ReturnCreditPanel';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, MapPin } from 'lucide-react';
@@ -53,21 +54,60 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
     return <Badge variant={config.variant}>{config.label}</Badge>;
   };
 
+  // Credit already applied, per return. Without this, money a customer is owed
+  // is invisible until someone opens the return.
+  const [appliedByReturn, setAppliedByReturn] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const ids = returns.map(item => item.id);
+    if (ids.length === 0) {
+      setAppliedByReturn({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('return_credit_allocations')
+        .select('return_id, amount')
+        .in('return_id', ids);
+      if (error) {
+        console.warn('Could not load applied return credit:', error.message);
+        return;
+      }
+      if (cancelled) return;
+      const totals: Record<string, number> = {};
+      (data || []).forEach(row => {
+        totals[row.return_id] = (totals[row.return_id] || 0) + Number(row.amount || 0);
+      });
+      setAppliedByReturn(totals);
+    })();
+    return () => { cancelled = true; };
+  }, [returns]);
+
+  const creditLeftOn = (returnItem: Return) =>
+    Math.max(0, returnItem.total - (appliedByReturn[returnItem.id] || 0));
+
   const handleCreateReturn = async (returnData: any) => {
     try {
       // Create return header
       const { data: createdReturn, error: returnError } = await supabase
         .from('returns')
         .insert({
-          invoice_id: returnData.invoiceId,
+          // A return no longer belongs to an invoice: its value becomes credit,
+          // which is applied to invoices afterwards on the Credit screen.
+          invoice_id: null,
           customer_id: returnData.customerId,
           customer_name: returnData.customerName,
           agency_id: returnData.agencyId,
           subtotal: returnData.subtotal,
+          discount_percentage: returnData.discountPercentage ?? 0,
+          discount_amount: returnData.discountAmount ?? 0,
           total: returnData.total,
           reason: returnData.reason,
-          // Auto-approve customer returns (no manual approval step required)
-          status: returnData.status ?? 'approved',
+          requires_approval: !!returnData.requiresApproval,
+          // Returns stand on their own; only a discount above the agency's
+          // limit holds the credit back for head office to look at.
+          status: returnData.requiresApproval ? 'pending' : (returnData.status ?? 'approved'),
           latitude: returnData.gpsCoordinates?.latitude ?? null,
           longitude: returnData.gpsCoordinates?.longitude ?? null,
           created_by: user.id
@@ -202,7 +242,7 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
       <CreateReturnForm
         user={user}
         customers={customers}
-        invoices={invoices}
+        products={products}
         returns={returns}
         onSubmit={handleCreateReturn}
         onCancel={() => setShowCreateForm(false)}
@@ -211,41 +251,15 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
   }
 
   if (selectedReturn) {
+    // Every invoice of theirs, settled or not: the panel shows the ones still
+    // owing, plus any this return has already been applied to so it can be
+    // taken back off.
     const customerInvoices = invoices.filter(
       (inv) =>
         inv.customerId === selectedReturn.customerId &&
-        (user.role === 'superuser' || inv.agencyId === user.agencyId) &&
-        ((inv.outstandingAmount ?? inv.total) > 0)
+        (user.role === 'superuser' || inv.agencyId === user.agencyId)
     );
 
-    const handleLinkInvoice = async (invoiceId: string) => {
-      try {
-        const { error } = await supabase
-          .from('returns')
-          .update({ invoice_id: invoiceId })
-          .eq('id', selectedReturn.id);
-
-        if (error) throw error;
-
-        toast({
-          title: 'Invoice linked',
-          description: `Return ${selectedReturn.id} is now linked to invoice ${invoiceId}`
-        });
-
-        const updated = { ...selectedReturn, invoiceId };
-        setSelectedReturn(updated);
-        if (onRefresh) {
-          onRefresh();
-        }
-      } catch (err) {
-        console.error('Failed to link invoice to return:', err);
-        toast({
-          title: 'Error',
-          description: 'Could not link invoice. Please try again.',
-          variant: 'destructive'
-        });
-      }
-    };
 
     return (
       <div className="space-y-4">
@@ -262,26 +276,13 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
           <CardContent className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
               <div className="space-y-2">
-                <p className="font-medium text-gray-700">Invoice</p>
-                <p className="text-gray-800">{selectedReturn.invoiceId || 'Not linked yet'}</p>
-                {customerInvoices.length > 0 && (
-                  <Select
-                    onValueChange={handleLinkInvoice}
-                    value={selectedReturn.invoiceId || undefined}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Link an invoice" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {customerInvoices.map((inv) => (
-                        <SelectItem key={inv.id} value={inv.id}>
-                          {inv.invoiceNumber || inv.id} • LKR {inv.total.toLocaleString()}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <p className="font-medium text-gray-700">Customer</p>
+                <p className="text-gray-800">{selectedReturn.customerName}</p>
+                {selectedReturn.invoiceId && (
+                  // Older returns were taken against one invoice; that link is
+                  // kept for the record, but credit is applied below now.
+                  <p className="text-xs text-gray-500">Originally taken against invoice {selectedReturn.invoiceId}</p>
                 )}
-                <p className="text-gray-600">Customer: {selectedReturn.customerName}</p>
               </div>
               <div className="text-right md:text-left">
                 <p className="font-medium text-gray-700">Total Returned</p>
@@ -319,6 +320,13 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
             </div>
           </CardContent>
         </Card>
+
+        <ReturnCreditPanel
+          user={user}
+          returnItem={selectedReturn}
+          invoices={customerInvoices}
+          onChanged={onRefresh}
+        />
       </div>
     );
   }
@@ -396,7 +404,7 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
                     </div>
                     <p className="text-sm text-gray-600 truncate">{returnItem.customerName}</p>
                     <p className="text-xs md:text-sm text-gray-500">
-                      Invoice: {returnItem.invoiceId || 'Not linked yet'} • {returnItem.items.length} items
+                      {returnItem.items.length} items
                     </p>
                     <p className="text-xs md:text-sm text-gray-500 mt-1 line-clamp-2">{returnItem.reason}</p>
                   </div>
@@ -404,6 +412,15 @@ const ReturnsManagement = ({ user, returns, invoices, customers, products, onRef
                   <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4">
                     <div className="text-right">
                       <p className="text-lg md:text-xl font-bold text-red-600">LKR {returnItem.total.toLocaleString()}</p>
+                      {returnItem.status !== 'rejected' && (
+                        creditLeftOn(returnItem) > 0 ? (
+                          <p className="text-xs font-medium text-amber-700">
+                            LKR {Math.round(creditLeftOn(returnItem)).toLocaleString()} credit unused
+                          </p>
+                        ) : (
+                          <p className="text-xs text-green-700">Credit fully applied</p>
+                        )
+                      )}
                       <p className="text-xs md:text-sm text-gray-500">
                         {returnItem.createdAt.toLocaleDateString()}
                       </p>

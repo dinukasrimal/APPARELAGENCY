@@ -2,6 +2,7 @@
 import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
+import { BackgroundLocationService } from '@/services/background-location.service';
 import { useToast } from '@/hooks/use-toast';
 
 interface AuthContextType {
@@ -190,6 +191,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const signOut = async () => {
     try {
       console.log('Attempting to sign out...');
+
+      // Before the session goes: this phone should stop answering location
+      // checks for the user who is leaving it.
+      await BackgroundLocationService.unregisterDevice();
       
       // Clear local state first
       setUser(null);

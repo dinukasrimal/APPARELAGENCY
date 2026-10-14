@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { LocationService } from '@/services/location.service';
-import { useToast } from '@/hooks/use-toast';
 
 // A request older than this is stale: the superuser's screen has already
 // given up waiting and fallen back to the last known location.
@@ -18,10 +17,11 @@ interface PendingRequest {
 }
 
 // Answers on-demand location checks from head office. It reads GPS once per
-// request and nothing in between — there is no continuous tracking. It only
-// works while the app is open, and the agent is told each time it happens.
+// request and nothing in between — there is no continuous tracking. This path
+// covers the app being open; a closed app is woken by push instead. The agent
+// is told that checks happen when they first grant the permission, not on each
+// one, so nothing is shown here.
 const LocationRequestResponder = ({ userId }: LocationRequestResponderProps) => {
-  const { toast } = useToast();
   const handledRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -35,27 +35,42 @@ const LocationRequestResponder = ({ userId }: LocationRequestResponderProps) => 
 
       try {
         const location = await LocationService.getCurrentPosition();
+
+        // One pin per answering device; this one is the app in the agent's hand.
+        await supabase.from('location_request_responses').insert({
+          request_id: request.id,
+          device_id: null,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          accuracy: location.accuracy,
+          responded_via: 'app',
+        });
+
         await supabase
           .from('location_requests')
           .update({
             status: 'fulfilled',
+            responded_via: 'app',
             latitude: location.latitude,
             longitude: location.longitude,
             accuracy: location.accuracy,
             responded_at: new Date().toISOString(),
           })
           .eq('id', request.id);
-
-        toast({
-          title: 'Location shared',
-          description: 'Your current location was shared with head office.',
-        });
       } catch (error) {
+        await supabase.from('location_request_responses').insert({
+          request_id: request.id,
+          device_id: null,
+          error: error instanceof Error ? error.message : String(error),
+          responded_via: 'app',
+        });
+
         // Tell the requester why, so they can fall back to the last known location.
         await supabase
           .from('location_requests')
           .update({
             status: 'failed',
+            responded_via: 'app',
             error: error instanceof Error ? error.message : String(error),
             responded_at: new Date().toISOString(),
           })
@@ -93,7 +108,7 @@ const LocationRequestResponder = ({ userId }: LocationRequestResponderProps) => 
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [userId, toast]);
+  }, [userId]);
 
   return null;
 };

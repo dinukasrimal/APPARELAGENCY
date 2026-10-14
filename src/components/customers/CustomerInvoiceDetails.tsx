@@ -169,17 +169,8 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
 
     // Calculate totals
     const totalInvoiced = roundMoney(customerInvoices.reduce((sum, inv) => sum + inv.total, 0));
-    const totalReturns = roundMoney(customerReturnsList.reduce((sum, ret) => sum + (ret.total || 0), 0));
     const totalRealizedPayments = roundMoney(totalCashCollected + totalRealizedChequePayments + totalCashDiscounts);
-    
-    // Outstanding calculation:
-    // Outstanding = Total Invoiced - Realized Payments - Returns + Returned Cheques
-    // Future cheques don't count as payments until their date arrives
-    const outstandingAmount = roundMoney(totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount);
-    
-    // Outstanding with Unrealized = Total Invoiced - (Realized + Unrealized) - Returns + Returned Cheques
     const totalAllPayments = roundMoney(totalRealizedPayments + totalUnrealizedChequePayments);
-    const outstandingWithUnrealized = roundMoney(totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount);
 
     // Create invoice summaries with proper collection calculations
     // Build invoice item lookup to support per-item return linking
@@ -195,37 +186,38 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
       });
     });
 
-    let returnsByInvoiceItem: Record<string, number> = {};
+    // What a return has actually been applied to. The older per-line linkage
+    // was turned into allocations by the migration, so this is the whole story.
+    const returnsByInvoiceId: Record<string, number> = {};
     try {
-      if (invoiceItemIds.length > 0) {
-        const { data: returnItemsData, error: returnItemsError } = await supabase
-          .from('return_items')
-          .select('invoice_item_id,total')
-          .in('invoice_item_id', invoiceItemIds);
+      const customerInvoiceIds = customerInvoices.map(inv => inv.id);
+      if (customerInvoiceIds.length > 0) {
+        const { data: creditData, error: creditError } = await supabase
+          .from('return_credit_allocations')
+          .select('invoice_id, amount')
+          .in('invoice_id', customerInvoiceIds);
 
-        if (returnItemsError) {
-          console.warn('Return items fetch issue:', returnItemsError);
+        if (creditError) {
+          console.warn('Return credit fetch issue:', creditError);
         } else {
-          const map: Record<string, number> = {};
-          (returnItemsData || []).forEach((ri) => {
-            if (ri.invoice_item_id && typeof ri.total === 'number') {
-              map[ri.invoice_item_id] = (map[ri.invoice_item_id] || 0) + Number(ri.total);
-            }
+          (creditData || []).forEach((row) => {
+            if (!row.invoice_id) return;
+            returnsByInvoiceId[row.invoice_id] =
+              (returnsByInvoiceId[row.invoice_id] || 0) + Number(row.amount || 0);
           });
-          returnsByInvoiceItem = map;
         }
       }
     } catch (err) {
-      console.warn('Return items lookup failed:', err);
+      console.warn('Return credit lookup failed:', err);
     }
 
-    const returnsByInvoiceId: Record<string, number> = {};
-    Object.entries(returnsByInvoiceItem).forEach(([invoiceItemId, amount]) => {
-      const invId = invoiceItemToInvoice[invoiceItemId];
-      if (invId) {
-        returnsByInvoiceId[invId] = (returnsByInvoiceId[invId] || 0) + amount;
-      }
-    });
+    const totalReturns = roundMoney(Object.values(returnsByInvoiceId).reduce((sum, amount) => sum + amount, 0));
+
+    // Outstanding = invoiced - realized payments - credit applied + returned cheques.
+    // Future cheques don't count as payments until their date arrives, and
+    // credit that hasn't been applied to an invoice doesn't count at all.
+    const outstandingAmount = roundMoney(totalInvoiced - totalRealizedPayments - totalReturns + returnedChequesAmount);
+    const outstandingWithUnrealized = roundMoney(totalInvoiced - totalAllPayments - totalReturns + returnedChequesAmount);
 
     // Batch-fetch all allocations for all invoices at once (avoid N+1)
     const invoiceIds = customerInvoices.map(inv => inv.id);
@@ -242,11 +234,7 @@ const CustomerInvoiceDetails = ({ user, customer, onBack }: CustomerInvoiceDetai
 
     const invoiceSummaries: InvoiceSummary[] = customerInvoices.map((invoice) => {
         const collectedAmount = roundMoney(allocationsByInvoiceId[invoice.id] || 0);
-        const invoiceReturnsFromHeader = customerReturnsList
-          .filter((ret) => ret.invoice_id === invoice.id)
-          .reduce((sum, ret) => sum + (ret.total || 0), 0);
-        const invoiceReturnsFromItems = returnsByInvoiceId[invoice.id] || 0;
-        const invoiceReturns = roundMoney(invoiceReturnsFromHeader + invoiceReturnsFromItems);
+        const invoiceReturns = roundMoney(returnsByInvoiceId[invoice.id] || 0);
         const invoiceOutstandingAmount = Math.max(0, roundMoney(invoice.total - collectedAmount - invoiceReturns));
 
         return {

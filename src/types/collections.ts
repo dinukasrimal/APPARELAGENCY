@@ -54,7 +54,10 @@ export interface CustomerInvoiceSummary {
   outstandingWithoutCheques: number;
   returnedChequesAmount: number;
   returnedChequesCount: number;
+  /** Credit from returns already applied to this customer's invoices. */
   totalReturns?: number;
+  /** Return value not yet applied to any invoice — spendable, not yet spent. */
+  unappliedCredit?: number;
   invoices: InvoiceSummary[];
 }
 

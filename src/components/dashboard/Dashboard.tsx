@@ -8,6 +8,7 @@ import DashboardMapLeaflet from './DashboardMapLeaflet';
 import ExternalInventory from '@/components/inventory/ExternalInventory';
 import ModuleErrorBoundary from '@/components/common/ModuleErrorBoundary';
 import LocationRequestResponder from '@/components/location/LocationRequestResponder';
+import BackgroundLocationSetup from '@/components/location/BackgroundLocationSetup';
 
 // Lazy load heavy components to improve initial load time
 const CustomerManagement = lazy(() => import('@/components/customers/DuplicatePreventionCustomerManagement'));
@@ -191,6 +192,9 @@ const Dashboard = memo(({ user, onLogout }: DashboardProps) => {
       {/* Mounted for the whole session (not tied to a module) so a location
           check from head office is answered whichever screen is open. */}
       {user.role !== 'superuser' && <LocationRequestResponder userId={user.id} />}
+      {/* Registers the phone so a check can also be answered with the app
+          closed, and explains that to the agent before asking for it. */}
+      {user.role !== 'superuser' && <BackgroundLocationSetup userId={user.id} />}
       <Sidebar 
         user={user}
         activeModule={activeModule}

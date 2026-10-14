@@ -33,15 +33,16 @@ interface LeafletMapProps {
   routes?: RoutePath[];
   selectedId?: string | null;
   myLocation?: { latitude: number; longitude: number } | null;
-  // A located agent (superuser "Locate agent"), shown with its own label.
-  agentLocation?: { latitude: number; longitude: number; label: string } | null;
+  // A located agent (superuser "Locate agent"). One pin per phone that
+  // answered: an agent signed in on two handsets produces two.
+  agentLocations?: Array<{ id: string; latitude: number; longitude: number; label: string }>;
   showDistricts?: boolean;
 }
 
 // Cache the districts GeoJSON across map instances (loaded once).
 let districtsGeoJsonCache: any = null;
 
-const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null, myLocation = null, agentLocation = null, showDistricts = false }: LeafletMapProps) => {
+const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = null, myLocation = null, agentLocations = [], showDistricts = false }: LeafletMapProps) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
@@ -54,7 +55,7 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
   // must not pull the map back to fit every pin. A ref (not state) so that a
   // GPS fix doesn't re-run the marker effect and rebuild every marker.
   const myLocationActiveRef = useRef(false);
-  const agentLocationMarkerRef = useRef<L.Marker | null>(null);
+  const agentLocationMarkersRef = useRef<L.Marker[]>([]);
   const districtsLayerRef = useRef<L.GeoJSON | null>(null);
 
   const getMarkerColor = (type: string) => {
@@ -302,33 +303,47 @@ const LeafletMap = ({ locations, height = '400px', routes = [], selectedId = nul
     }
   }, [myLocation]);
 
-  // Located agent — a red pin with their name and how fresh the fix is.
+  // Located agent — a red pin per answering phone, with how fresh the fix is.
   useEffect(() => {
-    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    if (!map) return;
 
-    if (agentLocationMarkerRef.current) {
-      mapInstanceRef.current.removeLayer(agentLocationMarkerRef.current);
-      agentLocationMarkerRef.current = null;
-    }
+    agentLocationMarkersRef.current.forEach((marker) => map.removeLayer(marker));
+    agentLocationMarkersRef.current = [];
 
-    if (!agentLocation) return;
+    if (!agentLocations.length) return;
 
-    const icon = L.divIcon({
-      className: 'agent-location-marker',
-      html: `<div style="width:26px;height:26px;border-radius:50% 50% 50% 0;background:#DC2626;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.45);"></div>`,
-      iconSize: [26, 26],
-      iconAnchor: [13, 26],
-      popupAnchor: [0, -24],
+    agentLocations.forEach((agentLocation, index) => {
+      const icon = L.divIcon({
+        className: 'agent-location-marker',
+        // Numbered only when there is more than one, so a single pin stays clean.
+        html: `<div style="width:26px;height:26px;border-radius:50% 50% 50% 0;background:#DC2626;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;">`
+          + (agentLocations.length > 1
+            ? `<span style="transform:rotate(45deg);color:#fff;font-size:12px;font-weight:700;">${index + 1}</span>`
+            : '')
+          + `</div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 26],
+        popupAnchor: [0, -24],
+      });
+
+      const marker = L.marker([agentLocation.latitude, agentLocation.longitude], { icon, zIndexOffset: 2500 })
+        .bindPopup(agentLocation.label);
+      marker.addTo(map);
+      agentLocationMarkersRef.current.push(marker);
     });
 
-    const marker = L.marker([agentLocation.latitude, agentLocation.longitude], { icon, zIndexOffset: 2500 })
-      .bindPopup(agentLocation.label);
-    marker.addTo(mapInstanceRef.current);
-    agentLocationMarkerRef.current = marker;
-
-    mapInstanceRef.current.setView([agentLocation.latitude, agentLocation.longitude], 16);
-    marker.openPopup();
-  }, [agentLocation]);
+    if (agentLocations.length === 1) {
+      map.setView([agentLocations[0].latitude, agentLocations[0].longitude], 16);
+      agentLocationMarkersRef.current[0].openPopup();
+    } else {
+      // Two phones can be far apart — show both rather than guessing one.
+      map.fitBounds(
+        L.latLngBounds(agentLocations.map((a) => [a.latitude, a.longitude] as [number, number])),
+        { padding: [60, 60], maxZoom: 16 },
+      );
+    }
+  }, [agentLocations]);
 
   // Sri Lanka district boundaries — light shaded overlay with labels.
   useEffect(() => {

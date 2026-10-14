@@ -212,16 +212,17 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
           )
         : [];
 
+      // Return credit, as applied to each invoice. A return that hasn't been
+      // applied yet doesn't reduce anybody's ageing — the money is still owed
+      // until someone puts the credit against an invoice.
       const returns = await fetchAllSupabaseRows<{
         invoice_id: string | null;
-        total: number | null;
-        status: string | null;
+        amount: number | null;
       }>(() =>
         supabase
-          .from('returns')
-          .select('invoice_id, total, status')
+          .from('return_credit_allocations')
+          .select('invoice_id, amount')
           .in('invoice_id', invoiceIds)
-          .in('status', ['approved', 'processed'])
       );
 
       const chequesByCollection = new Map<string, typeof cheques>();
@@ -266,7 +267,7 @@ const AgingOutstandingReport = ({ user, onBack }: AgingOutstandingReportProps) =
         if (!item.invoice_id) return;
         returnsByInvoice.set(
           item.invoice_id,
-          roundMoney((returnsByInvoice.get(item.invoice_id) || 0) + Number(item.total || 0))
+          roundMoney((returnsByInvoice.get(item.invoice_id) || 0) + Number(item.amount || 0))
         );
       });
 

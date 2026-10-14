@@ -453,7 +453,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
       let deliveriesData: any[] = [];
 
       if (invoiceIds.length > 0) {
-        const [chunkedItems, deliveriesResult, allocationsResult] = await Promise.all([
+        const [chunkedItems, deliveriesResult, allocationsResult, creditAllocationsResult] = await Promise.all([
           Promise.all(
             chunkArray(invoiceIds, 200).map((chunk) =>
               fetchAllSupabaseRows<any>(() =>
@@ -477,6 +477,13 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           supabase
             .from('collection_allocations')
             .select('invoice_id, allocated_amount')
+            .in('invoice_id', invoiceIds),
+          // Return credit applied to these invoices. A return no longer points
+          // at an invoice itself; this is the only thing that reduces what a
+          // customer owes on account of goods sent back.
+          supabase
+            .from('return_credit_allocations')
+            .select('invoice_id, amount')
             .in('invoice_id', invoiceIds)
         ]);
 
@@ -492,28 +499,15 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           }
         });
 
-        const invoiceItemToInvoice: Record<string, string> = {};
-        invoiceItemsData.forEach((item: any) => {
-          if (item.id && item.invoice_id) invoiceItemToInvoice[item.id] = item.invoice_id;
-        });
-
-        const returnsData = returnsDataRef.current;
-        const returnItemsData = returnItemsDataRef.current;
         const agenciesData = agenciesRef.current;
 
-        const returnsByInvoiceFromHeader: Record<string, number> = {};
-        returnsData.forEach((ret: any) => {
-          if (ret.invoice_id) {
-            returnsByInvoiceFromHeader[ret.invoice_id] =
-              (returnsByInvoiceFromHeader[ret.invoice_id] || 0) + Number(ret.total || 0);
-          }
-        });
-        const returnsByInvoiceFromItems: Record<string, number> = {};
-        returnItemsData.forEach((ri: any) => {
-          const invId = ri.invoice_item_id ? invoiceItemToInvoice[ri.invoice_item_id] : null;
-          if (invId) {
-            returnsByInvoiceFromItems[invId] =
-              (returnsByInvoiceFromItems[invId] || 0) + Number(ri.total || 0);
+        // Credit from returns, as applied to each invoice. Old returns that
+        // used to point at an invoice were turned into allocations by the
+        // migration, so there is one rule here and no special case.
+        const creditByInvoice: Record<string, number> = {};
+        (creditAllocationsResult.data || []).forEach((row: any) => {
+          if (row.invoice_id) {
+            creditByInvoice[row.invoice_id] = (creditByInvoice[row.invoice_id] || 0) + Number(row.amount || 0);
           }
         });
 
@@ -523,9 +517,7 @@ const SalesOrders = ({ user }: SalesOrdersProps) => {
           const allocated = allocationTotals[invoice.id] || 0;
           const outstanding = Math.max(
             0,
-            Number(invoice.total) - allocated -
-            (returnsByInvoiceFromHeader[invoice.id] || 0) -
-            (returnsByInvoiceFromItems[invoice.id] || 0)
+            Number(invoice.total) - allocated - (creditByInvoice[invoice.id] || 0)
           );
           return {
             id: invoice.id,
